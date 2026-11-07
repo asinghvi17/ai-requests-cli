@@ -17,7 +17,8 @@
 | `src/usage/` | subscription usage readers (Claude, Codex) |
 | `src/match/` | effort matching against local quota |
 | `src/tmux/` | tmux control on the private `air` socket |
-| `src/gh/` | `gh api` wrapper |
+| `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`) and an in-memory fake for tests |
+| `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
 | `docs/decisions.md` | decision log: append, newest last |
 | `src/config.ts`, `src/toml.ts` | config loading and the TOML-subset parser |

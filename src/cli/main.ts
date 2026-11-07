@@ -3,6 +3,10 @@
 import { ArgError, parseArgs, type FlagSpecs } from './args.ts';
 import { VERSION } from '../version.ts';
 import { usageCommand } from '../usage/index.ts';
+import { claimCommand } from './claim.ts';
+import { releaseCommand } from './release.ts';
+import { UsageError } from './requests.ts';
+import { setupCommand } from './setup.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
 export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
@@ -16,6 +20,7 @@ type Command = {
 };
 
 const HELP: FlagSpecs = { help: { type: 'boolean', short: 'h' } };
+const REPO: FlagSpecs = { repo: { type: 'string' } };
 
 export const COMMANDS: Record<string, Command> = {
   submit: { usage: 'submit [--repo OWNER/NAME] [FILE]', summary: 'file a request issue', args: [], flags: { repo: { type: 'string' } } },
@@ -25,8 +30,8 @@ export const COMMANDS: Record<string, Command> = {
     args: [],
     flags: { manual: { type: 'boolean' } },
   },
-  claim: { usage: 'claim ISSUE', summary: 'claim a request', args: ['ISSUE'], flags: {} },
-  setup: { usage: 'setup ISSUE', summary: 'prepare the workspace for a claimed request', args: ['ISSUE'], flags: {} },
+  claim: { usage: 'claim [--repo OWNER/NAME] ISSUE', summary: 'claim a request', args: ['ISSUE'], flags: REPO, run: claimCommand },
+  setup: { usage: 'setup [--repo OWNER/NAME] ISSUE', summary: 'prepare the workspace for a claimed request', args: ['ISSUE'], flags: REPO, run: setupCommand },
   run: { usage: 'run ISSUE', summary: 'start the agent for a set-up request', args: ['ISSUE'], flags: {} },
   attach: { usage: 'attach ISSUE', summary: "attach to a request's tmux window", args: ['ISSUE'], flags: {} },
   stop: { usage: 'stop ISSUE', summary: "stop a request's agent", args: ['ISSUE'], flags: {} },
@@ -41,7 +46,7 @@ export const COMMANDS: Record<string, Command> = {
     raw: true,
     run: ({ argv, io }) => usageCommand(argv, { out: (s) => io.out(`${s}\n`), err: (s) => io.err(`${s}\n`) }),
   },
-  release: { usage: 'release ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: {} },
+  release: { usage: 'release [--repo OWNER/NAME] ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: REPO, run: releaseCommand },
   lint: { usage: 'lint [FILE]', summary: "check a request's front matter", args: [], flags: {} },
 };
 
@@ -87,7 +92,13 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
     io.err(`air ${name}: not implemented yet\n`);
     return 2;
   }
-  return cmd.run({ ...parsed, argv: rest, io });
+  try {
+    return await cmd.run({ ...parsed, argv: rest, io });
+  } catch (e) {
+    if (!(e instanceof UsageError)) throw e;
+    io.err(`air ${name}: ${e.message}\nusage: air ${cmd.usage}\n`);
+    return 1;
+  }
 }
 
 // Run when executed directly (node src/cli/main.ts); bundles for single binaries call run() themselves.

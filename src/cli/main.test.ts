@@ -36,8 +36,10 @@ test('routes the full command set', () => {
 test('every command routes through main(): stub exits 2, --help exits 0', async () => {
   for (const [name, cmd] of Object.entries(COMMANDS)) {
     if (cmd.raw) continue; // implemented; parses its own argv (see below)
-    const r = await call(name, ...cmd.args.map(() => '1'));
-    assert.deepEqual(r, { code: 2, out: '', err: `air ${name}: not implemented yet\n` }, name);
+    if (!cmd.run) {
+      const r = await call(name, ...cmd.args.map(() => '1'));
+      assert.deepEqual(r, { code: 2, out: '', err: `air ${name}: not implemented yet\n` }, name);
+    }
     const help = await call(name, '--help');
     assert.equal(help.code, 0, name);
     assert.equal(help.out, `usage: air ${cmd.usage}\n  ${cmd.summary}\n`);
@@ -74,7 +76,7 @@ test('names shared with Object.prototype are unknown commands', async () => {
 });
 
 test('unimplemented commands exit 2', async () => {
-  for (const argv of [['serve'], ['serve', '--manual'], ['claim', '12'], ['stop', '7'], ['pause'], ['lint', 'x.md']]) {
+  for (const argv of [['serve'], ['serve', '--manual'], ['run', '12'], ['stop', '7'], ['pause'], ['lint', 'x.md']]) {
     const r = await call(...argv);
     assert.equal(r.code, 2, argv.join(' '));
     assert.match(r.err, /not implemented yet/);
@@ -101,4 +103,15 @@ test('runs as a script', () => {
   const r = spawnSync(process.execPath, [new URL('./main.ts', import.meta.url).pathname, 'run', '3'], { encoding: 'utf8' });
   assert.equal(r.status, 2);
   assert.equal(r.stderr, 'air run: not implemented yet\n');
+});
+
+test('claim, setup and release validate ISSUE and need a repo', async () => {
+  for (const name of ['claim', 'setup', 'release']) {
+    const bad = await call(name, 'abc');
+    assert.equal(bad.code, 1, name);
+    assert.match(bad.err, new RegExp(`^air ${name}: ISSUE must be an issue number`), name);
+    const badRepo = await call(name, '--repo', 'nope', '3');
+    assert.equal(badRepo.code, 1, name);
+    assert.match(badRepo.err, /--repo must be OWNER\/NAME/, name);
+  }
 });
