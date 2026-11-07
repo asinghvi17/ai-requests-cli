@@ -22,7 +22,6 @@ test('invalid markers are rejected or ignored', () => {
   assert.throws(() => formatMarker({ kind: 'claim', version: 0, host: 'box', nonce: 'short' }));
   assert.deepEqual(parseMarkers('<!-- air-claim v0 host=box nonce=x -->'), []);
   assert.deepEqual(parseMarkers('<!-- air-claim v0 host=box -->'), []);
-  assert.deepEqual(parseMarkers('`<!-- air-claim v0 nonce=abcdefgh -->`'), []);
 });
 
 test('currentClaim: earliest unreleased claim holds', () => {
@@ -62,4 +61,28 @@ test('associationTrust', () => {
   assert.equal(associationTrust('MEMBER'), 'check');
   assert.equal(associationTrust('COLLABORATOR'), 'check');
   for (const a of ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN', 'NONE']) assert.equal(associationTrust(a), 'untrusted');
+});
+
+test('markers count only alone on their line, outside code', () => {
+  const m = formatMarker({ kind: 'claim', version: 0, host: 'box', nonce: 'abcdefgh' });
+  const want = [{ kind: 'claim', version: 0, host: 'box', nonce: 'abcdefgh' }];
+  assert.deepEqual(parseMarkers(m), want);
+  assert.deepEqual(parseMarkers(`Claimed.\r\n  ${m}  \r\n`), want);
+  // well-formed markers quoted in code or prose don't count
+  assert.deepEqual(parseMarkers(`\`${m}\``), []);
+  assert.deepEqual(parseMarkers(`The marker looks like \`${m}\`.`), []);
+  assert.deepEqual(parseMarkers(`see ${m}`), []);
+  assert.deepEqual(parseMarkers(`${m} and more`), []);
+  assert.deepEqual(parseMarkers(`\`\`\`\n${m}\n\`\`\``), []);
+  assert.deepEqual(parseMarkers(`~~~~md\n${m}\n\`\`\`\n${m}\n~~~~\n`), []);
+  // a fence left open hides everything after it; after a closed fence, markers count again
+  assert.deepEqual(parseMarkers(`\`\`\`\n${m}`), []);
+  assert.deepEqual(parseMarkers(`\`\`\`\nx\n\`\`\`\n${m}`), want);
+  // a forged claim in a fenced block can't take an issue
+  const T2 = '2026-11-07T12:00:00Z';
+  const comments = [
+    { id: 1, body: `Example:\n\`\`\`\n${formatMarker({ kind: 'claim', version: 0, host: 'x', nonce: 'xxxxxxxx' })}\n\`\`\``, createdAt: T2, updatedAt: T2, trusted: true },
+    { id: 2, body: m, createdAt: T2, updatedAt: T2, trusted: true },
+  ];
+  assert.equal(currentClaim(comments)?.host, 'box');
 });

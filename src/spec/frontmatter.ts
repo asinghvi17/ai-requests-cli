@@ -345,6 +345,12 @@ function parseFlowList(text: string, line: number, errors: Diagnostic[]): List |
       skip();
       if (text[i] === ',') {
         i++;
+        skip();
+        // YAML 1.2 allows one trailing comma: [a, b,]
+        if (text[i] === ']') {
+          i++;
+          break;
+        }
         continue;
       }
       if (text[i] === ']') {

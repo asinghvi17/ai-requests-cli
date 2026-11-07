@@ -352,3 +352,41 @@ test('an HTML comment opened mid-line hides headings until it closes', () => {
   // reopened after a close on the same line
   oneError(body(MIN, '\n## Task\n\nA <!-- x --> b <!--\n## Done when\n- y\n'), /missing `## Done when`/);
 });
+
+test('a comment left open on a heading line hides the section body', () => {
+  const draft = body(MIN, '\n## Task <!-- draft: fill in later\nRefactor the parser.\n-->\n\n## Done when\n\n- Tests pass\n');
+  const e = oneError(draft, /`## Task` is empty/);
+  assert.equal(e.line, 7);
+  // the raw text still reaches the agent
+  assert.match(lint(draft).sections.Task!.text, /Refactor the parser/);
+  // text after the comment closes does count
+  assert.equal(lint(body(MIN, '\n## Task <!-- draft\nold\n-->\nDo it.\n\n## Done when\n\n- x\n')).ok, true);
+  // a Done when list hidden that way isn't a list
+  oneError(body(MIN, '\n## Task\n\nDo it.\n\n## Done when <!--\n- x\n-->\n'), /`## Done when` is empty/);
+  // an unclosed comment hides the rest of the body
+  oneError(body(MIN, '\n## Done when\n\n- x\n\n## Task\n\n<!-- Do it.\n\n'), /`## Task` is empty/);
+});
+
+test('flow lists accept one trailing comma', () => {
+  const r = lint(body(`${MIN}\nharness: [claude, codex,]`));
+  assert.deepEqual(r.request?.harness, ['claude', 'codex']);
+  assert.deepEqual(lint(body(`${MIN}\nsetup: [ "a b" , c , ]`)).request?.setup, ['a b', 'c']);
+  oneError(body(`${MIN}\nsetup: [,]`), /empty value/);
+  oneError(body(`${MIN}\nsetup: [a,,]`), /empty value/);
+  oneError(body(`${MIN}\nsetup: [a, b,`), /missing `\]`|empty value/);
+});
+
+test('deliver: pr against a commit SHA warns', () => {
+  const pr = (ref: string) => body(`air: 0\neffort: S\ndeliver: pr\nrepo:\n  url: https://github.com/o/r.git\n  ref: ${ref}`, SECTIONS + '\n## Context\n\nThe repo.\n');
+  const r = lint(pr('0123456789abcdef0123456789abcdef01234567'));
+  assert.equal(r.ok, true);
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0]!.message, /looks like a commit SHA/);
+  assert.equal(r.warnings[0]!.line, 7);
+  assert.equal(lint(pr('a'.repeat(64))).warnings.length, 1);
+  assert.deepEqual(lint(pr('main')).warnings, []);
+  assert.deepEqual(lint(pr('deadbeef')).warnings, []); // could be a branch name
+  // not a problem for other deliveries
+  const review = body(`${MIN}\nrepo:\n  url: https://github.com/o/r.git\n  ref: ${'b'.repeat(40)}`, SECTIONS + '\n## Context\n\nThe repo.\n');
+  assert.deepEqual(lint(review).warnings, []);
+});

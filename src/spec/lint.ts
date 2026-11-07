@@ -33,7 +33,7 @@ export function lint(body: string): LintResult {
   if (errors.some((e) => e.code === 'version')) {
     return { ok: false, sections: {}, errors: errors.filter((e) => e.code === 'version'), warnings };
   }
-  const sections = fm.bodyStart === undefined ? {} : readSections(fm.lines, fm.bodyStart, errors, warnings);
+  const { sections, visible } = fm.bodyStart === undefined ? { sections: {}, visible: new Map<SectionName, string>() } : readSections(fm.lines, fm.bodyStart, errors, warnings);
 
   if (fm.bodyStart !== undefined) {
     const end = fm.lines.length;
@@ -50,11 +50,17 @@ export function lint(body: string): LintResult {
 
     for (const name of required) {
       const s = sections[name];
-      if (s && isBlank(s.text)) errors.push({ line: s.line, code: 'section', message: `\`## ${name}\` is empty` });
+      if (s && visible.get(name)!.trim() === '') errors.push({ line: s.line, code: 'section', message: `\`## ${name}\` is empty` });
     }
     const done = sections['Done when'];
-    if (done && !isBlank(done.text) && !/^ {0,3}(?:[-*+]|\d+[.)])\s+\S/m.test(stripComments(done.text))) {
+    const doneText = visible.get('Done when') ?? '';
+    if (done && doneText.trim() !== '' && !/^ {0,3}(?:[-*+]|\d+[.)])\s+\S/m.test(doneText)) {
       errors.push({ line: done.line, code: 'section', message: '`## Done when` must be a list of checkable criteria (`- ...`)' });
+    }
+    // `repo.ref` must be a branch for `deliver: pr`; a full commit SHA is certainly not one.
+    if (fm.ok && fm.request.deliver === 'pr' && fm.request.repo && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(fm.request.repo.ref)) {
+      const refLine = fm.lines.findIndex((l, i) => i < fm.bodyStart && /^\s+ref:/.test(l)) + 1;
+      warnings.push({ line: refLine, code: 'value', message: '`deliver: pr` needs `repo.ref` to be a branch to open the PR against, but it looks like a commit SHA' });
     }
   }
 
@@ -64,15 +70,28 @@ export function lint(body: string): LintResult {
   return result;
 }
 
-/** Collects `##` sections, skipping headings inside fenced code blocks. */
-function readSections(lines: string[], start: number, errors: Diagnostic[], warnings: Diagnostic[]): Sections {
+/**
+ * Collects `##` sections, skipping headings inside fenced code blocks and HTML comments. `visible` is
+ * each section's text with HTML comments removed, including one left open on the heading line.
+ */
+function readSections(
+  lines: string[],
+  start: number,
+  errors: Diagnostic[],
+  warnings: Diagnostic[],
+): { sections: Sections; visible: Map<SectionName, string> } {
   const sections: Sections = {};
-  let current: { name: SectionName; line: number; from: number } | undefined;
+  const visible = new Map<SectionName, string>();
+  let current: { name: SectionName; line: number; from: number; inComment: boolean } | undefined;
   let fence: { char: string; len: number } | undefined;
   let inComment = false;
 
   const finish = (to: number) => {
-    if (current) sections[current.name] = { line: current.line, text: lines.slice(current.from, to).join('\n').trim() };
+    if (current) {
+      const text = lines.slice(current.from, to).join('\n').trim();
+      sections[current.name] = { line: current.line, text };
+      visible.set(current.name, stripComments((current.inComment ? '<!--' : '') + text));
+    }
     current = undefined;
   };
 
@@ -104,10 +123,10 @@ function readSections(lines: string[], start: number, errors: Diagnostic[], warn
       errors.push({ line: i + 1, code: 'section', message: `duplicate \`## ${name}\` section (first at line ${sections[name].line})` });
       continue;
     }
-    current = { name, line: i + 1, from: i + 1 };
+    current = { name, line: i + 1, from: i + 1, inComment };
   }
   finish(lines.length);
-  return sections;
+  return { sections, visible };
 }
 
 /** Whether an HTML comment is still open at the end of `line`, given whether one was open at its start. */
@@ -128,10 +147,7 @@ function endsInComment(line: string, open: boolean): boolean {
   }
 }
 
+/** Removes HTML comments; an unclosed one hides the rest of the text, as in rendered Markdown. */
 function stripComments(text: string): string {
-  return text.replace(/<!--[\s\S]*?-->/g, '');
-}
-
-function isBlank(text: string): boolean {
-  return stripComments(text).trim() === '';
+  return text.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
 }

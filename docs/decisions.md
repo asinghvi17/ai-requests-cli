@@ -32,3 +32,18 @@ Append entries, newest last: date, decision, why.
   option") before anything reached GitHub. So it is still unknown whether GitHub accepts zips or serves a
   working URL. The spec doesn't depend on it: zips stay release assets. Re-test from a host whose gh
   allows `--attach`.
+- 2026-11-07: Second review of PR #3 (`air` stays 0).
+  - Markers count only alone on their own line and outside fenced code, so quoting one does nothing.
+  - An HTML comment left open on a heading line hides the section body for lint.
+  - Sweep never deletes an asset while a referring issue is open or claimed/running/paused; `expires`
+    applies only after close.
+  - Context zips are capped at the smaller of 10 GiB and 20 × `bytes` uncompressed, checked against the
+    central directory and again while writing.
+  - Each setup command and `check` has a 30-minute timeout and stdin from /dev/null. Setup is
+    deliberately outside `timeout`, so `timeout` keeps meaning "agent time", the quantity effort estimates.
+  - A `deliver: pr` with no commits beyond `repo.ref` sets `air:failed`, not `air:done`: no requested
+    change arrived, and failed requests stay retryable.
+  - An empty `out/` fails `deliver: artifact`.
+  - Over-long comment reports are truncated, and the full text goes to an `air-artifacts` asset.
+  - Flow lists accept a trailing comma.
+  - The agent reads its prompt from `AIR_TASK.md`.

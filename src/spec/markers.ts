@@ -30,12 +30,28 @@ export function formatMarker(m: Marker): string {
   return `${out} -->`;
 }
 
-const MARKER_RE = /<!-- air-(claim|release|unsupported) v(\d+)((?: [a-z]+=[^\s=]+)+) -->/g;
+const MARKER_RE = /^<!-- air-(claim|release|unsupported) v(\d+)((?: [a-z]+=[^\s=]+)+) -->$/;
 
-/** Finds every well-formed marker in a comment body, in order. Malformed markers are ignored. */
+/**
+ * Finds every well-formed marker in a comment body, in order. A marker counts only when it is alone on
+ * its line (surrounding spaces allowed) outside fenced code blocks, so quoting one in code or prose
+ * does nothing. Malformed markers are ignored.
+ */
 export function parseMarkers(text: string): Marker[] {
   const out: Marker[] = [];
-  for (const m of text.matchAll(MARKER_RE)) {
+  let fence: { char: string; len: number } | undefined;
+  for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (f && f[1]![0] === fence.char && f[1]!.length >= fence.len && line.trim() === f[1]) fence = undefined;
+      continue;
+    }
+    if (f) {
+      fence = { char: f[1]![0]!, len: f[1]!.length };
+      continue;
+    }
+    const m = MARKER_RE.exec(line.trim());
+    if (!m) continue;
     const kind = m[1] as MarkerKind;
     const attrs = new Map<string, string>();
     for (const kv of m[3]!.trim().split(' ')) {
