@@ -47,3 +47,42 @@ Append entries, newest last: date, decision, why.
   - Over-long comment reports are truncated, and the full text goes to an `air-artifacts` asset.
   - Flow lists accept a trailing comma.
   - The agent reads its prompt from `AIR_TASK.md`.
+
+## 2026-11-07: config is a TOML subset, parsed in-house (`src/toml.ts`)
+
+`~/.config/air/config.toml` (respecting `$XDG_CONFIG_HOME`) is hand-edited, and TOML comments and
+`[subscriptions.<name>]` / `[models.<harness>]` tables read better than JSON. With zero runtime dependencies
+we parse a subset ourselves (~200 lines): tables with dotted/quoted names, bare/quoted/dotted keys, basic and
+literal strings, integers, floats, booleans and multi-line arrays of scalars. Inline tables, arrays of tables,
+dates and multi-line strings are rejected with a line number rather than misread. Unknown config keys are
+errors so typos surface. A missing file is the all-defaults config.
+
+## 2026-11-07: `serve` starts agents by default; `--manual` waits for `air run`
+
+There is no `--auto`. `stop`, `start`, `pause` and `resume` are first-class commands. Model choice is by tier:
+`[models.<harness>]` maps `small`/`medium`/`large` to concrete model names (claude defaults: haiku, sonnet,
+opus; other harnesses must list all three).
+
+## 2026-11-07: packaging is Node SEA over an esbuild bundle (`npm run build`)
+
+Spike on Linux x64, Node v26.10.0, bun 1.4.4, with the skeleton CLI. Startup is the median of 30 warm runs of
+`air --version`; the first run of a freshly copied binary is in brackets.
+
+| Route | linux-x64 size (gzip) | linux-x64 startup | darwin-arm64 from Linux |
+| --- | --- | --- | --- |
+| `node src/cli/main.ts` (dev, type stripping) | n/a | 122 ms | n/a |
+| Node SEA + esbuild bundle | 150 MB (47 MB) | 67 ms (92 ms) | builds, 145 MB (44 MB); unsigned |
+| Node SEA from a `strip`ped node | 117 MB | 57 ms | not tried |
+| `bun build --compile` | 109 MB (52 MB) | 21 ms (23 ms) | builds, 89 MB (41 MB); ad-hoc signed |
+
+- Node-only (no bundler) does not work: a SEA can't load modules other than builtins (dynamic `import()` of
+  embedded assets via `module.registerHooks` fails with `ERR_UNKNOWN_BUILTIN_MODULE`), so a single-file bundle is
+  needed. esbuild (dev dependency) does it in milliseconds.
+- Cross-building for macOS works with SEA's `executable` field and the official darwin-arm64 Node tarball
+  (checked against SHASUMS256.txt). Injection drops the Mach-O code signature, and Apple Silicon kills unsigned
+  binaries, so it needs `codesign --sign -` on a Mac, or `rcodesign` on Linux. Bun's cross-built Mach-O carries an
+  ad-hoc signature. Neither macOS binary was run, because no Mac was available.
+- Recommendation: **Node SEA + esbuild**. It runs the same runtime the tests run on (Node 26, as the project rules
+  require), and the startup difference doesn't matter for a long-lived server. macOS builds need an ad-hoc signing
+  step. Bun is the fallback if size or startup ever matters; it would mean testing against a second runtime.
+  Node 26 users can also skip binaries and run `src/cli/main.ts` directly.
