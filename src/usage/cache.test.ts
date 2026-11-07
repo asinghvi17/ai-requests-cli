@@ -41,7 +41,10 @@ test('a failed read keeps the last windows, which go stale after 15 minutes and 
   const stale = await cachedRead({ name: 'x', harness: 'codex', stateDir, now: t0 + STALE_MS + 1, read: failing });
   assert.equal(stale.stale, true);
   assert.equal(stale.readAt, new Date(t0).toISOString());
+  // the numbers are gone from the subscription itself, so JSON and every consumer see unknown
+  assert.deepEqual(stale.windows.map(x => x.usedPct), [null, null]);
   assert.deepEqual(effectiveWindows(stale).map(x => x.usedPct), [null, null]);
+  assert.doesNotMatch(JSON.stringify(stale), /usedPct":\d|tokensLeft/);
   assert.equal(headroomPct(stale), null);
 });
 
@@ -57,4 +60,24 @@ test('headroom ignores model-scoped meters', () => {
   const s = { name: 'c', harness: 'claude', readAt: null, stale: false,
     windows: [w('five_hour', 20), w('seven_day', 46), w('seven_day_fable', 100, { scope: 'Fable' })] };
   assert.equal(headroomPct(s), 54);
+});
+
+test('an incomplete reading is unknown, and replaces the last full one', async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'air-cache-'));
+  const t0 = 1_800_000_000_000;
+  await cachedRead({ name: 'z', harness: 'claude', stateDir, now: t0, read: async () => ({ windows: [w('five_hour', 5), w('seven_day', 5)] }) });
+  const s = await cachedRead({ name: 'z', harness: 'claude', stateDir, now: t0 + REUSE_MS, read: async () =>
+    ({ windows: [w('five_hour', 10)], incomplete: true, note: 'incomplete: no weekly' }) });
+  assert.equal(s.incomplete, true);
+  assert.equal(s.stale, false);
+  assert.equal(s.note, 'incomplete: no weekly');
+  assert.deepEqual(s.windows.map(x => [x.name, x.usedPct]), [['five_hour', null]]);
+  assert.equal(headroomPct(s), null);
+  // a hand-built incomplete subscription is unknown too
+  assert.equal(headroomPct({ name: 'h', harness: 'codex', readAt: null, stale: false, incomplete: true, windows: [w('five_hour', 1)] }), null);
+});
+
+test('stale tokensLeft is dropped', () => {
+  const s = { name: 'm', harness: 'manual', readAt: null, stale: true, windows: [w('weekly', 10, { tokensLeft: 5 })] };
+  assert.deepEqual(effectiveWindows(s), [{ name: 'weekly', kind: 'weekly', usedPct: null, resetsAt: null }]);
 });

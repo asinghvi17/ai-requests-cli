@@ -22,14 +22,17 @@ export interface Subscription {
   windows: Window[];
   /** When the windows were read; null if never read successfully. */
   readAt: string | null;
-  /** Older than STALE_MS (or never read): callers must treat every window as unknown. */
+  /** Older than STALE_MS (or never read): every usedPct is null and tokensLeft absent. */
   stale: boolean;
+  /** The source answered but its primary window (Claude weekly, Codex primary) was missing, e.g. renamed:
+   *  every usedPct is null, as for stale. */
+  incomplete?: boolean;
   /** Why there is no (fresh) reading, when there isn't one. */
   note?: string;
 }
 
 /** What a CLI reader returns before the cache stamps it. */
-export interface Reading { windows: Window[]; note?: string }
+export interface Reading { windows: Window[]; note?: string; incomplete?: boolean }
 
 /** One entry of the volunteer's subscriptions config. */
 export type SubscriptionConfig =

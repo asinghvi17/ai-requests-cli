@@ -2,7 +2,7 @@
 // one request, EOF. Adapted from the factory's packages/runner/src/adapters/codex-usage.ts and parseCodexRateLimits.
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { command, isoOrNull, windowOfMinutes } from './run.ts';
+import { cliEnv, command, isoOrNull, killGroup, windowOfMinutes } from './run.ts';
 import type { Reading, Window } from './types.ts';
 
 export interface CodexOpts {
@@ -10,6 +10,7 @@ export interface CodexOpts {
   bin?: string;
   /** CODEX_HOME for a second login; default the CLI's own (~/.codex). */
   codexHome?: string;
+  /** The exact environment for the CLI (codexHome is set on top). Default: `cliEnv()`, an allowlisted copy of process.env. */
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
 }
@@ -29,15 +30,9 @@ export function parseCodexRateLimits(r: any): Window[] {
   });
 }
 
-const killGroup = (pid: number | undefined) => {
-  if (!pid) return;
-  try { process.kill(-pid, 'SIGTERM'); } catch { return; }
-  setTimeout(() => { try { process.kill(-pid, 'SIGKILL'); } catch { /* gone */ } }, 2000).unref();
-};
-
 /** Send one app-server request after the handshake; resolves its `result`, or `{ error }`. */
 export function appServerRequest(o: CodexOpts, method: string, params: object): Promise<{ result?: any; error?: string }> {
-  const env = { ...(o.env ?? process.env) };
+  const env = { ...(o.env ?? cliEnv()) };
   if (o.codexHome) env.CODEX_HOME = o.codexHome;
   const [file, ...pre] = command(o.bin ?? 'codex');
   return new Promise(resolve => {
@@ -47,7 +42,7 @@ export function appServerRequest(o: CodexOpts, method: string, params: object): 
     const finish = (v: { result?: any; error?: string }) => {
       if (done) return;
       done = true; clearTimeout(timer); lines.close(); child.stdin.destroy(); child.stdout.destroy();
-      killGroup(child.pid);
+      killGroup(child);
       resolve(v);
     };
     const timer = setTimeout(() => finish({ error: 'timeout' }), o.timeoutMs ?? 20000);
@@ -77,6 +72,10 @@ export function appServerRequest(o: CodexOpts, method: string, params: object): 
 export async function readCodex(o: CodexOpts = {}): Promise<Reading> {
   const r = await appServerRequest(o, 'account/rateLimits/read', { excludeResetCreditDetails: true });
   if (r.error) return { windows: [], note: `codex: ${r.error}` };
-  const windows = parseCodexRateLimits(r.result?.rateLimits);
-  return windows.length ? { windows } : { windows: [], note: 'codex reported no rate-limit windows' };
+  const limits = r.result?.rateLimits;
+  const windows = parseCodexRateLimits(limits);
+  if (!windows.length) return { windows: [], note: 'codex reported no rate-limit windows' };
+  // The primary window is the one Codex enforces first; a secondary alone is not a full reading.
+  return typeof limits?.primary?.usedPercent === 'number' && limits.primary.usedPercent >= 0 ? { windows }
+    : { windows, incomplete: true, note: 'incomplete: codex reported no primary rate-limit window' };
 }

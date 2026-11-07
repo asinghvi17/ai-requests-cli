@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseClaudeUsage } from './claude.ts';
@@ -21,11 +21,11 @@ function setup(subs: unknown) {
       codex: async () => ({ windows: [], note: 'codex: timeout' }),
     },
   });
-  return { run, lines, errs };
+  return { run, lines, errs, state: join(dir, 'state') };
 }
 
 const subs = [
-  { name: 'work', harness: 'claude', configDir: '/home/v/.claude-work' },
+  { name: 'work', harness: 'claude', configDir: '/nonexistent/claude-work' },
   { name: 'home', harness: 'claude' },
   { name: 'codex', harness: 'codex' },
   { name: 'team', harness: 'manual', reset: { every: 'weekly', day: 1, utc: true }, budget: { tokens: 2_000_000 } },
@@ -63,9 +63,10 @@ test('spend decrements a manual budget; --json prints subscriptions', async () =
 test('rejects bad arguments and config', async () => {
   const { run, errs } = setup(subs);
   assert.equal(await run(['spend', 'work', '5']), 2);
+  for (const bad of ['Infinity', 'NaN', '-1', '', '1e400', '0x10']) assert.equal(await run(['spend', 'team', bad]), 2, bad);
   assert.equal(await run(['bogus']), 2);
   assert.equal(await run(['--nope']), 2);
-  assert.equal(errs.length, 3);
+  assert.equal(errs.length, 9);
   assert.equal(await setup([{ name: 'm', harness: 'manual', reset: { every: 'weekly', day: 9 }, budget: { tokens: 1 } }]).run([]), 1);
   assert.equal(await setup([{ name: 'a', harness: 'claude' }, { name: 'a', harness: 'codex' }]).run([]), 1);
   assert.deepEqual(loadConfig('/nonexistent/subscriptions.json').map(s => s.harness), ['claude', 'codex']);
@@ -73,4 +74,43 @@ test('rejects bad arguments and config', async () => {
 
 test('span', () => {
   assert.deepEqual([span(30e3), span(14 * 60e3), span(134 * 60e3), span(76 * 3600e3), span(NaN)], ['<1m', '14m', '2h 14m', '3d 4h', '?']);
+});
+
+test('stale readings serialize no numbers in --json', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'air-usage-cmd-'));
+  const config = join(dir, 'subscriptions.json');
+  writeFileSync(config, JSON.stringify([{ name: 'work', harness: 'claude' }]));
+  const lines: string[] = [];
+  let ok = true;
+  const run = (at: number) => usageCommand(['--json', '--config', config, '--state-dir', join(dir, 'state')], {
+    now: at, out: s => lines.push(s),
+    readers: { claude: async () => ok ? { windows: parseClaudeUsage(recorded) } : { windows: [], note: 'claude /usage failed' } } });
+  await run(now);
+  assert.equal(JSON.parse(lines.pop()!)[0].windows[0].usedPct, 30);
+  ok = false;
+  await run(now + 16 * 60000);
+  const [s] = JSON.parse(lines.pop()!);
+  assert.equal(s.stale, true);
+  assert.deepEqual(s.windows.map((x: any) => x.usedPct), [null, null, null]);
+});
+
+test('a corrupt ledger: manual subscriptions read unknown until reset-ledger; plain reads never write it', async () => {
+  const { run, lines, errs, state } = setup([subs[3]]);
+  assert.equal(await run([]), 0);
+  assert.deepEqual(readdirSync(state).filter(n => n.startsWith('manual-ledger')), []); // a read wrote nothing
+  assert.equal(await run(['spend', 'team', '100']), 0);
+  writeFileSync(join(state, 'manual-ledger.json'), '{"version": 2}');
+  lines.length = 0;
+  assert.equal(await run(['--json']), 0);
+  const [s] = JSON.parse(lines.pop()!);
+  assert.equal(s.stale, true);
+  assert.equal(s.windows[0].usedPct, null);
+  assert.match(s.note, /unsupported version 2.*reset-ledger/);
+  assert.equal(await run([]), 0);
+  assert.match(lines.pop()!, /team \(manual\) · never read · STALE.*\n  WINDOW .*\n  Weekly   \?  /);
+  assert.equal(await run(['spend', 'team', '1']), 1);
+  assert.match(errs.pop()!, /reset-ledger/);
+  assert.equal(await run(['reset-ledger']), 0);
+  assert.equal(await run(['spend', 'team', '1']), 0);
+  assert.match(lines.pop()!, /100% \(2\.0M tok\)/);
 });

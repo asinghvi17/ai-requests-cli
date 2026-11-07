@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { emptyLedger, loadLedger, period, readManual, recordSpend, saveLedger } from './manual.ts';
+import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { emptyLedger, loadLedger, period, readManual, recordSpend, resetLedger, spend } from './manual.ts';
 import type { ManualConfig } from './types.ts';
 
 const T = (s: string) => Date.parse(s);
@@ -25,17 +27,21 @@ test('spend decrements a token budget and rolls over at the reset', () => {
   const now = T('2026-11-07T12:00:00Z');
   assert.deepEqual(readManual(weekly, ledger, now).windows,
     [{ name: 'weekly', kind: 'weekly', usedPct: 0, tokensLeft: 1_000_000, resetsAt: '2026-11-09T09:00:00.000Z' }]);
+  assert.deepEqual(ledger, emptyLedger()); // a read never modifies the ledger
   recordSpend(weekly, ledger, 250_000, now);
   recordSpend(weekly, ledger, 50_000, now + 1000);
   const s = readManual(weekly, ledger, now + 2000);
   assert.equal(s.windows[0]!.usedPct, 30);
   assert.equal(s.windows[0]!.tokensLeft, 700_000);
   assert.equal(s.stale, false);
-  const next = readManual(weekly, ledger, T('2026-11-09T10:00:00Z'));
+  const after = T('2026-11-09T10:00:00Z');
+  const next = readManual(weekly, ledger, after);
   assert.equal(next.windows[0]!.tokensLeft, 1_000_000);
   assert.equal(next.windows[0]!.resetsAt, '2026-11-16T09:00:00.000Z');
-  assert.equal(ledger.subscriptions.team!.spent, 0);
-  assert.throws(() => recordSpend(weekly, ledger, -1));
+  assert.equal(ledger.subscriptions.team!.spent, 300_000); // rollover is computed, not written, by a read
+  recordSpend(weekly, ledger, 1, after);
+  assert.deepEqual(ledger.subscriptions.team, { periodStart: '2026-11-09T09:00:00.000Z', spent: 1 });
+  for (const bad of [-1, Infinity, NaN]) assert.throws(() => recordSpend(weekly, ledger, bad));
 });
 
 test('percent budgets have no token count', () => {
@@ -47,11 +53,62 @@ test('percent budgets have no token count', () => {
   assert.equal(w.kind, 'monthly');
 });
 
-test('ledger round-trips and tolerates a missing or corrupt file', () => {
-  const file = join(mkdtempSync(join(tmpdir(), 'air-ledger-')), 'state', 'ledger.json');
-  assert.deepEqual(loadLedger(file), emptyLedger());
-  const ledger = emptyLedger();
-  recordSpend(weekly, ledger, 10);
-  saveLedger(file, ledger);
-  assert.deepEqual(loadLedger(file), ledger);
+const tmpLedger = () => join(mkdtempSync(join(tmpdir(), 'air-ledger-')), 'state', 'ledger.json');
+
+test('a missing ledger is fresh; spend persists under the lock', () => {
+  const file = tmpLedger();
+  assert.deepEqual(loadLedger(file), { ledger: emptyLedger() });
+  const s = spend(file, weekly, 10, T('2026-11-07T12:00:00Z'));
+  assert.equal(s.windows[0]!.tokensLeft, 999_990);
+  assert.equal(loadLedger(file).ledger!.subscriptions.team!.spent, 10);
+  assert.deepEqual(readdirSync(dirname(file)).sort(), ['ledger.json']); // no temp or lock files left
+});
+
+for (const [what, text, why] of [
+  ['invalid JSON', '{"version": 1, "subscriptions": {', /invalid JSON/],
+  ['a future version', JSON.stringify({ version: 2, subscriptions: {} }), /unsupported version 2/],
+  ['a bad entry', JSON.stringify({ version: 1, subscriptions: { team: { periodStart: 'x', spent: -5 } } }), /invalid contents/],
+] as const) {
+  test(`a ledger with ${what} is moved aside and reads as unknown until reset`, () => {
+    const file = tmpLedger();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, text);
+    const first = loadLedger(file);
+    assert.equal(first.ledger, null);
+    assert.match(first.error!, why);
+    const aside = readdirSync(dirname(file)).filter(n => n.startsWith('ledger.json.corrupt.'));
+    assert.equal(aside.length, 1);
+    assert.equal(readFileSync(join(dirname(file), aside[0]!), 'utf8'), text);
+    // still unknown once the bad file is gone: its spend is lost, not zero
+    const again = loadLedger(file);
+    assert.equal(again.ledger, null);
+    assert.match(again.error!, /reset-ledger/);
+    const s = readManual(weekly, again.ledger, T('2026-11-07T12:00:00Z'), again.error);
+    assert.equal(s.stale, true);
+    assert.deepEqual(s.windows.map(w => [w.usedPct, 'tokensLeft' in w]), [[null, false]]);
+    assert.throws(() => spend(file, weekly, 1), /reset-ledger/);
+    resetLedger(file);
+    assert.deepEqual(loadLedger(file), { ledger: emptyLedger() });
+  });
+}
+
+test('two processes spending 50 times each lose no update', async () => {
+  const file = tmpLedger();
+  const mod = pathToFileURL(join(import.meta.dirname, 'manual.ts')).href;
+  const start = Date.now() + 1000; // both children start spending at the same instant
+  const script = `const { spend } = await import(${JSON.stringify(mod)});
+    const cfg = ${JSON.stringify(weekly)};
+    while (Date.now() < ${start});
+    for (let i = 0; i < 50; i++) spend(${JSON.stringify(file)}, cfg, 1);`;
+  const child = () => new Promise<number | null>(resolve =>
+    spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: 'inherit' }).on('close', resolve));
+  assert.deepEqual(await Promise.all([child(), child()]), [0, 0]);
+  assert.equal(loadLedger(file).ledger!.subscriptions.team!.spent, 100);
+});
+
+test('a lock left by a dead process is broken', () => {
+  const file = tmpLedger();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(`${file}.lock`, '999999999 0');
+  assert.equal(spend(file, weekly, 3).windows[0]!.tokensLeft, 999_997);
 });

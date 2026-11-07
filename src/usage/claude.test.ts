@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseClaudeUsage, readClaude } from './claude.ts';
+import { cliEnv } from './run.ts';
 
 const fixtures = join(import.meta.dirname, 'fixtures');
 const recorded = join(fixtures, 'claude-usage.stream.jsonl');
@@ -37,10 +38,10 @@ function fakeEnv(extra: Record<string, string> = {}) {
 
 test('readClaude runs the CLI with the subscription config dir', async () => {
   const { env, seen } = fakeEnv();
-  const r = await readClaude({ bin: fake, env, configDir: '/home/v/.claude-work' });
+  const r = await readClaude({ bin: fake, env, configDir: '/nonexistent/claude-work' });
   assert.equal(r.windows.length, 3);
   assert.equal(r.note, undefined);
-  assert.deepEqual(readFileSync(seen, 'utf8').trim().split('\n'), ['/home/v/.claude-work --version', '/home/v/.claude-work -p']);
+  assert.deepEqual(readFileSync(seen, 'utf8').trim().split('\n'), ['/nonexistent/claude-work --version', '/nonexistent/claude-work -p']);
 });
 
 test('readClaude explains old CLIs, failures and empty reports', async () => {
@@ -50,4 +51,27 @@ test('readClaude explains old CLIs, failures and empty reports', async () => {
   writeFileSync(empty, '{"type":"result"}\n');
   assert.match((await readClaude({ bin: fake, env: fakeEnv({ FAKE_CLAUDE_OUTPUT: empty }).env })).note!, /no limits/);
   assert.match((await readClaude({ bin: '/nonexistent/claude' })).note!, /cannot run/);
+});
+
+test('a reading without the all-model weekly limit is incomplete', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'air-claude-test-'));
+  const only5h = join(dir, 'only5h.jsonl');
+  writeFileSync(only5h, JSON.stringify({ type: 'assistant', local_command_run: { command: 'usage' }, usage_report: { rate_limits: { limits: [
+    { kind: 'session', percent: 10, resets_at: '2026-11-07T21:00:00Z' },
+    { kind: 'weekly_renamed', percent: 99, resets_at: '2026-11-08T17:00:00Z' }] } } }) + '\n');
+  const r = await readClaude({ bin: fake, env: fakeEnv({ FAKE_CLAUDE_OUTPUT: only5h }).env });
+  assert.equal(r.incomplete, true);
+  assert.match(r.note!, /no weekly/);
+  assert.deepEqual(r.windows.map(w => w.name), ['five_hour']);
+});
+
+test('the CLI gets an allowlisted environment: no API keys or tokens', async () => {
+  const secrets = { GH_TOKEN: 'x', GITHUB_TOKEN: 'x', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', AWS_SECRET_ACCESS_KEY: 'x' };
+  const env = cliEnv({ ...secrets, PATH: '/bin', HOME: '/nonexistent/home', CLAUDE_CONFIG_DIR: '/nonexistent/c', UNRELATED: '1' });
+  assert.deepEqual(env, { PATH: '/bin', HOME: '/nonexistent/home', CLAUDE_CONFIG_DIR: '/nonexistent/c' });
+  // the default (no `env` option) filters process.env; the fake exits 3 on any leaked secret
+  const saved = { ...process.env };
+  Object.assign(process.env, secrets);
+  try { assert.equal((await readClaude({ bin: fake })).windows.length, 3); }
+  finally { for (const k of Object.keys(secrets)) if (!(k in saved)) delete process.env[k]; }
 });

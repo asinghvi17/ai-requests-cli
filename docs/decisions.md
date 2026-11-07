@@ -97,3 +97,6 @@ Alternatives considered:
 - 2026-11-07: usage readers adapt the factory's no-model-turn reads (`claude -p /usage` stream-json, Codex
   `account/rateLimits/read`), copying the logic rather than importing it. Readings are cached 5 min and are stale after 15 min, and stale
   counts as unknown. Plans with no meter use a manual budget plus a local spend ledger.
+- 2026-11-07: usage state files (cache, manual ledger) are written under an O_EXCL lockfile through unique temp
+  files. A ledger that cannot be trusted is moved aside, and its subscriptions read as unknown until an explicit
+  `air usage reset-ledger`, because lost spend must never look like an unused budget. Usage CLIs get an allowlisted environment.

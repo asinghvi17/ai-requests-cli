@@ -8,14 +8,15 @@ import { parseArgs } from 'node:util';
 import { cachedRead, effectiveWindows } from './cache.ts';
 import { readClaude } from './claude.ts';
 import { readCodex } from './codex.ts';
-import { loadLedger, readManual, recordSpend, saveLedger } from './manual.ts';
+import { loadLedger, readManual, resetLedger, spend } from './manual.ts';
 import type { Reading, Subscription, SubscriptionConfig, Window } from './types.ts';
 
 export type * from './types.ts';
 export { readClaude, parseClaudeUsage } from './claude.ts';
 export { readCodex, parseCodexRateLimits } from './codex.ts';
-export { readManual, recordSpend, loadLedger, saveLedger } from './manual.ts';
-export { cachedRead, effectiveWindows, headroomPct, REUSE_MS, STALE_MS } from './cache.ts';
+export { readManual, recordSpend, loadLedger, saveLedger, spend, resetLedger, type Ledger, type LedgerLoad } from './manual.ts';
+export { cachedRead, effectiveWindows, headroomPct, unknownWindows, REUSE_MS, STALE_MS } from './cache.ts';
+export { cliEnv, CLI_ENV_ALLOW } from './run.ts';
 
 const env = process.env;
 export const stateDir = () => env.AIR_STATE_DIR || join(env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'air');
@@ -58,10 +59,9 @@ export interface ReadOpts {
 export async function readSubscription(cfg: SubscriptionConfig, o: ReadOpts = {}): Promise<Subscription> {
   const dir = o.stateDir ?? stateDir();
   if (cfg.harness === 'manual') {
-    const file = ledgerFile(dir), ledger = loadLedger(file);
-    const sub = readManual(cfg, ledger, o.now);
-    saveLedger(file, ledger); // persists a rollover
-    return sub;
+    // A plain read never writes the ledger: rollover is computed, and persisted only with the next spend.
+    const { ledger, error } = loadLedger(ledgerFile(dir));
+    return readManual(cfg, ledger, o.now, error);
   }
   const read = o.readers?.[cfg.harness] ? () => o.readers![cfg.harness]!(cfg)
     : cfg.harness === 'claude' ? () => readClaude({ bin: cfg.bin, configDir: cfg.configDir })
@@ -110,7 +110,8 @@ export function formatTable(subs: Subscription[], now = Date.now()): string {
 }
 
 const USAGE = `usage: air usage [--refresh] [--json] [--config FILE] [--state-dir DIR]
-       air usage spend NAME AMOUNT   record spend against a manual subscription (its budget's unit)`;
+       air usage spend NAME AMOUNT   record spend against a manual subscription (its budget's unit)
+       air usage reset-ledger        start a fresh manual ledger after a corrupt one was moved aside`;
 
 /** `air usage`. Returns the exit code. */
 export async function usageCommand(argv: string[], io: { out?: (s: string) => void; err?: (s: string) => void } & ReadOpts = {}): Promise<number> {
@@ -128,12 +129,19 @@ export async function usageCommand(argv: string[], io: { out?: (s: string) => vo
   const [sub, ...rest] = a.positionals;
   if (sub === 'spend') {
     const cfg = cfgs.find(c => c.name === rest[0]);
-    const amount = Number(rest[1]);
-    if (!cfg || cfg.harness !== 'manual' || rest.length !== 2 || !(amount >= 0)) { err(`${USAGE}\n(NAME must be a manual subscription)`); return 2; }
-    const file = ledgerFile(dir), ledger = loadLedger(file);
-    recordSpend(cfg, ledger, amount, io.now);
-    saveLedger(file, ledger);
-    out(formatTable([readManual(cfg, ledger, io.now)], io.now));
+    const amount = /^\d+(\.\d+)?$/.test(rest[1] ?? '') ? Number(rest[1]) : NaN;
+    if (!cfg || cfg.harness !== 'manual' || rest.length !== 2 || !Number.isFinite(amount)) {
+      err(`${USAGE}\n(NAME must be a manual subscription; AMOUNT a finite number >= 0)`); return 2;
+    }
+    let after: Subscription;
+    try { after = spend(ledgerFile(dir), cfg, amount, io.now); } catch (e) { err((e as Error).message); return 1; }
+    out(formatTable([after], io.now));
+    return 0;
+  }
+  if (sub === 'reset-ledger') {
+    if (rest.length) { err(USAGE); return 2; }
+    resetLedger(ledgerFile(dir));
+    out(`fresh ledger at ${ledgerFile(dir)}`);
     return 0;
   }
   if (sub !== undefined) { err(USAGE); return 2; }

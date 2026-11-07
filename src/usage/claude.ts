@@ -4,7 +4,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { run } from './run.ts';
+import { cliEnv, run } from './run.ts';
 import type { Reading, Window } from './types.ts';
 
 export interface ClaudeOpts {
@@ -12,6 +12,7 @@ export interface ClaudeOpts {
   bin?: string;
   /** CLAUDE_CONFIG_DIR for a second login; default the CLI's own (~/.claude). */
   configDir?: string;
+  /** The exact environment for the CLI (configDir is set on top). Default: `cliEnv()`, an allowlisted copy of process.env. */
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
 }
@@ -50,7 +51,7 @@ export function parseClaudeUsage(text: string): Window[] {
 
 export async function readClaude(o: ClaudeOpts = {}): Promise<Reading> {
   const bin = o.bin ?? 'claude';
-  const env = { ...(o.env ?? process.env) };
+  const env = { ...(o.env ?? cliEnv()) };
   if (o.configDir) env.CLAUDE_CONFIG_DIR = o.configDir;
   // An empty cwd: no project's CLAUDE.md, hooks or MCP servers load into the read.
   const cwd = mkdtempSync(join(tmpdir(), 'air-claude-usage-'));
@@ -67,6 +68,9 @@ export async function readClaude(o: ClaudeOpts = {}): Promise<Reading> {
     try { text = await run(bin, CLAUDE_USAGE_ARGS, { env, cwd, timeoutMs: o.timeoutMs }); }
     catch { return { windows: [], note: 'claude /usage failed: network, login or timeout' }; }
     const windows = parseClaudeUsage(text);
-    return windows.length ? { windows } : { windows: [], note: 'claude /usage gave no limits (not logged in, API key, or schema change)' };
+    if (!windows.length) return { windows: [], note: 'claude /usage gave no limits (not logged in, API key, or schema change)' };
+    // The all-model week is what bounds a subscription; a 5-hour meter alone must not pass for a full reading.
+    return windows.some(w => w.name === 'seven_day') ? { windows }
+      : { windows, incomplete: true, note: 'incomplete: claude /usage reported no weekly (all-model) limit' };
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 }
