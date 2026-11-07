@@ -9,7 +9,9 @@ export const AGENT_CONFIG_VARS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME'];
 
 /** Never passed to a job, even when a caller asks. */
 const DENIED = [/^GH_/, /^GITHUB_/, /^AWS_/, /^SSH_/, /^GPG_/, /^GOOGLE_APPLICATION_CREDENTIALS$/, /^AZURE_/,
-  /^NPM_TOKEN$/, /^NODE_AUTH_TOKEN$/, /^TMUX/, /^LD_PRELOAD$/, /^NODE_OPTIONS$/];
+  /^NPM_TOKEN$/, /^NODE_AUTH_TOKEN$/, /^TMUX/, /^LD_PRELOAD$/, /^NODE_OPTIONS$/,
+  // Shell startup hooks: sh/bash source these on start, which would re-inject variables.
+  /^BASH_ENV$/, /^ENV$/];
 
 export function isDenied(name: string): boolean {
   return DENIED.some(re => re.test(name));
@@ -34,18 +36,16 @@ export function jobEnv(extra: Record<string, string> = {}, base: NodeJS.ProcessE
 }
 
 /**
- * The argv tmux runs directly (no shell, so the volunteer's default-shell does not matter):
- * `env -i K=V ... argv...`. With `promptFile`, its contents are appended as the last argument by a
- * `/bin/sh` wrapper, which keeps long prompts out of tmux's size-limited command messages.
+ * The argv tmux runs directly (no shell, so the volunteer's default-shell does not matter): `env -i K=V ... argv...`.
+ * stdin stays the pane's TTY, so the agent remains interactive.
  */
-export function jobArgv(argv: string[], env: Record<string, string>, promptFile?: string): string[] {
+export function jobArgv(argv: string[], env: Record<string, string>): string[] {
   const [cmd] = argv;
   if (!cmd) throw new Error('tmux: empty job argv');
   // env(1) would read a leading NAME=value word as an assignment.
   if (cmd.includes('=')) throw new Error(`tmux: job command may not contain '=': ${cmd}`);
-  const vars = Object.entries(env).map(([k, v]) => `${k}=${v}`);
-  const tail = promptFile === undefined ? argv : ['/bin/sh', '-c', 'p=$(cat -- "$0") || exit 1; exec "$@" "$p"', promptFile, ...argv];
-  return ['env', '-i', ...vars, ...tail];
+  for (const name of Object.keys(env)) if (isDenied(name)) throw new Error(`tmux: refusing to pass ${name} to a job`);
+  return ['env', '-i', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), ...argv];
 }
 
 /** Environment for the tmux client process, so a server we start does not hold the caller's secrets either. */

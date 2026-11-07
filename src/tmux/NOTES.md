@@ -9,4 +9,10 @@ Adapted (not imported) from factory `packages/coordinator-mcp/src/heads.ts`:
 - `new-window -d -P -F '#{window_id} #{pane_id}'` to learn the created ids; `pane_dead` checks before acting.
 - "no server running" / "error connecting" means no jobs, not an error.
 - `env -u ...` launch wrapper became `env -i` with an allowlist (heads.ts strips a few vars; we start from nothing).
-New here: placeholder + `respawn-pane -k` so `remain-on-exit` and tags exist before the agent runs; tmux started with a scrubbed client env.
+New here: one tmux invocation creates the window on a placeholder, tags it `@air_state=starting`, sets remain-on-exit,
+`respawn-pane -k`s the agent and marks it `running`. Chained commands default to the session's *current* pane, so each
+targets the new window by an exact unique temp name (`=air:=air-new-<nonce>`). Leftover `starting` panes are killed.
+
+Env scope: the scrub covers the inherited environment only (`env -i` + allowlist; `BASH_ENV`/`ENV` are denied). HOME
+is the volunteer's real one on purpose (the agent needs their login and config), so dotfiles their shell sources and
+files readable under HOME are the volunteer's responsibility. A filesystem sandbox is out of scope by design.
