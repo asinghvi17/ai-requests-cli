@@ -94,3 +94,6 @@ Alternatives considered:
   the Mach-O signature. Apple Silicon kills unsigned binaries, so a Mac (`codesign --sign -`) or `rcodesign`
   would be needed. Its advantage is that it ships the same runtime the tests use; `test:bun` covers that gap.
 - Running `src/cli/main.ts` on an installed Node 26 stays supported for development.
+- 2026-11-07: usage readers adapt the factory's no-model-turn reads (`claude -p /usage` stream-json, Codex
+  `account/rateLimits/read`), copying the logic rather than importing it. Readings are cached 5 min and are stale after 15 min, and stale
+  counts as unknown. Plans with no meter use a manual budget plus a local spend ledger.
