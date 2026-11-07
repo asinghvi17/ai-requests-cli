@@ -47,3 +47,50 @@ Append entries, newest last: date, decision, why.
   - Over-long comment reports are truncated, and the full text goes to an `air-artifacts` asset.
   - Flow lists accept a trailing comma.
   - The agent reads its prompt from `AIR_TASK.md`.
+
+## 2026-11-07: config is a TOML subset, parsed in-house (`src/toml.ts`)
+
+`~/.config/air/config.toml` (respecting `$XDG_CONFIG_HOME`) is hand-edited, and TOML comments and
+`[subscriptions.<name>]` / `[models.<harness>]` tables read better than JSON. With zero runtime dependencies
+we parse a subset ourselves (~200 lines): tables with dotted/quoted names, bare/quoted/dotted keys, basic and
+literal strings, integers, floats, booleans and multi-line arrays of scalars. Inline tables, arrays of tables,
+dates and multi-line strings are rejected with a line number rather than misread. Unknown config keys are
+errors so typos surface. A missing file is the all-defaults config.
+
+## 2026-11-07: `serve` starts agents by default; `--manual` waits for `air run`
+
+There is no `--auto`. `stop`, `start`, `pause` and `resume` are first-class commands. Model choice is by tier:
+`[models.<harness>]` maps `small`/`medium`/`large` to concrete model names (claude defaults: haiku, sonnet,
+opus; other harnesses must list all three).
+
+## 2026-11-07: packaging is `bun build --compile` (`npm run build`)
+
+**Decision: Bun (Anshul, 2026-11-07).** The main reason: Bun's macOS arm64 build, cross-compiled from Linux,
+comes out ad-hoc signed, so it runs on Apple Silicon without a signing step on a Mac. `npm run build` compiles
+`src/cli/main.ts` for linux-x64, linux-arm64, darwin-arm64 and darwin-x64 into `dist/` (`-- --target T` picks a
+target and can be repeated). bun is a pinned dev dependency, so no global install is needed. Bun downloads the
+runtime for each cross target into its install cache (`~/.bun/install/cache`, or `$BUN_INSTALL_CACHE_DIR` if
+set), which must be writable. Dev and `npm test` stay on plain Node 26. `npm run test:bun` runs the same test
+files under `bun test` (39/39 pass on bun 1.4.4), to catch runtime differences in what we ship.
+
+Spike numbers (Linux x64, Node v26.10.0, bun 1.4.4, skeleton CLI). Startup is the median of 30 warm runs of
+`air --version`; the first run of a freshly copied binary is in brackets.
+
+| Route | linux-x64 size (gzip) | linux-x64 startup | darwin-arm64 from Linux |
+| --- | --- | --- | --- |
+| `node src/cli/main.ts` (dev, type stripping) | n/a | 122 ms | n/a |
+| Node SEA + esbuild bundle | 150 MB (47 MB) | 67 ms (92 ms) | builds, 145 MB (44 MB); unsigned |
+| Node SEA from a `strip`ped node | 117 MB | 57 ms | not tried |
+| `bun build --compile` | 109 MB (52 MB) | 21 ms (23 ms) | builds, 89 MB (41 MB); ad-hoc signed |
+
+With `--minify`, the Bun outputs are 109 MB for linux-x64 and linux-arm64, 89 MB for darwin-arm64 and 98 MB for
+darwin-x64. Both macOS binaries carry `LC_CODE_SIGNATURE`. Neither has been run yet, because no Mac was
+available.
+
+Alternatives considered:
+- Node SEA (`node --build-sea`) works but needs a bundler: a SEA can't load modules other than builtins
+  (dynamic `import()` of embedded assets via `module.registerHooks` fails with `ERR_UNKNOWN_BUILTIN_MODULE`).
+  It cross-builds for macOS using SEA's `executable` field and the official Node tarball, but injection drops
+  the Mach-O signature. Apple Silicon kills unsigned binaries, so a Mac (`codesign --sign -`) or `rcodesign`
+  would be needed. Its advantage is that it ships the same runtime the tests use; `test:bun` covers that gap.
+- Running `src/cli/main.ts` on an installed Node 26 stays supported for development.

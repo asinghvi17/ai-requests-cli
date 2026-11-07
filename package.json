@@ -12,10 +12,13 @@
   },
   "scripts": {
     "typecheck": "node scripts/typecheck.ts",
-    "test": "npm run typecheck && node --test"
+    "test": "npm run typecheck && node --test",
+    "build": "node scripts/build.ts",
+    "test:bun": "bun test ./src"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
+    "bun": "^1.4.4",
     "typescript": "^5.9.3"
   }
 }
