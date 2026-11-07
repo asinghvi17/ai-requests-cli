@@ -35,6 +35,7 @@ test('routes the full command set', () => {
 
 test('every command routes through main(): stub exits 2, --help exits 0', async () => {
   for (const [name, cmd] of Object.entries(COMMANDS)) {
+    if (cmd.raw) continue; // implemented; parses its own argv (see below)
     const r = await call(name, ...cmd.args.map(() => '1'));
     assert.deepEqual(r, { code: 2, out: '', err: `air ${name}: not implemented yet\n` }, name);
     const help = await call(name, '--help');
@@ -44,6 +45,17 @@ test('every command routes through main(): stub exits 2, --help exits 0', async 
     assert.equal(short.out, help.out, name);
     if (cmd.args.length) assert.equal((await call(name)).code, 1, `${name} without ${cmd.args.join(' ')}`);
   }
+});
+
+test('usage is wired to usageCommand and prints its own help', async () => {
+  for (const flag of ['--help', '-h']) {
+    const r = await call('usage', flag);
+    assert.equal(r.code, 0);
+    assert.match(r.out, /^usage: air usage \[--refresh\] \[--json\] \[--config FILE\]/);
+    assert.match(r.out, /air usage spend NAME AMOUNT[^\n]*\n[^\n]*reset-ledger[^\n]*\n$/);
+    assert.equal(r.err, '');
+  }
+  assert.equal((await call('usage', '--bogus')).code, 2);
 });
 
 test('global -h, help and -v', async () => {

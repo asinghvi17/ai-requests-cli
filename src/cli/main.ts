@@ -2,14 +2,16 @@
 // air: the CLI entry. Routes argv to a command; unimplemented commands exit 2.
 import { ArgError, parseArgs, type FlagSpecs } from './args.ts';
 import { VERSION } from '../version.ts';
+import { usageCommand } from '../usage/index.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
-export type Invocation = { flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
+export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
 type Command = {
   usage: string;
   summary: string;
   args: string[]; // required positionals, by name
   flags: FlagSpecs;
+  raw?: boolean; // the command parses its own argv (and handles --help); the router passes it through
   run?: (inv: Invocation) => Promise<number> | number;
 };
 
@@ -31,7 +33,14 @@ export const COMMANDS: Record<string, Command> = {
   start: { usage: 'start ISSUE', summary: 'restart a stopped agent', args: ['ISSUE'], flags: {} },
   pause: { usage: 'pause', summary: 'stop claiming new requests', args: [], flags: {} },
   resume: { usage: 'resume', summary: 'resume claiming requests', args: [], flags: {} },
-  usage: { usage: 'usage', summary: 'show subscription quota', args: [], flags: {} },
+  usage: {
+    usage: 'usage [--refresh] [--json] [spend NAME AMOUNT | reset-ledger]',
+    summary: 'show subscription quota',
+    args: [],
+    flags: {},
+    raw: true,
+    run: ({ argv, io }) => usageCommand(argv, { out: (s) => io.out(`${s}\n`), err: (s) => io.err(`${s}\n`) }),
+  },
   release: { usage: 'release ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: {} },
   lint: { usage: 'lint [FILE]', summary: "check a request's front matter", args: [], flags: {} },
 };
@@ -57,6 +66,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
     io.err(`air: unknown command ${JSON.stringify(name)}\n${helpText()}`);
     return 1;
   }
+  if (cmd.raw && cmd.run) return cmd.run({ argv: rest, flags: {}, positionals: [], io });
   let parsed;
   try {
     parsed = parseArgs(rest, { ...HELP, ...cmd.flags });
@@ -77,7 +87,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
     io.err(`air ${name}: not implemented yet\n`);
     return 2;
   }
-  return cmd.run({ ...parsed, io });
+  return cmd.run({ ...parsed, argv: rest, io });
 }
 
 // Run when executed directly (node src/cli/main.ts); bundles for single binaries call run() themselves.
