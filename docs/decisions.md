@@ -63,9 +63,17 @@ There is no `--auto`. `stop`, `start`, `pause` and `resume` are first-class comm
 `[models.<harness>]` maps `small`/`medium`/`large` to concrete model names (claude defaults: haiku, sonnet,
 opus; other harnesses must list all three).
 
-## 2026-11-07: packaging is Node SEA over an esbuild bundle (`npm run build`)
+## 2026-11-07: packaging is `bun build --compile` (`npm run build`)
 
-Spike on Linux x64, Node v26.10.0, bun 1.4.4, with the skeleton CLI. Startup is the median of 30 warm runs of
+**Decision: Bun (Anshul, 2026-11-07).** The main reason: Bun's macOS arm64 build, cross-compiled from Linux,
+comes out ad-hoc signed, so it runs on Apple Silicon without a signing step on a Mac. `npm run build` compiles
+`src/cli/main.ts` for linux-x64, linux-arm64, darwin-arm64 and darwin-x64 into `dist/` (`-- --target T` picks a
+target and can be repeated). bun is a pinned dev dependency, so no global install is needed. Bun downloads the
+runtime for each cross target into its install cache (`~/.bun/install/cache`, or `$BUN_INSTALL_CACHE_DIR` if
+set), which must be writable. Dev and `npm test` stay on plain Node 26. `npm run test:bun` runs the same test
+files under `bun test` (39/39 pass on bun 1.4.4), to catch runtime differences in what we ship.
+
+Spike numbers (Linux x64, Node v26.10.0, bun 1.4.4, skeleton CLI). Startup is the median of 30 warm runs of
 `air --version`; the first run of a freshly copied binary is in brackets.
 
 | Route | linux-x64 size (gzip) | linux-x64 startup | darwin-arm64 from Linux |
@@ -75,14 +83,14 @@ Spike on Linux x64, Node v26.10.0, bun 1.4.4, with the skeleton CLI. Startup is 
 | Node SEA from a `strip`ped node | 117 MB | 57 ms | not tried |
 | `bun build --compile` | 109 MB (52 MB) | 21 ms (23 ms) | builds, 89 MB (41 MB); ad-hoc signed |
 
-- Node-only (no bundler) does not work: a SEA can't load modules other than builtins (dynamic `import()` of
-  embedded assets via `module.registerHooks` fails with `ERR_UNKNOWN_BUILTIN_MODULE`), so a single-file bundle is
-  needed. esbuild (dev dependency) does it in milliseconds.
-- Cross-building for macOS works with SEA's `executable` field and the official darwin-arm64 Node tarball
-  (checked against SHASUMS256.txt). Injection drops the Mach-O code signature, and Apple Silicon kills unsigned
-  binaries, so it needs `codesign --sign -` on a Mac, or `rcodesign` on Linux. Bun's cross-built Mach-O carries an
-  ad-hoc signature. Neither macOS binary was run, because no Mac was available.
-- Recommendation: **Node SEA + esbuild**. It runs the same runtime the tests run on (Node 26, as the project rules
-  require), and the startup difference doesn't matter for a long-lived server. macOS builds need an ad-hoc signing
-  step. Bun is the fallback if size or startup ever matters; it would mean testing against a second runtime.
-  Node 26 users can also skip binaries and run `src/cli/main.ts` directly.
+With `--minify`, the Bun outputs are 109 MB for linux-x64 and linux-arm64, 89 MB for darwin-arm64 and 98 MB for
+darwin-x64. Both macOS binaries carry `LC_CODE_SIGNATURE`. Neither has been run yet, because no Mac was
+available.
+
+Alternatives considered:
+- Node SEA (`node --build-sea`) works but needs a bundler: a SEA can't load modules other than builtins
+  (dynamic `import()` of embedded assets via `module.registerHooks` fails with `ERR_UNKNOWN_BUILTIN_MODULE`).
+  It cross-builds for macOS using SEA's `executable` field and the official Node tarball, but injection drops
+  the Mach-O signature. Apple Silicon kills unsigned binaries, so a Mac (`codesign --sign -`) or `rcodesign`
+  would be needed. Its advantage is that it ships the same runtime the tests use; `test:bun` covers that gap.
+- Running `src/cli/main.ts` on an installed Node 26 stays supported for development.

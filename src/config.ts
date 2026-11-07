@@ -98,7 +98,7 @@ export function parseConfig(src: string, home = homedir()): Config {
     const w = `models.${harness}`;
     const t = table(raw, w);
     only(t, TIERS, `${w}.`);
-    const tiers: Partial<Models> = { ...models[harness] };
+    const tiers: Partial<Models> = Object.hasOwn(models, harness) ? { ...models[harness] } : {};
     for (const tier of TIERS) {
       const m = str(t[tier], `${w}.${tier}`);
       if (m !== undefined) tiers[tier] = m;

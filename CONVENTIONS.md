@@ -21,4 +21,4 @@
 | `src/workspace/` | workspace setup and teardown |
 | `docs/decisions.md` | decision log: append, newest last |
 | `src/config.ts`, `src/toml.ts` | config loading and the TOML-subset parser |
-| `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (single executable into `dist/`, not committed) |
+| `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed) |

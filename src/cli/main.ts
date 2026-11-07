@@ -52,7 +52,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
     io.out(`${VERSION}\n`);
     return 0;
   }
-  const cmd = COMMANDS[name];
+  const cmd = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
   if (!cmd) {
     io.err(`air: unknown command ${JSON.stringify(name)}\n${helpText()}`);
     return 1;

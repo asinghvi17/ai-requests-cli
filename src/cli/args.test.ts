@@ -38,3 +38,19 @@ test('rejects unknown, duplicate, valueless and mis-valued flags', () => {
 test('a lone - is a positional and may be a value', () => {
   assert.deepEqual(parseArgs(['-', '--repo', '-'], specs), { flags: { repo: '-' }, positionals: ['-'] });
 });
+
+test('names shared with Object.prototype are unknown flags', () => {
+  for (const arg of ['--toString', '--constructor', '--__proto__', '--hasOwnProperty=x', '--valueOf']) {
+    assert.throws(() => parseArgs([arg], specs), (e: unknown) => e instanceof ArgError && /unknown flag/.test(e.message), arg);
+  }
+});
+
+test('a declared flag named like a prototype member works', () => {
+  assert.deepEqual(parseArgs(['--constructor', 'x'], { constructor: { type: 'string' } } as const).flags, { constructor: 'x' });
+});
+
+test('single-dash words are unknown flags, not positionals', () => {
+  for (const arg of ['-repo', '-manual', '-r=value', '-hh', '-1']) {
+    assert.throws(() => parseArgs([arg], specs), (e: unknown) => e instanceof ArgError && e.message === `unknown flag ${arg}`, arg);
+  }
+});

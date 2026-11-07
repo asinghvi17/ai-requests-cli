@@ -17,17 +17,36 @@ export class GhError extends Error {
   }
 }
 
+// Settles once. If gh exits before reading its input (stdin EPIPE), a failing gh still resolves so its own
+// error is mapped; a gh that exits 0 without reading the request body rejects.
 export const spawnGh: Runner = (args, input) =>
   new Promise((resolve, reject) => {
+    let settled = false;
+    const settle = (f: () => void) => {
+      if (!settled) {
+        settled = true;
+        f();
+      }
+    };
     const child = spawn('gh', args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' } });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
+    let stdinError: NodeJS.ErrnoException | undefined;
     child.stdout.on('data', (b: Buffer) => out.push(b));
     child.stderr.on('data', (b: Buffer) => err.push(b));
+    child.stdin.on('error', (e: NodeJS.ErrnoException) => { stdinError = e; });
     child.on('error', (e: NodeJS.ErrnoException) =>
-      reject(e.code === 'ENOENT' ? new GhError('missing_gh', 'gh not found on PATH: install the GitHub CLI and run `gh auth login`') : e));
-    child.on('close', (code) =>
-      resolve({ code: code ?? 1, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') }));
+      settle(() => reject(e.code === 'ENOENT' ? new GhError('missing_gh', 'gh not found on PATH: install the GitHub CLI and run `gh auth login`') : e)));
+    child.on('close', (code, signal) =>
+      settle(() => {
+        const result = { code: code ?? 1, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') };
+        if (stdinError && result.code === 0) {
+          reject(new GhError('other', `gh ${args.slice(0, 2).join(' ')} exited without reading its input (${stdinError.code ?? stdinError.message})`));
+        } else {
+          if (signal && !result.stderr) result.stderr = `gh killed by ${signal}`;
+          resolve(result);
+        }
+      }));
     child.stdin.end(input ?? '');
   });
 

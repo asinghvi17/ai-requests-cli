@@ -1,6 +1,8 @@
 // A TOML subset: `[table]` / `[a."b.c"]` headers, `key = value` with bare or quoted keys, basic and literal
 // strings, integers, floats, booleans, and (possibly multi-line) arrays of those scalars. No inline tables,
 // arrays of tables, dates or multi-line strings: those are rejected with a line number.
+// Tables have a null prototype and the keys __proto__, prototype and constructor are rejected, so a config
+// file can't reach Object.prototype or shadow it for later lookups.
 
 export type TomlScalar = string | number | boolean;
 export type TomlValue = TomlScalar | TomlScalar[] | TomlTable;
@@ -51,16 +53,19 @@ function basicString(c: Cursor): string {
   c.next(); // opening "
   let out = '';
   for (;;) {
+    const peek = c.peek();
+    if (peek === undefined || peek === '\n') c.fail('unterminated string');
     const ch = c.next();
-    if (ch === undefined || ch === '\n') c.fail('unterminated string');
     if (ch === '"') return out;
     if (ch !== '\\') { out += ch; continue; }
     const e = c.next();
     if (e === 'u' || e === 'U') {
       const hex = c.src.slice(c.pos, c.pos + (e === 'u' ? 4 : 8));
       if (!/^[0-9A-Fa-f]+$/.test(hex) || hex.length !== (e === 'u' ? 4 : 8)) c.fail('bad unicode escape');
+      const cp = parseInt(hex, 16);
+      if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) c.fail(`\\${e}${hex} is not a Unicode scalar value`);
       c.pos += hex.length;
-      out += String.fromCodePoint(parseInt(hex, 16));
+      out += String.fromCodePoint(cp);
     } else if (e !== undefined && e in ESCAPES) {
       out += ESCAPES[e];
     } else {
@@ -79,6 +84,8 @@ function literalString(c: Cursor): string {
   return s;
 }
 
+const RESERVED = new Set(['__proto__', 'prototype', 'constructor']);
+
 function key(c: Cursor): string[] {
   const parts: string[] = [];
   for (;;) {
@@ -92,6 +99,8 @@ function key(c: Cursor): string[] {
       if (c.pos === start) c.fail('expected a key');
       parts.push(c.src.slice(start, c.pos));
     }
+    const part = parts.at(-1)!;
+    if (RESERVED.has(part)) c.fail(`key ${JSON.stringify(part)} is not allowed`);
     c.skip();
     if (c.peek() !== '.') return parts;
     c.pos++;
@@ -142,15 +151,15 @@ function isTable(v: TomlValue | undefined): v is TomlTable {
 }
 
 export function parseToml(src: string): TomlTable {
-  const root: TomlTable = {};
+  const root: TomlTable = Object.create(null);
   const defined = new Set<TomlTable>(); // tables opened by a [header], to reject duplicates
   let current = root;
   const c = new Cursor(src);
   const descend = (from: TomlTable, path: string[], name: string): TomlTable => {
     let t = from;
     for (const part of path) {
-      const existing = t[part];
-      if (existing === undefined) t = t[part] = {};
+      const existing = Object.hasOwn(t, part) ? t[part] : undefined;
+      if (existing === undefined) t = t[part] = Object.create(null) as TomlTable;
       else if (isTable(existing)) t = existing;
       else c.fail(`${name} is not a table`);
     }
@@ -175,7 +184,7 @@ export function parseToml(src: string): TomlTable {
       c.skip();
       const last = path.pop()!;
       const table = descend(current, path, path.join('.'));
-      if (last in table) c.fail(`key ${[...path, last].join('.')} defined twice`);
+      if (Object.hasOwn(table, last)) c.fail(`key ${[...path, last].join('.')} defined twice`);
       table[last] = value(c);
     }
     c.endLine();

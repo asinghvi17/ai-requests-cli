@@ -33,6 +33,34 @@ test('routes the full command set', () => {
   ]);
 });
 
+test('every command routes through main(): stub exits 2, --help exits 0', async () => {
+  for (const [name, cmd] of Object.entries(COMMANDS)) {
+    const r = await call(name, ...cmd.args.map(() => '1'));
+    assert.deepEqual(r, { code: 2, out: '', err: `air ${name}: not implemented yet\n` }, name);
+    const help = await call(name, '--help');
+    assert.equal(help.code, 0, name);
+    assert.equal(help.out, `usage: air ${cmd.usage}\n  ${cmd.summary}\n`);
+    const short = await call(name, '-h');
+    assert.equal(short.out, help.out, name);
+    if (cmd.args.length) assert.equal((await call(name)).code, 1, `${name} without ${cmd.args.join(' ')}`);
+  }
+});
+
+test('global -h, help and -v', async () => {
+  const help = (await call('--help')).out;
+  assert.deepEqual(await call('-h'), { code: 0, out: help, err: '' });
+  assert.deepEqual(await call('help'), { code: 0, out: help, err: '' });
+  assert.deepEqual(await call('-v'), { code: 0, out: `${VERSION}\n`, err: '' });
+});
+
+test('names shared with Object.prototype are unknown commands', async () => {
+  for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
+    const r = await call(name);
+    assert.equal(r.code, 1, name);
+    assert.match(r.err, new RegExp(`^air: unknown command "${name}"`), name);
+  }
+});
+
 test('unimplemented commands exit 2', async () => {
   for (const argv of [['serve'], ['serve', '--manual'], ['claim', '12'], ['stop', '7'], ['pause'], ['lint', 'x.md']]) {
     const r = await call(...argv);

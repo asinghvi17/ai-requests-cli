@@ -74,6 +74,8 @@ test('validation errors', () => {
     ['[models.codex]\nsmall = "s"', /models.codex is missing medium, large/],
     ['[models.claude]\nhuge = "x"', /unknown key models.claude.huge/],
     ['a = ', /line 1/],
+    ['[models.toString]\nsmall = "s"', /models.toString is missing medium, large/],
+    ['[subscriptions.constructor]\nharness = "claude"', /is not allowed/],
   ];
   for (const [src, re] of cases) assert.throws(() => parseConfig(src, HOME), (e: unknown) => e instanceof ConfigError && re.test(e.message), src);
 });

@@ -1,5 +1,6 @@
 // Hand-rolled argv parser. Flags are declared up front so `--flag value` and boolean flags are unambiguous.
 // Supports `--name value`, `--name=value`, boolean `--name`, `-h`-style short aliases and `--` to end flags.
+// Any other argument starting with `-` (`-repo`, `-r=x`) is an unknown flag; a lone `-` is a positional (stdin).
 
 export type FlagSpec = { type: 'string' | 'boolean'; short?: string; multiple?: boolean };
 export type FlagSpecs = Record<string, FlagSpec>;
@@ -18,7 +19,7 @@ export function parseArgs(argv: readonly string[], specs: FlagSpecs): Parsed {
     if (spec.multiple) {
       const prev = flags[name];
       flags[name] = [...(Array.isArray(prev) ? prev : []), String(value)];
-    } else if (name in flags) {
+    } else if (Object.hasOwn(flags, name)) {
       throw new ArgError(`--${name} given more than once`);
     } else {
       flags[name] = value;
@@ -37,9 +38,9 @@ export function parseArgs(argv: readonly string[], specs: FlagSpecs): Parsed {
       const eq = arg.indexOf('=');
       name = eq < 0 ? arg.slice(2) : arg.slice(2, eq);
       inline = eq < 0 ? undefined : arg.slice(eq + 1);
-      if (!(name in specs)) throw new ArgError(`unknown flag --${name}`);
-    } else if (arg.length === 2 && arg[0] === '-' && arg !== '-') {
-      name = byShort.get(arg[1]!);
+      if (!Object.hasOwn(specs, name)) throw new ArgError(`unknown flag --${name}`);
+    } else if (arg.startsWith('-') && arg !== '-') {
+      name = arg.length === 2 ? byShort.get(arg[1]!) : undefined;
       if (!name) throw new ArgError(`unknown flag ${arg}`);
     } else {
       positionals.push(arg);
