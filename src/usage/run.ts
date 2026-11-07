@@ -15,6 +15,8 @@ export const command = (bin: string): [string, ...string[]] => /\.[cm]?[tj]s$/.t
 export const CLI_ENV_ALLOW = ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM',
   'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
   'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'SECURITYSESSIONID', // macOS: the security session that authorizes Keychain access for the CLI's stored login
+  'DBUS_SESSION_BUS_ADDRESS', // Linux: how the CLI reaches the Secret Service (keyring) for its stored login
   'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy',
   'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'CODEX_CA_CERTIFICATE'];
 

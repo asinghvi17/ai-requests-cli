@@ -65,6 +65,11 @@ test('a reading without the all-model weekly limit is incomplete', async () => {
   assert.deepEqual(r.windows.map(w => w.name), ['five_hour']);
 });
 
+test('keychain/keyring session variables pass through', () => {
+  const keyring = { SECURITYSESSIONID: '186a7', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/user/1000/bus' };
+  assert.deepEqual(cliEnv({ ...keyring, GH_TOKEN: 'x' }), keyring);
+});
+
 test('the CLI gets an allowlisted environment: no API keys or tokens', async () => {
   const secrets = { GH_TOKEN: 'x', GITHUB_TOKEN: 'x', OPENAI_API_KEY: 'x', ANTHROPIC_API_KEY: 'x', AWS_SECRET_ACCESS_KEY: 'x' };
   const env = cliEnv({ ...secrets, PATH: '/bin', HOME: '/nonexistent/home', CLAUDE_CONFIG_DIR: '/nonexistent/c', UNRELATED: '1' });
