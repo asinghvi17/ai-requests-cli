@@ -4,7 +4,7 @@ effort: S
 harness: [any]
 model: large
 context:
-  url: https://github.com/user-attachments/files/18234417/onboarding-interviews.zip
+  url: https://github.com/acme-analytics/ai-requests/releases/download/air-context/onboarding-interviews.zip
   sha256: b430babae81f6615121c5d27f155ced86328a6e8ea3a14d29733e6a8a662e12f
   bytes: 1843302
 deliver: comment

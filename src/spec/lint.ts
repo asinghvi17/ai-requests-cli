@@ -83,23 +83,18 @@ function readSections(lines: string[], start: number, errors: Diagnostic[], warn
       if (f && f[1]![0] === fence.char && f[1]!.length >= fence.len && line.trim() === f[1]) fence = undefined;
       continue;
     }
-    if (inComment) {
-      if (line.includes('-->')) inComment = false;
-      continue;
-    }
+    const startedInComment = inComment;
+    inComment = endsInComment(line, inComment);
+    if (startedInComment) continue;
     if (f) {
       fence = { char: f[1]![0]!, len: f[1]!.length };
-      continue;
-    }
-    if (/^ {0,3}<!--/.test(line) && !line.includes('-->')) {
-      inComment = true;
       continue;
     }
     const h = /^ {0,3}(#{1,2})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
     if (!h) continue;
     finish(i);
     if (h[1] === '#') continue;
-    const title = h[2]!.trim();
+    const title = h[2]!.replace(/<!--.*$/, '').trim();
     const name = SECTIONS.find((s) => s.toLowerCase() === title.toLowerCase());
     if (!name) {
       warnings.push({ line: i + 1, code: 'section', message: `unknown section \`## ${title}\` (known: ${SECTIONS.join(', ')}); its text still reaches the agent` });
@@ -113,6 +108,24 @@ function readSections(lines: string[], start: number, errors: Diagnostic[], warn
   }
   finish(lines.length);
   return sections;
+}
+
+/** Whether an HTML comment is still open at the end of `line`, given whether one was open at its start. */
+function endsInComment(line: string, open: boolean): boolean {
+  let i = 0;
+  for (;;) {
+    if (open) {
+      const close = line.indexOf('-->', i);
+      if (close < 0) return true;
+      i = close + 3;
+      open = false;
+    } else {
+      const start = line.indexOf('<!--', i);
+      if (start < 0) return false;
+      i = start + 4;
+      open = true;
+    }
+  }
 }
 
 function stripComments(text: string): string {

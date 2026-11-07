@@ -13,13 +13,15 @@ deliver: comment  # comment | pr (needs repo) | artifact (files left in $AIR_OUT
 # repo:
 #   url: https://github.com/org/repo.git
 #   ref: main             # branch, tag or commit; must be a branch for deliver: pr
-# context:                # zip of inputs, attached to this issue or a release asset
-#   url: https://github.com/user-attachments/files/.../inputs.zip
+# context:                # zip of inputs, uploaded to this repo's air-context release
+#   url: https://github.com/org/requests/releases/download/air-context/inputs.zip
 #   sha256: <output of sha256sum inputs.zip>
 #   bytes: <size in bytes>
+#   expires: 2026-12-31   # optional; default 14 days after this issue closes
 # setup:                  # run in repo/ (or the workspace) before the agent starts
 #   - "make deps"
 # check: "make test"      # exit 0 = setup worked
+#                         # quote values YAML would read as numbers/booleans: ref: "1.10"
 # deadline: 2026-12-01
 # timeout: 4h             # 1m to 24h
 ---

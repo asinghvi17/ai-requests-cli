@@ -63,17 +63,40 @@ export interface MarkedComment {
   /** GitHub comment id; ids increase with creation time. */
   id: number;
   body: string;
+  /** GitHub `created_at` / `updated_at`. A comment whose two differ was edited, and its markers don't count. */
+  createdAt: string;
+  updatedAt: string;
+  /** The comment's author has write access to the requests repo (see `associationTrust`). */
+  trusted: boolean;
 }
 
 /**
- * The claim that currently holds the issue: the earliest claim after the latest release, where a
- * release only counts if it names the nonce of the claim it ends. Undefined if the issue is free.
+ * What GitHub's `author_association` says about write access. `OWNER` is conclusive. `MEMBER` (org
+ * member) and `COLLABORATOR` (may be read-only) are ambiguous: check
+ * `gh api repos/{owner}/{repo}/collaborators/{login}/permission` for write, maintain or admin.
+ * Anything else is untrusted.
+ */
+export function associationTrust(association: string): 'trusted' | 'check' | 'untrusted' {
+  if (association === 'OWNER') return 'trusted';
+  if (association === 'MEMBER' || association === 'COLLABORATOR') return 'check';
+  return 'untrusted';
+}
+
+/** Markers a server may act on: from trusted authors, in comments that were never edited. */
+export function countedMarkers(c: MarkedComment): Marker[] {
+  if (!c.trusted || c.createdAt !== c.updatedAt) return [];
+  return parseMarkers(c.body);
+}
+
+/**
+ * The claim that currently holds the issue: the earliest counted claim after the latest release,
+ * where a release only counts if it names the host and nonce of the claim it ends. Undefined if free.
  */
 export function currentClaim(comments: MarkedComment[]): (Marker & { commentId: number }) | undefined {
   const sorted = [...comments].sort((a, b) => a.id - b.id);
   let holder: (Marker & { commentId: number }) | undefined;
   for (const c of sorted) {
-    for (const m of parseMarkers(c.body)) {
+    for (const m of countedMarkers(c)) {
       if (m.kind === 'claim' && !holder) holder = { ...m, commentId: c.id };
       else if (m.kind === 'release' && holder && m.nonce === holder.nonce && m.host === holder.host) holder = undefined;
     }

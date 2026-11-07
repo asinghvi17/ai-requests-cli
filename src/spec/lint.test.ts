@@ -65,6 +65,7 @@ test('examples parse to the expected requests', () => {
   assert.equal(research.context?.bytes, 1843302);
   assert.equal(research.timeoutMinutes, 90);
   assert.equal(lint(read('spec/examples/data-cleanup.md')).request!.check, '.venv/bin/python -c "import pandas, pyarrow"');
+  assert.equal(lint(read('spec/examples/data-cleanup.md')).request!.context!.expires, '2026-12-31');
   assert.equal(lint(read('spec/examples/code-review.md')).request!.repo!.ref, 'feature/proration-v2');
 });
 
@@ -269,4 +270,85 @@ test('free text cannot change parsed fields', () => {
   const a = lint(body(MIN)).request;
   const b = lint(body(MIN, SECTIONS + '\n## Notes\n\neffort: XL\ndeliver: pr\n---\nair: 1\n')).request;
   assert.deepEqual(b, a);
+});
+
+test('unquoted YAML bools, nulls and numbers are rejected in string fields', () => {
+  const ctx = SECTIONS + '\n## Context\n\nThe repo.\n';
+  const repo = (ref: string) => `${MIN}\nrepo:\n  url: https://github.com/o/r.git\n  ref: ${ref}`;
+  const e = oneError(body(repo('1.10'), ctx), /`repo.ref`: YAML reads unquoted `1.10` as a number; quote it: "1.10"/);
+  assert.equal(e.line, 7);
+  assert.equal(lint(body(repo('"1.10"'), ctx)).request!.repo!.ref, '1.10');
+  oneError(body(`${MIN}\ncheck: 100`), /`check`: YAML reads unquoted `100` as a number/);
+  oneError(body(`${MIN}\nsetup: [true]`), /`setup`: YAML reads unquoted `true` as a boolean/);
+  oneError(body(`${MIN}\nsetup:\n  - ~`), /as a null/);
+  for (const v of ['null', 'False', '-3', '+1.5', '.5', '1e3', '2.5E-2', '0x1F', '0o17', '.inf', '-.Inf', '.NaN']) {
+    assert.ok(codes(body(`${MIN}\ncheck: ${v}`)).includes('type'), v);
+  }
+  // not numbers in YAML 1.2: strings, accepted as-is
+  for (const v of ['v1.10', '1.2.3', 'yes', 'on', '0b101', '1_000', '12:30', 'True!']) {
+    assert.equal(lint(body(`${MIN}\ncheck: ${v}`)).request?.check, v, v);
+  }
+  // enum and duration fields report only the quoting problem, once
+  oneError(body(`${MIN}\ntimeout: 90`), /`timeout`: YAML reads unquoted `90` as a number/);
+  // integer fields stay unquoted
+  assert.equal(lint(body(MIN)).ok, true);
+});
+
+test('comments need whitespace before #', () => {
+  assert.equal(lint(body(`${MIN}\ncheck: make#target`)).request?.check, 'make#target');
+  assert.equal(lint(body(`${MIN}\ncheck: make #target`)).request?.check, 'make');
+  assert.equal(lint(body(`${MIN}\ncheck: "make" # c`)).request?.check, 'make');
+  oneError(body(`${MIN}\ncheck: "make"#c`), /comments need a space before `#`/);
+  oneError(body(`${MIN}\nsetup: [a, b]#c`), /comments need a space before `#`/);
+  assert.deepEqual(lint(body(`${MIN}\nsetup: [a, b] # c`)).request?.setup, ['a', 'b']);
+  oneError(body(`${MIN}\nsetup:\n  - # nothing`), /empty list item/);
+  oneError(body('air: 0 #x\neffort: S\ndeliver: comment'.replace('0 #x', '1#x')), /unquoted integer/);
+});
+
+test('URLs are limited to a conservative character set', () => {
+  const ctx = SECTIONS + '\n## Context\n\nThe repo.\n';
+  const repo = (url: string) => body(`${MIN}\nrepo:\n  url: ${url}\n  ref: main`, ctx);
+  assert.equal(lint(repo('https://github.com/o/r.git')).ok, true);
+  assert.equal(lint(repo('https://ghe.example.com:8443/team/repo-1.git')).ok, true);
+  for (const bad of [
+    '"https://github.com/o/r.git; rm -rf ~"',
+    '"https://github.com/o/r.git x"',
+    'https://github.com/o/$(id).git',
+    "\"https://github.com/o/r'.git\"",
+    'https://github.com/o/r.git&x',
+    'https://github.com/o/r.git#frag',
+    'https://user@github.com/o/r.git',
+    'https://github.com/o/r`id`.git',
+    'http://github.com/o/r.git',
+    'ext::sh -c id',
+  ]) {
+    assert.ok(lint(repo(bad)).errors.some((e) => /`repo.url` must be an https:\/\/ URL/.test(e.message)), bad);
+  }
+});
+
+test('deadline accepts RFC 3339 fractional seconds; context.expires is a date', () => {
+  const ok = (v: string) => lint(body(`${MIN}\ndeadline: ${v}`));
+  assert.equal(ok('2026-12-01T17:30:00.5Z').request?.deadline, '2026-12-01T17:30:00.5Z');
+  assert.equal(ok('2026-12-01T17:30:00.123456-05:00').ok, true);
+  assert.equal(ok('2026-12-01T17:30.5Z').ok, false);
+  assert.equal(ok('2026-12-01T17:30:00.Z').ok, false);
+  assert.equal(ok('2026-12-01T17:30:00+25:00').ok, false);
+
+  const ctx = (extra: string) =>
+    body(`${MIN}\ncontext:\n  url: https://example.test/a.zip\n  sha256: ${'a'.repeat(64)}\n  bytes: 10${extra}`, SECTIONS + '\n## Context\n\nA zip.\n');
+  assert.equal(lint(ctx('')).request?.context?.expires, undefined);
+  assert.equal(lint(ctx('\n  expires: 2026-12-31')).request?.context?.expires, '2026-12-31');
+  oneError(ctx('\n  expires: 2026-13-01'), /`context.expires` must be a date/);
+  oneError(ctx('\n  expires: 2026-12-31T00:00:00Z'), /`context.expires` must be a date/);
+});
+
+test('an HTML comment opened mid-line hides headings until it closes', () => {
+  const b = body(MIN, '\n## Task\n\nDo it. <!-- draft:\n## Done when\n- hidden\n-->\n\n## Done when\n\n- shown\n');
+  const r = lint(b);
+  assert.equal(r.ok, true, JSON.stringify(r.errors));
+  assert.equal(r.sections['Done when']!.text, '- shown');
+  // closed on the same line: no effect
+  assert.equal(lint(body(MIN, '\n## Task\n\nA <!-- x --> b\n\n## Done when\n\n- y\n')).ok, true);
+  // reopened after a close on the same line
+  oneError(body(MIN, '\n## Task\n\nA <!-- x --> b <!--\n## Done when\n- y\n'), /missing `## Done when`/);
 });

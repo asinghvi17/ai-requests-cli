@@ -4,9 +4,10 @@ effort: M
 harness: [any]
 model: medium
 context:
-  url: https://github.com/acme-analytics/ai-requests/releases/download/inputs-2026-11/sensor-exports.zip
+  url: https://github.com/acme-analytics/ai-requests/releases/download/air-context/sensor-exports-2026-q3.zip
   sha256: 09c551c9034775c6f51f9d5a3b6134c70d50c04bf4d745d704a116fbabff2706
   bytes: 48211960
+  expires: 2026-12-31
 setup:
   - python3 -m venv .venv
   - .venv/bin/pip install --quiet pandas==2.2.3 pyarrow==18.1.0

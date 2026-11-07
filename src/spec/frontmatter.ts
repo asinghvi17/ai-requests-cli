@@ -29,6 +29,8 @@ export interface ContextZip {
   url: string;
   sha256: string;
   bytes: number;
+  /** YYYY-MM-DD after which `air sweep` may delete the zip. Absent: 14 days after the issue closes. */
+  expires?: string;
 }
 
 export interface RepoRef {
@@ -157,7 +159,7 @@ export function parseYamlSubset(lines: string[], firstLine: number): { entries: 
       owner.childIndent = indent;
       const list = owner.entry.value as List;
       const item = text.slice(1).trimStart();
-      if (item === '') {
+      if (item === '' || item.startsWith('#')) {
         err(lineNo, 'empty list item');
         continue;
       }
@@ -243,6 +245,11 @@ function stripComment(text: string): string {
   return (at < 0 ? text : text.slice(0, at)).trim();
 }
 
+/** YAML 1.2: a comment after a value must be separated from it by whitespace. */
+function isCommentOrEmpty(tail: string): boolean {
+  return tail.trim() === '' || /^\s+#/.test(tail);
+}
+
 const PLAIN_BAD_START = /^[[\]{},&*!|>%@`"'#]|^[-?:](\s|$)/;
 
 /**
@@ -252,9 +259,9 @@ const PLAIN_BAD_START = /^[[\]{},&*!|>%@`"'#]|^[-?:](\s|$)/;
 function parseScalar(text: string, line: number, flow: boolean, errors: Diagnostic[]): Scalar | undefined {
   const r = readScalar(text, line, flow, errors);
   if (!r) return undefined;
-  const tail = text.slice(r.end).trim();
-  if (tail !== '' && !tail.startsWith('#')) {
-    errors.push({ line, code: 'yaml', message: `unexpected text after value: \`${tail}\`` });
+  const tail = text.slice(r.end);
+  if (!isCommentOrEmpty(tail)) {
+    errors.push({ line, code: 'yaml', message: `unexpected text after value: \`${tail.trim()}\` (comments need a space before \`#\`)` });
     return undefined;
   }
   return r.scalar;
@@ -348,9 +355,9 @@ function parseFlowList(text: string, line: number, errors: Diagnostic[]): List |
       return undefined;
     }
   }
-  const tail = text.slice(i).trim();
-  if (tail !== '' && !tail.startsWith('#')) {
-    errors.push({ line, code: 'yaml', message: `unexpected text after \`]\`: \`${tail}\`` });
+  const tail = text.slice(i);
+  if (!isCommentOrEmpty(tail)) {
+    errors.push({ line, code: 'yaml', message: `unexpected text after \`]\`: \`${tail.trim()}\` (comments need a space before \`#\`)` });
     return undefined;
   }
   return { kind: 'list', items, line };
@@ -383,7 +390,7 @@ export function parseFrontMatter(body: string): FrontMatterResult {
 
   // Version gate first: a newer spec may use syntax or fields this parser doesn't know.
   for (let i = 0; i < yaml.length; i++) {
-    const v = /^air:\s*["']?(\d+)["']?\s*(#.*)?$/.exec(yaml[i]!.trimEnd());
+    const v = /^air:\s*["']?(\d+)["']?(\s+#.*)?$/.exec(yaml[i]!.trimEnd());
     if (v && Number(v[1]) > SPEC_VERSION) {
       return { ok: false, lines, bodyStart, errors: [versionError(open + 2 + i, Number(v[1]))] };
     }
@@ -419,6 +426,21 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
       err(e.keyLine, 'unknown-key', `unknown key \`${e.key}\`${near ? ` (did you mean \`${near}\`?)` : ''}`);
     }
   }
+
+  // Unquoted values a YAML 1.2 parser would read as bool, null or a number must be quoted in string
+  // fields. Other errors on those lines would only repeat the problem, so they're dropped below.
+  const nonStringLines = new Set<number>();
+  const visit = (path: string, v: Value) => {
+    if (v.kind === 'map') for (const sub of v.entries.values()) visit(`${path}.${sub.key}`, sub.value);
+    for (const sc of v.kind === 'list' ? v.items : v.kind === 'scalar' ? [v] : []) {
+      const kind = sc.quoted || INTEGER_FIELDS.includes(path) ? undefined : yamlNonStringKind(sc.value);
+      if (!kind) continue;
+      err(sc.line, 'type', `\`${path}\`: YAML reads unquoted \`${sc.value}\` as a ${kind}; quote it: "${sc.value}"`);
+      nonStringLines.add(sc.line);
+    }
+  };
+  for (const e of entries.values()) visit(e.key, e.value);
+  const firstNonString = errors.length;
 
   const get = (k: string) => entries.get(k);
   const required = (k: string): Entry | undefined => {
@@ -490,17 +512,22 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   let context: ContextZip | undefined;
   const contextE = get('context');
   if (contextE) {
-    const m = mapFields(contextE, ['url', 'sha256', 'bytes'], err);
+    const m = mapFields(contextE, ['url', 'sha256', 'bytes'], ['expires'], err);
     if (m) {
       const url = m.get('url');
       const sha = m.get('sha256');
       const bytes = m.get('bytes');
+      const expires = m.get('expires');
       const before = errors.length;
-      if (url && !isHttpsUrl(url.value)) err(url.line, 'value', '`context.url` must be an https:// URL');
+      if (url && !isSafeUrl(url.value)) err(url.line, 'value', URL_MESSAGE('context.url'));
       if (sha && !/^[0-9a-f]{64}$/.test(sha.value)) err(sha.line, 'value', '`context.sha256` must be 64 lowercase hex digits (the output of `sha256sum`)');
       if (bytes && (bytes.quoted || !/^[1-9]\d*$/.test(bytes.value))) err(bytes.line, 'type', '`context.bytes` must be a positive unquoted integer');
       else if (bytes && Number(bytes.value) > MAX_CONTEXT_BYTES) err(bytes.line, 'value', '`context.bytes` exceeds the 2 GiB limit');
-      if (errors.length === before && url && sha && bytes) context = { url: url.value, sha256: sha.value, bytes: Number(bytes.value) };
+      if (expires && !isDate(expires.value)) err(expires.line, 'value', '`context.expires` must be a date like 2026-12-31');
+      if (errors.length === before && url && sha && bytes) {
+        context = { url: url.value, sha256: sha.value, bytes: Number(bytes.value) };
+        if (expires) context.expires = expires.value;
+      }
     }
   }
 
@@ -508,12 +535,12 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   let repo: RepoRef | undefined;
   const repoE = get('repo');
   if (repoE) {
-    const m = mapFields(repoE, ['url', 'ref'], err);
+    const m = mapFields(repoE, ['url', 'ref'], [], err);
     if (m) {
       const url = m.get('url');
       const ref = m.get('ref');
       const before = errors.length;
-      if (url && !isHttpsUrl(url.value)) err(url.line, 'value', '`repo.url` must be an https:// clone URL');
+      if (url && !isSafeUrl(url.value)) err(url.line, 'value', URL_MESSAGE('repo.url'));
       if (ref && !isGitRef(ref.value)) err(ref.line, 'value', `\`repo.ref\` is not a valid branch, tag or commit: \`${ref.value}\``);
       if (errors.length === before && url && ref) repo = { url: url.value, ref: ref.value };
     }
@@ -553,7 +580,7 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   const deadlineE = get('deadline');
   if (deadlineE) {
     const s = scalar(deadlineE);
-    if (s && !isDeadline(s.value)) err(s.line, 'value', '`deadline` must be a date (2026-11-20) or a date-time with offset (2026-11-20T17:00:00Z)');
+    if (s && !isDeadline(s.value)) err(s.line, 'value', '`deadline` must be a date (2026-11-20) or a date-time with offset (2026-11-20T17:00:00Z, 2026-11-20T17:00:00.5+01:00)');
     else if (s) deadline = s.value;
   }
 
@@ -570,6 +597,10 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
     }
   }
 
+  if (nonStringLines.size > 0) {
+    const later = errors.splice(firstNonString).filter((d) => !nonStringLines.has(d.line));
+    errors.push(...later);
+  }
   if (air === undefined || !effort || !deliver || errors.length > 0) return undefined;
   const req: Request = { air, effort, harness, model, setup, deliver, timeoutMinutes };
   if (context) req.context = context;
@@ -579,14 +610,16 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   return req;
 }
 
-/** Checks a nested map has exactly `keys`, all scalars. Returns them, or undefined if not a map. */
+/** Checks a nested map has all `required` keys, optionally `optional` ones, all scalars. */
 function mapFields(
   e: Entry,
-  keys: readonly string[],
+  required: readonly string[],
+  optional: readonly string[],
   err: (line: number, code: DiagnosticCode, message: string) => void,
 ): Map<string, Scalar> | undefined {
+  const keys = [...required, ...optional];
   if (e.value.kind !== 'map') {
-    err(e.keyLine, 'type', `\`${e.key}\` must be a map with ${keys.map((k) => `\`${k}\``).join(', ')} on indented lines`);
+    err(e.keyLine, 'type', `\`${e.key}\` must be a map with ${required.map((k) => `\`${k}\``).join(', ')} on indented lines`);
     return undefined;
   }
   const out = new Map<string, Scalar>();
@@ -597,12 +630,32 @@ function mapFields(
     } else if (sub.value.kind !== 'scalar') err(sub.keyLine, 'type', `\`${e.key}.${sub.key}\` must be a single value`);
     else out.set(sub.key, sub.value);
   }
-  for (const k of keys) if (!e.value.entries.has(k)) err(e.keyLine, 'missing', `\`${e.key}\` is missing \`${k}\``);
+  for (const k of required) if (!e.value.entries.has(k)) err(e.keyLine, 'missing', `\`${e.key}\` is missing \`${k}\``);
   return out;
 }
 
-function isHttpsUrl(s: string): boolean {
-  if (!s.startsWith('https://')) return false;
+/** Fields whose values are integers rather than strings. */
+const INTEGER_FIELDS = ['air', 'context.bytes'];
+
+/** What a YAML 1.2 (core schema) parser makes of a plain scalar, if not a string. */
+export function yamlNonStringKind(v: string): 'null' | 'boolean' | 'number' | undefined {
+  if (/^(?:null|Null|NULL|~)$/.test(v)) return 'null';
+  if (/^(?:true|True|TRUE|false|False|FALSE)$/.test(v)) return 'boolean';
+  if (/^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+)$/.test(v)) return 'number';
+  if (/^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?$/.test(v)) return 'number';
+  if (/^(?:[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$/.test(v)) return 'number';
+  return undefined;
+}
+
+const URL_MESSAGE = (field: string) =>
+  `\`${field}\` must be an https:// URL using only letters, digits and \`. - _ ~ % + = @ : , / ?\` (no spaces, quotes, \`&\`, \`;\`, \`$\` or other shell characters)`;
+
+/**
+ * https URLs from a conservative character set: no whitespace, quotes or shell metacharacters, no
+ * userinfo, no fragment. Servers still pass URLs to git/curl as argv, never through a shell.
+ */
+function isSafeUrl(s: string): boolean {
+  if (!/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:\/[A-Za-z0-9._~%+=@:,\/?-]*)?$/.test(s)) return false;
   try {
     return new URL(s).hostname !== '';
   } catch {
@@ -615,13 +668,20 @@ function isGitRef(s: string): boolean {
   return /^[A-Za-z0-9_][A-Za-z0-9._/+-]*$/.test(s) && !s.includes('..') && !s.includes('//') && !s.endsWith('/') && !s.endsWith('.lock') && !s.endsWith('.');
 }
 
-function isDeadline(s: string): boolean {
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:\d{2}))?$/.exec(s);
+function isDate(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (!m) return false;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
   const date = new Date(Date.UTC(y, mo - 1, d));
-  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== mo - 1 || date.getUTCDate() !== d) return false;
-  if (m[4] !== undefined && (Number(m[4]) > 23 || Number(m[5]) > 59 || Number(m[6] ?? 0) > 59)) return false;
+  return date.getUTCFullYear() === y && date.getUTCMonth() === mo - 1 && date.getUTCDate() === d;
+}
+
+/** YYYY-MM-DD, or RFC 3339 date-time (seconds and fraction optional) with Z or an offset. */
+function isDeadline(s: string): boolean {
+  const m = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2})))?$/.exec(s);
+  if (!m || !isDate(m[1]!)) return false;
+  if (m[2] !== undefined && (Number(m[2]) > 23 || Number(m[3]) > 59 || Number(m[4] ?? 0) > 59)) return false;
+  if (m[5] !== undefined && (Number(m[5]) > 23 || Number(m[6]) > 59)) return false;
   return true;
 }
 
