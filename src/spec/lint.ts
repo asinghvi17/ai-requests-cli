@@ -1,0 +1,124 @@
+// `air lint`: checks a request issue body against spec/v0.md. Reads the front matter and the `##`
+// section headings only; section text is returned for the agent but never interpreted.
+
+import { parseFrontMatter, sortDiagnostics, type Diagnostic, type Request } from './frontmatter.ts';
+
+export const SECTIONS = ['Task', 'Done when', 'Context', 'Notes'] as const;
+export type SectionName = (typeof SECTIONS)[number];
+
+export interface Section {
+  /** 1-based line of the `##` heading. */
+  line: number;
+  /** Text under the heading, up to the next `#` or `##` heading. */
+  text: string;
+}
+
+export type Sections = Partial<Record<SectionName, Section>>;
+
+export interface LintResult {
+  ok: boolean;
+  /** Present when ok. */
+  request?: Request;
+  sections: Sections;
+  errors: Diagnostic[];
+  /** Problems that don't stop a server from acting on the request. */
+  warnings: Diagnostic[];
+}
+
+export function lint(body: string): LintResult {
+  const fm = parseFrontMatter(body);
+  const errors: Diagnostic[] = fm.ok ? [] : [...fm.errors];
+  const warnings: Diagnostic[] = [];
+  // A newer spec version may change the sections too: report only that.
+  if (errors.some((e) => e.code === 'version')) {
+    return { ok: false, sections: {}, errors: errors.filter((e) => e.code === 'version'), warnings };
+  }
+  const sections = fm.bodyStart === undefined ? {} : readSections(fm.lines, fm.bodyStart, errors, warnings);
+
+  if (fm.bodyStart !== undefined) {
+    const end = fm.lines.length;
+    const need = (name: SectionName, why: string) => {
+      if (!sections[name]) errors.push({ line: end, code: 'missing', message: `missing \`## ${name}\` section${why}` });
+    };
+    const required: SectionName[] = ['Task', 'Done when'];
+    need('Task', '');
+    need('Done when', '');
+    if (fm.ok && (fm.request.context || fm.request.repo)) {
+      need('Context', ' (required when `context` or `repo` is set)');
+      required.push('Context');
+    }
+
+    for (const name of required) {
+      const s = sections[name];
+      if (s && isBlank(s.text)) errors.push({ line: s.line, code: 'section', message: `\`## ${name}\` is empty` });
+    }
+    const done = sections['Done when'];
+    if (done && !isBlank(done.text) && !/^ {0,3}(?:[-*+]|\d+[.)])\s+\S/m.test(stripComments(done.text))) {
+      errors.push({ line: done.line, code: 'section', message: '`## Done when` must be a list of checkable criteria (`- ...`)' });
+    }
+  }
+
+  const sorted = sortDiagnostics(errors);
+  const result: LintResult = { ok: sorted.length === 0, sections, errors: sorted, warnings: sortDiagnostics(warnings) };
+  if (result.ok && fm.ok) result.request = fm.request;
+  return result;
+}
+
+/** Collects `##` sections, skipping headings inside fenced code blocks. */
+function readSections(lines: string[], start: number, errors: Diagnostic[], warnings: Diagnostic[]): Sections {
+  const sections: Sections = {};
+  let current: { name: SectionName; line: number; from: number } | undefined;
+  let fence: { char: string; len: number } | undefined;
+  let inComment = false;
+
+  const finish = (to: number) => {
+    if (current) sections[current.name] = { line: current.line, text: lines.slice(current.from, to).join('\n').trim() };
+    current = undefined;
+  };
+
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i]!;
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (fence) {
+      if (f && f[1]![0] === fence.char && f[1]!.length >= fence.len && line.trim() === f[1]) fence = undefined;
+      continue;
+    }
+    if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      continue;
+    }
+    if (f) {
+      fence = { char: f[1]![0]!, len: f[1]!.length };
+      continue;
+    }
+    if (/^ {0,3}<!--/.test(line) && !line.includes('-->')) {
+      inComment = true;
+      continue;
+    }
+    const h = /^ {0,3}(#{1,2})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    if (!h) continue;
+    finish(i);
+    if (h[1] === '#') continue;
+    const title = h[2]!.trim();
+    const name = SECTIONS.find((s) => s.toLowerCase() === title.toLowerCase());
+    if (!name) {
+      warnings.push({ line: i + 1, code: 'section', message: `unknown section \`## ${title}\` (known: ${SECTIONS.join(', ')}); its text still reaches the agent` });
+      continue;
+    }
+    if (sections[name]) {
+      errors.push({ line: i + 1, code: 'section', message: `duplicate \`## ${name}\` section (first at line ${sections[name].line})` });
+      continue;
+    }
+    current = { name, line: i + 1, from: i + 1 };
+  }
+  finish(lines.length);
+  return sections;
+}
+
+function stripComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, '');
+}
+
+function isBlank(text: string): boolean {
+  return stripComments(text).trim() === '';
+}
