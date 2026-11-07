@@ -6,7 +6,8 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { clientEnv, jobArgv, jobEnv } from './env.ts';
+import { checkJob, clientEnv, jobEnv } from './env.ts';
+import { removeLauncher, writeLauncher } from './launcher.ts';
 
 /** The file in the workspace that holds the full task; the agent's argv only points at it. */
 export const TASK_FILE = 'AIR_TASK.md';
@@ -35,6 +36,8 @@ export interface Job {
   dead: boolean;
   /** Exit status once the pane is dead (null while alive or when killed by a signal). */
   exitStatus: number | null;
+  /** The job's launcher dir, removed with its window if the launcher never ran. */
+  launcher?: string;
 }
 
 export interface StartJobInput {
@@ -59,7 +62,7 @@ export interface StopOptions {
 
 const SEP = '\t';
 const LIST_FORMAT = ['#{@air_job}', '#{@air_nonce}', '#{window_id}', '#{pane_id}', '#{window_name}',
-  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}'].join(SEP);
+  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}'].join(SEP);
 
 export function defaultRunner(socket: string): TmuxRunner {
   return (args) => new Promise((resolve, reject) => {
@@ -101,7 +104,7 @@ function checkIssue(issue: number) {
 }
 
 /** Tagged panes still in `starting`: a start that never completed (the chain failed, or we crashed). */
-export interface Stale { issue: number; nonce: string; windowId: string; paneId: string }
+export interface Stale { issue: number; nonce: string; windowId: string; paneId: string; launcher?: string }
 
 export function parseJobs(out: string): Job[] {
   return parsePanes(out).jobs;
@@ -110,16 +113,17 @@ export function parseJobs(out: string): Job[] {
 export function parsePanes(out: string): { jobs: Job[]; stale: Stale[] } {
   const jobs: Job[] = [], stale: Stale[] = [];
   for (const line of out.split('\n')) {
-    const [job, nonce, windowId, paneId, name, pid, dead, status, state] = line.split(SEP);
+    const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher] = line.split(SEP);
     if (!job || !nonce || !/^\d+$/.test(job) || !windowId || !paneId) continue;
+    const extra = launcher ? { launcher } : {};
     if (state !== 'running') {
-      stale.push({ issue: Number(job), nonce, windowId, paneId });
+      stale.push({ issue: Number(job), nonce, windowId, paneId, ...extra });
       continue;
     }
     const isDead = dead === '1';
     jobs.push({
       issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: Number(pid),
-      dead: isDead, exitStatus: isDead && status !== undefined && /^\d+$/.test(status) ? Number(status) : null,
+      dead: isDead, exitStatus: isDead && status !== undefined && /^\d+$/.test(status) ? Number(status) : null, ...extra,
     });
   }
   return { jobs, stale };
@@ -147,6 +151,11 @@ export function createTmux(options: TmuxOptions = {}) {
     return r.stdout.trim() === 'air-ok';
   }
 
+  /** Kill one of our windows (nonce-guarded) and the launcher dir, in case the launcher never ran. */
+  async function killOwned(p: Pick<Job, 'nonce' | 'paneId' | 'windowId' | 'launcher'>): Promise<void> {
+    if (await guarded(p, ['kill-window', '-t', p.windowId])) removeLauncher(p.launcher);
+  }
+
   /**
    * Create the `air` session if missing, with window 0 named `log` running `argv` (default: a shell).
    * `env` adds variables to window 0 only. Returns true when the session was created.
@@ -156,11 +165,15 @@ export function createTmux(options: TmuxOptions = {}) {
     if (has.code === 0) return false;
     if (!noServer(has.stderr)) throw new Error(`tmux has-session: ${has.stderr.trim()}`);
     const args = ['new-session', '-d', '-s', session, '-n', 'log'];
-    if (opts.cwd) args.push('-c', opts.cwd);
-    for (const [k, v] of Object.entries(opts.env ?? {})) args.push('-e', `${k}=${v}`);
-    if (opts.argv?.length) args.push('--', ...opts.argv);
+    // Caller words go through a launcher, never onto the tmux command line (see launcher.ts).
+    const custom = !!(opts.argv?.length || opts.cwd || (opts.env && Object.keys(opts.env).length));
+    const launcher = custom
+      ? writeLauncher({ argv: opts.argv?.length ? opts.argv : [process.env.SHELL || '/bin/sh'], env: opts.env, cwd: opts.cwd })
+      : undefined;
+    if (launcher) args.push('--', ...launcher.argv);
     const r = await run(args);
     if (r.code === 0) return true;
+    launcher?.cleanup();
     if (/duplicate session/i.test(r.stderr)) return false; // lost a race with another ensureSession
     throw new Error(`tmux new-session: ${r.stderr.trim() || `exit ${r.code}`}`);
   }
@@ -177,14 +190,14 @@ export function createTmux(options: TmuxOptions = {}) {
       throw new Error(`tmux list-panes: ${r.stderr.trim()}`);
     }
     const { jobs, stale } = parsePanes(r.stdout);
-    for (const p of stale) await guarded(p, ['kill-window', '-t', p.windowId]);
+    for (const p of stale) await killOwned(p);
     return jobs;
   }
 
   /** The job's pane. Should duplicates exist anyway, keep the oldest (lowest pane id) and kill the rest. */
   async function findJob(issue: number): Promise<Job | undefined> {
     const matches = (await listJobs()).filter(j => j.issue === issue).sort((a, b) => paneNumber(a.paneId) - paneNumber(b.paneId));
-    for (const extra of matches.slice(1)) await guarded(extra, ['kill-window', '-t', extra.windowId]);
+    for (const extra of matches.slice(1)) await killOwned(extra);
     return matches[0];
   }
 
@@ -214,24 +227,28 @@ export function createTmux(options: TmuxOptions = {}) {
     }
     await ensureSession();
     if (env.TERM === undefined) env.TERM = (await run(['show-options', '-sv', 'default-terminal'])).stdout.trim() || 'tmux-256color';
-    const command = jobArgv(argv, env);
+    checkJob(argv, env);
+    // argv, env and cwd go into a launcher script; the tmux command line below holds only our own words.
+    const launcher = writeLauncher({ argv, env, cwd: input.cwd, clearEnv: true });
     const nonce = randomBytes(12).toString('hex');
     // Commands later in a chain default to the session's current pane, not the new one: target the
     // new window by an exact, unique temporary name.
     const tmp = `air-new-${nonce}`, w = `${target}:=${tmp}`;
     const r = await run(['new-window', '-d', '-P', '-F', '#{window_id} #{pane_id}', '-t', `${target}:`, '-n', tmp,
-      '-c', input.cwd, '--', 'sleep', '2147483647', ';',
+      '--', 'sleep', '2147483647', ';',
       'set-option', '-p', '-t', w, '@air_job', String(input.issue), ';',
       'set-option', '-p', '-t', w, '@air_nonce', nonce, ';',
       'set-option', '-p', '-t', w, '@air_state', 'starting', ';',
+      'set-option', '-p', '-t', w, '@air_launcher', launcher.dir, ';',
       'set-option', '-w', '-t', w, 'remain-on-exit', 'on', ';',
       'set-option', '-w', '-t', w, 'automatic-rename', 'off', ';',
       'set-option', '-w', '-t', w, 'allow-rename', 'off', ';',
-      'respawn-pane', '-k', '-t', w, '-c', input.cwd, '--', ...command, ';',
+      'respawn-pane', '-k', '-t', w, '--', ...launcher.argv, ';',
       'set-option', '-p', '-t', w, '@air_state', 'running', ';',
       'rename-window', '-t', w, windowName(input.issue)]);
     const [windowId, paneId] = r.stdout.trim().split('\n')[0]!.split(' ');
     if (r.code !== 0 || !windowId?.startsWith('@') || !paneId?.startsWith('%')) {
+      launcher.cleanup();
       if (windowId?.startsWith('@') && paneId?.startsWith('%')) await guarded({ nonce, paneId }, ['kill-window', '-t', windowId]);
       throw new Error(`tmux new-window: ${r.stderr.trim() || `unexpected output ${r.stdout}`}`);
     }
@@ -243,12 +260,20 @@ export function createTmux(options: TmuxOptions = {}) {
     return !!job && !job.dead;
   }
 
-  /** The last `lines` lines of the job's pane (scrollback included), or null if there is no such job. */
+  /**
+   * The last `lines` lines of the job's pane (scrollback included, blank screen rows below the output
+   * dropped), or null if there is no such job. A non-finite or non-positive `lines` means 50.
+   */
   async function capture(issue: number, lines = 50): Promise<string | null> {
+    const n = Number.isFinite(lines) && lines >= 1 ? Math.floor(lines) : 50;
     const job = await findJob(issue);
     if (!job) return null;
-    const r = await run(['capture-pane', '-p', '-J', '-t', job.paneId, '-S', String(-Math.max(1, Math.floor(lines)))]);
-    if (r.code === 0) return r.stdout.replace(/\n$/, '');
+    const r = await run(['capture-pane', '-p', '-J', '-t', job.paneId, '-S', String(-n)]);
+    if (r.code === 0) {
+      const rows = r.stdout.replace(/\n$/, '').split('\n');
+      while (rows.length && rows.at(-1)!.trim() === '') rows.pop();
+      return rows.slice(-n).join('\n');
+    }
     if (vanished(r.stderr)) return null; // the pane or server went away after findJob
     throw new Error(`tmux capture-pane: ${r.stderr.trim()}`);
   }
@@ -275,7 +300,7 @@ export function createTmux(options: TmuxOptions = {}) {
         await sleep(Math.min(100, Math.max(0, deadline - Date.now())));
       }
     }
-    await guarded(job, ['kill-window', '-t', job.windowId]);
+    await killOwned(job);
     return { exitStatus: job.dead ? job.exitStatus : null };
   }
 

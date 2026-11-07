@@ -1,10 +1,12 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTmux, parseJobs, quoteTmux, socketPath, TASK_FILE, TASK_INSTRUCTION, type RunResult } from './tmux.ts';
-import { clientEnv, jobArgv, jobEnv } from './env.ts';
+import { checkJob, clientEnv, jobEnv } from './env.ts';
+import { shQuote, writeLauncher } from './launcher.ts';
 
 const ws = mkdtempSync(join(tmpdir(), 'air-tmux-unit-'));
 after(() => rmSync(ws, { recursive: true, force: true }));
@@ -39,11 +41,26 @@ describe('env', () => {
     assert.throws(() => jobEnv({ ENV: '/x' }, {}), /refusing/);
     assert.deepEqual(jobEnv({}, { HOME: '/h', BASH_ENV: '/x', ENV: '/y' }), { HOME: '/h' });
   });
-  test('jobArgv starts from an empty environment', () => {
-    assert.deepEqual(jobArgv(['claude', '--x'], { PATH: '/bin' }), ['env', '-i', 'PATH=/bin', 'claude', '--x']);
-    assert.throws(() => jobArgv(['x'], { BASH_ENV: '/x' }), /refusing/);
-    assert.throws(() => jobArgv(['A=b'], {}), /may not contain/);
-    assert.throws(() => jobArgv([], {}), /empty/);
+  test('checkJob rejects bad argv and denied variables', () => {
+    checkJob(['claude', '--x'], { PATH: '/bin' });
+    assert.throws(() => checkJob(['x'], { BASH_ENV: '/x' }), /refusing/);
+    assert.throws(() => checkJob(['A=b'], {}), /may not contain/);
+    assert.throws(() => checkJob([], {}), /empty/);
+  });
+
+  test('launcher runs exactly the given argv with exactly the given env, from cwd', () => {
+    const weird = [`it's`, ';', 'x;', 'a\\;', '$(touch /nope)', '`id`', '{', '"q"', 'new\nline', ''];
+    const l = writeLauncher({ argv: ['/bin/sh', '-c', 'pwd; env; printf "<%s>\\n" "$@"', 'sh', ...weird], env: { PATH: '/usr/bin:/bin', FOO: `b'ar;` }, cwd: ws, clearEnv: true });
+    assert.equal(l.argv[0], '/bin/sh');
+    assert.ok(!l.argv[1]!.endsWith(';'));
+    const r = spawnSync(l.argv[0]!, l.argv.slice(1), { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', GH_TOKEN: 'leak' } });
+    const out = r.stdout.split('\n');
+    assert.equal(out[0], ws);
+    assert.ok(out.includes(`FOO=b'ar;`));
+    assert.ok(!r.stdout.includes('GH_TOKEN'));
+    assert.ok(r.stdout.endsWith(weird.map(w => `<${w}>`).join('\n') + '\n'));
+    assert.ok(!existsSync(l.argv[1]!), 'launcher deletes itself');
+    assert.equal(shQuote(`a'b`), `'a'\\''b'`);
   });
   test('clientEnv drops secrets', () => {
     assert.deepEqual(clientEnv({ PATH: '/bin', GH_TOKEN: 'x', TMUX: '/s,1,0' }), { PATH: '/bin' });
@@ -72,7 +89,12 @@ describe('tmux (fake runner)', () => {
   test('ensureSession creates the session only when missing', async () => {
     const f = fake([[is('has-session'), () => fail("can't find session: air")]]);
     assert.equal(await createTmux({ run: f.run }).ensureSession({ argv: ['air', 'serve'] }), true);
-    assert.deepEqual(f.calls[1], ['new-session', '-d', '-s', 'air', '-n', 'log', '--', 'air', 'serve']);
+    const ns = f.calls[1]!;
+    assert.deepEqual(ns.slice(0, 8), ['new-session', '-d', '-s', 'air', '-n', 'log', '--', '/bin/sh']);
+    assert.equal(ns.length, 9); // `air serve` runs through a launcher, not on the tmux command line
+    const script = readFileSync(ns[8]!, 'utf8');
+    rmSync(join(ns[8]!, '..'), { recursive: true });
+    assert.match(script, /exec 'env' 'air' 'serve'/);
     const g = fake([]);
     assert.equal(await createTmux({ run: g.run }).ensureSession(), false);
     assert.equal(g.calls.length, 1);
@@ -109,6 +131,18 @@ describe('tmux (fake runner)', () => {
     assert.equal(kills[0]![3], '%10');
   });
 
+  test('capture returns exactly the last lines, with a default for bad counts', async () => {
+    const screen = ['h1', 'h2', 'a', 'b', 'c', '', '', ''].join('\n') + '\n';
+    const f = fake([[is('list-panes'), () => ok(jobRow('5', 'n', '@3', '%3'))], [is('capture-pane'), () => ok(screen)]]);
+    const t = createTmux({ run: f.run });
+    assert.equal(await t.capture(5, 2), 'b\nc');
+    assert.equal(await t.capture(5, 2.7), 'b\nc');
+    for (const bad of [0, -3, NaN, Infinity, 0.5]) {
+      assert.equal(await t.capture(5, bad), 'h1\nh2\na\nb\nc');
+      assert.equal(f.calls.at(-1)!.at(-1), '-50');
+    }
+  });
+
   test('capture returns null when the pane vanishes after lookup', async () => {
     const f = fake([[is('list-panes'), () => ok(jobRow('5', 'n', '@3', '%3'))], [is('capture-pane'), () => fail("can't find pane: %3")]]);
     assert.equal(await createTmux({ run: f.run }).capture(5), null);
@@ -136,7 +170,7 @@ describe('tmux (fake runner)', () => {
     assert.deepEqual(f.calls.map(c => c[0]), ['list-panes', 'has-session', 'show-options', 'new-window']);
     const chain = f.calls[3]!;
     const cmds = chain.join(' ').split(' ; ').map(c => c.split(' ').slice(0, 1)[0]);
-    assert.deepEqual(cmds, ['new-window', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option',
+    assert.deepEqual(cmds, ['new-window', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option',
       'respawn-pane', 'set-option', 'rename-window']);
     const text = chain.join(' ');
     const tmp = chain[chain.indexOf('-n') + 1]!;
@@ -148,15 +182,33 @@ describe('tmux (fake runner)', () => {
     assert.match(text, /@air_job 42/);
     assert.match(text, /remain-on-exit on/);
     assert.ok(chain.includes('#42'));
+    // tmux runs only the fixed launcher; argv, env and cwd are inside it, never on the tmux command line.
     const respawn = chain.slice(chain.indexOf('respawn-pane'));
     const argv = respawn.slice(respawn.indexOf('--') + 1, respawn.indexOf(';'));
-    assert.deepEqual(argv.slice(0, 2), ['env', '-i']);
-    assert.ok(argv.includes('FOO=1') && argv.includes('TERM=tmux-256color'));
-    assert.ok(!argv.some(a => a.startsWith('GH_TOKEN=')));
-    assert.deepEqual(argv.slice(-2), ['claude', TASK_INSTRUCTION]);
+    assert.equal(argv.length, 2);
+    assert.equal(argv[0], '/bin/sh');
+    assert.ok(!chain.includes('claude') && !chain.includes(ws) && !chain.some(w => w.startsWith('FOO=')));
+    const script = readFileSync(argv[1]!, 'utf8');
+    rmSync(join(argv[1]!, '..'), { recursive: true });
+    assert.match(script, /exec 'env' '-i' /);
+    assert.ok(script.includes(`'FOO=1'`) && script.includes(`'TERM=tmux-256color'`) && !script.includes('GH_TOKEN'));
+    assert.ok(script.includes(`cd -- '${ws}'`));
+    assert.ok(script.includes(`'claude' '${TASK_INSTRUCTION}'`));
     // The task lives in the workspace, not in argv.
     assert.equal(readFileSync(join(ws, TASK_FILE), 'utf8').length, 1_000_000);
     assert.ok(text.length < 10_000);
+  });
+
+  test('startJob: separator-like argv words never reach the tmux command line', async () => {
+    const f = fake([[is('list-panes'), () => ok('')], [is('new-window'), () => ok('@3 %5\n')]]);
+    await createTmux({ run: f.run }).startJob({ issue: 3, cwd: ws, argv: ['sh', '-c', 'true', ';', 'run-shell', 'touch /x', 'y;', '{', '}'], env: { A: 'b;' } });
+    const chain = f.calls.find(c => c[0] === 'new-window')!;
+    // Every separator is one of ours: exactly one between each command, and no other word ends in `;`.
+    assert.equal(chain.filter(w => w === ';').length, 10);
+    assert.ok(!chain.some(w => w !== ';' && w.endsWith(';')));
+    assert.ok(!chain.includes('run-shell'));
+    const script = chain[chain.indexOf('/bin/sh') + 1]!;
+    rmSync(join(script, '..'), { recursive: true });
   });
 
   test('startJob refuses a second window for the same issue', async () => {
@@ -197,6 +249,8 @@ describe('tmux (fake runner)', () => {
     assert.equal(results.filter(r => r.status === 'rejected').length, 2);
     assert.equal(f.calls.filter(c => c[0] === 'new-window').length, 1);
     assert.equal(maxActive, 1);
+    const chain = f.calls.find(c => c[0] === 'new-window')!;
+    rmSync(join(chain[chain.indexOf('/bin/sh') + 1]!, '..'), { recursive: true }); // the launcher never ran
   });
 
   test('stopJob guards every write with the nonce and kills after the grace period', async () => {

@@ -54,8 +54,17 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
 
   test('a job runs interactively in its workspace with a scrubbed environment and a task file', async () => {
     // Even secrets and shell startup hooks in tmux's own global environment must not reach the job.
-    for (const [k, v] of [['GITHUB_TOKEN', 'ghp_global'], ['BASH_ENV', '/nonexistent/bashenv'], ['ENV', '/nonexistent/env']])
-      assert.equal((await raw(['set-environment', '-g', k!, v!])).code, 0);
+    const globals = [['GITHUB_TOKEN', 'ghp_global'], ['BASH_ENV', '/nonexistent/bashenv'], ['ENV', '/nonexistent/env']] as const;
+    try {
+      for (const [k, v] of globals) assert.equal((await raw(['set-environment', '-g', k, v])).code, 0);
+      await scrubbedJob();
+    } finally {
+      for (const [k] of globals) await raw(['set-environment', '-gu', k]);
+    }
+    assert.equal((await raw(['show-environment', '-g', 'GITHUB_TOKEN'])).code, 1);
+  });
+
+  async function scrubbedJob() {
     const out = join(dir, 'env.txt');
     const script = `{ env; echo "pwd=$(pwd)"; echo "arg=$1"; [ -t 0 ] && echo stdin=tty; } > ${out}.tmp; mv ${out}.tmp ${out}`;
     const task = 'fix the bug\n'.repeat(200_000); // ~2.4 MB: would be E2BIG in argv
@@ -73,6 +82,35 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.match(env, new RegExp(`^arg=${TASK_INSTRUCTION.replace(/\./g, '\\.')}$`, 'm'));
     assert.match(env, /^stdin=tty$/m);
     assert.equal(readFileSync(join(dir, TASK_FILE), 'utf8'), task);
+  }
+
+  test('regression: argv words that look like tmux separators are passed literally, never run', async () => {
+    // Reviewer PoC: a word `;` or ending in `;` used to end the respawn-pane command, so the rest ran as tmux commands.
+    const marker = join(dir, 'injected'), out = join(dir, 'literal.txt');
+    const tail = [';', 'run-shell', `touch ${marker}`, 'x;', 'run-shell', `touch ${marker}`, 'a\\;', '{', '}'];
+    await t.startJob({ issue: 30, cwd: `${dir}`, argv: ['/bin/sh', '-c', `printf '<%s>\\n' "$@" > ${out}.tmp; mv ${out}.tmp ${out}`, 'sh', ...tail],
+      env: { AIR_X: `v; run-shell 'touch ${marker}'`, AIR_Y: 'ends;' } });
+    await until('job output', () => existsSync(out));
+    await sleep(200); // give an injected run-shell time to act, were there one
+    assert.equal(existsSync(marker), false);
+    assert.equal(readFileSync(out, 'utf8'), tail.map(w => `<${w}>`).join('\n') + '\n');
+    const windows = (await raw(['list-windows', '-t', '=air', '-F', '#{window_name}'])).stdout.trim().split('\n');
+    assert.deepEqual(windows, ['log', '#30']);
+  });
+
+  test('ensureSession window 0 argv goes through a launcher too', async () => {
+    const other = `${socket}-s0`, marker = join(dir, 'injected0'), out = join(dir, 'w0.txt');
+    const t0 = createTmux({ socket: other });
+    try {
+      assert.equal(await t0.ensureSession({ argv: ['/bin/sh', '-c', `printf '%s|%s' "$1" "$AIR_W0" > ${out}`, 'sh', 'x;'], cwd: dir,
+        env: { AIR_W0: `y; run-shell 'touch ${marker}'` } }), true);
+      await until('window 0 output', () => existsSync(out));
+      assert.equal(readFileSync(out, 'utf8'), `x;|y; run-shell 'touch ${marker}'`);
+      assert.equal(existsSync(marker), false);
+    } finally {
+      spawnSync('tmux', ['-L', other, 'kill-server'], { stdio: 'ignore' });
+      rmSync(socketPath(other), { force: true });
+    }
   });
 
   test('tags, listing, and windows that are not ours', async () => {
@@ -133,7 +171,9 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     const job = (await t.listJobs()).find(j => j.issue === 7)!;
     assert.equal(job.exitStatus, 3);
     assert.equal(await t.isAlive(7), false);
-    assert.match((await t.capture(7, 20))!, /hello-from-job/);
+    // remain-on-exit's "Pane is dead" line sits on the screen's last row, below blank rows.
+    assert.match((await t.capture(7, 200))!, /hello-from-job/);
+    assert.match((await t.capture(7, 1))!, /^Pane is dead \(status 3/);
     assert.deepEqual(await t.stopJob(7), { exitStatus: 3 });
     assert.deepEqual(await t.listJobs(), []);
     assert.equal(await t.capture(7), null);

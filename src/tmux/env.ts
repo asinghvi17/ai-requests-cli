@@ -36,16 +36,15 @@ export function jobEnv(extra: Record<string, string> = {}, base: NodeJS.ProcessE
 }
 
 /**
- * The argv tmux runs directly (no shell, so the volunteer's default-shell does not matter): `env -i K=V ... argv...`.
+ * Check a job's argv and environment before they go into its launcher (`env -i K=V ... argv...`).
  * stdin stays the pane's TTY, so the agent remains interactive.
  */
-export function jobArgv(argv: string[], env: Record<string, string>): string[] {
+export function checkJob(argv: string[], env: Record<string, string>): void {
   const [cmd] = argv;
   if (!cmd) throw new Error('tmux: empty job argv');
   // env(1) would read a leading NAME=value word as an assignment.
   if (cmd.includes('=')) throw new Error(`tmux: job command may not contain '=': ${cmd}`);
   for (const name of Object.keys(env)) if (isDenied(name)) throw new Error(`tmux: refusing to pass ${name} to a job`);
-  return ['env', '-i', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), ...argv];
 }
 
 /** Environment for the tmux client process, so a server we start does not hold the caller's secrets either. */

@@ -12,6 +12,9 @@ Adapted (not imported) from factory `packages/coordinator-mcp/src/heads.ts`:
 New here: one tmux invocation creates the window on a placeholder, tags it `@air_state=starting`, sets remain-on-exit,
 `respawn-pane -k`s the agent and marks it `running`. Chained commands default to the session's *current* pane, so each
 targets the new window by an exact unique temp name (`=air:=air-new-<nonce>`). Leftover `starting` panes are killed.
+Caller words (argv, env values, cwd) never go on a tmux command line: a word equal to or ending in `;` is a tmux
+separator, so `x;` `run-shell ...` would run tmux commands. They go into a private self-deleting sh launcher
+(`launcher.ts`); tmux runs only `/bin/sh <tmpdir>/air-launch-*/run.sh`.
 
 Env scope: the scrub covers the inherited environment only (`env -i` + allowlist; `BASH_ENV`/`ENV` are denied). HOME
 is the volunteer's real one on purpose (the agent needs their login and config), so dotfiles their shell sources and
