@@ -1,22 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Subscription } from '../usage/types.ts';
-import { canTakeMore, choose, largestEffort, recordActual, reserveFor, type MatchConfig, type Request } from './match.ts';
+import { effectiveHarness, canTakeMore, choose, largestEffort, recordActual, reserveFor, type MatchConfig, type Request } from './match.ts';
 
 const NOW = new Date('2026-01-10T00:00:00Z');
 const inH = (h: number) => new Date(NOW.getTime() + h * 3600_000).toISOString();
 
 function sub(name: string, o: {
-  harness?: string; used?: number | null; reset?: string | null; five?: number; stale?: boolean; kind?: string;
+  harness?: string; used?: number | null | undefined; incomplete?: boolean; reset?: string | null; five?: number; stale?: boolean; kind?: string;
 } = {}): Subscription {
   const windows = [{ name: 'seven_day', kind: o.kind ?? 'weekly', usedPct: o.used === undefined ? 10 : o.used, resetsAt: o.reset === undefined ? inH(100) : o.reset }];
   if (o.five !== undefined) windows.push({ name: 'five_hour', kind: 'five_hour', usedPct: o.five, resetsAt: inH(2) });
-  return { name, harness: o.harness ?? 'claude', windows, readAt: NOW.toISOString(), stale: o.stale ?? false };
+  return { name, harness: o.harness ?? 'claude', windows, readAt: NOW.toISOString(), stale: o.stale ?? false, ...(o.incomplete ? { incomplete: true } : {}) };
 }
 
 const config: MatchConfig = {
   models: { claude: { small: 'haiku', medium: 'sonnet', large: 'opus' }, codex: { medium: 'gpt' } },
-  subscriptions: { pro: { scale: 5 }, lowres: { reserve: 10 } },
+  subscriptions: { pro: { scale: 5 }, lowres: { reserve: 0.1 }, m1: { harness: 'claude' }, m2: { harness: 'bogus' } },
 };
 const req = (r: Partial<Request> = {}): Request => ({ effort: 'M', ...r });
 
@@ -134,4 +134,72 @@ test('recordActual', () => {
   const reset = recordActual('o/r#1', 'M', sub('a', { used: 90, reset: inH(1) }), sub('a', { used: 3, reset: inH(169) }));
   assert.equal(reset.delta, null);
   assert.equal(recordActual('i', 'S', sub('a', { stale: true }), sub('a')).delta, null);
+});
+
+test('unknown primary usage takes nothing (null, undefined, NaN, Infinity, negative)', () => {
+  for (const used of [null, undefined, NaN, Infinity, -Infinity, -5]) {
+    const s = sub('a'); s.windows[0]!.usedPct = used as number;
+    const n = choose(req({ effort: 'XS' }), [s], config, NOW);
+    assert.ok('none' in n, String(used)); assert.match(n.reasons[0]!, /^a: weekly usage unknown/);
+    assert.equal(largestEffort(s, config, NOW), null);
+  }
+});
+
+test('incomplete takes nothing, with its own reason', () => {
+  const n = choose(req(), [sub('i', { incomplete: true, used: null })], config, NOW);
+  assert.ok('none' in n); assert.match(n.reasons[0]!, /^i: incomplete reading/);
+});
+
+test('5-hour window: present but unknown takes nothing; absent does not apply', () => {
+  for (const five of [null, NaN, Infinity]) {
+    const s = sub('a', { five: 0 }); s.windows[1]!.usedPct = five as number;
+    const n = choose(req(), [s], config, NOW);
+    assert.ok('none' in n); assert.match(n.reasons[0]!, /^a: 5-hour window usage unknown/);
+  }
+  assert.ok(!('none' in choose(req(), [sub('a')], config, NOW)));
+});
+
+test('unknown or malformed effort takes nothing', () => {
+  for (const effort of ['xl', 'XXL', '', 'M ', 'constructor', '__proto__', undefined, null, 5, {}]) {
+    const n = choose({ effort } as unknown as Request, [sub('a', { used: 0 })], config, NOW);
+    assert.ok('none' in n, String(effort)); assert.match(n.reasons[0]!, /^a: unknown effort/);
+  }
+});
+
+test('exact fit survives float error (44.5% used, 744 minutes to reset, XL)', () => {
+  const s = sub('a', { used: 44.5, reset: inH(744 / 60) });
+  const r = choose({ effort: 'XL' }, [s], config, NOW); // left 55.5 = 40 + 15.5
+  assert.ok(!('none' in r));
+  assert.ok('none' in choose({ effort: 'XL' }, [sub('a', { used: 44.51, reset: inH(744 / 60) })], config, NOW));
+});
+
+test('headroom ties within epsilon fall back to name', () => {
+  const r = choose(req(), [sub('b', { used: 10 + 1e-12 }), sub('a', { used: 10 })], config, NOW);
+  assert.ok(!('none' in r)); assert.equal(r.subscription.name, 'a');
+});
+
+test('monthly reasons say monthly', () => {
+  const n = choose(req(), [sub('m', { kind: 'monthly', used: 95 })], config, NOW);
+  assert.ok('none' in n); assert.match(n.reasons[0]!, /^m: monthly 5% left/);
+  const u = choose(req(), [sub('m', { kind: 'monthly', used: null })], config, NOW);
+  assert.ok('none' in u); assert.match(u.reasons[0]!, /^m: monthly usage unknown/);
+});
+
+test('manual subscriptions fund the harness their config declares', () => {
+  const m = (name: string) => sub(name, { harness: 'manual', kind: 'monthly', used: 10 });
+  assert.equal(effectiveHarness(m('m1'), config), 'claude');
+  const ok = choose(req({ harness: ['claude'] }), [m('m1')], config, NOW);
+  assert.ok(!('none' in ok)); assert.equal(ok.model, 'sonnet');
+  assert.ok('none' in choose(req({ harness: ['codex'] }), [m('m1')], config, NOW));
+  assert.ok('none' in choose(req({ harness: ['manual'] }), [m('m1')], config, NOW));
+  const none = choose(req(), [m('m0'), m('m2')], config, NOW);
+  assert.ok('none' in none);
+  assert.match(none.reasons[0]!, /^m0: manual subscription declares no harness/);
+  assert.match(none.reasons[1]!, /^m2: manual subscription declares no harness/);
+  assert.equal(largestEffort(m('m0'), config, NOW), null);
+  assert.equal(largestEffort(m('m1'), config, NOW), 'XL');
+});
+
+test('largestEffort needs an executable harness', () => {
+  assert.equal(largestEffort(sub('a', { harness: 'gemini' }), config, NOW), null);
 });
