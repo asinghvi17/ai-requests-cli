@@ -141,5 +141,8 @@ Alternatives considered:
   name against `[subscriptions.<name>]` settings.
 - `air:done` unassigns the server's account (release markers are not posted for done issues, per §9).
 - Any pause (operator, quota) lasting 48 h releases the claim with a comment.
-- Artifacts and over-long reports get `expires` = 30 days after delivery.
+- Artifacts and over-long reports carry no `expires`, so spec §7's default applies: 14 days after the issue closes.
 - Every gh call has a timeout (2 min; uploads 30 min) and gh runs in its own process group, killed on expiry.
+- No write to an issue (label, comment, resume) without first confirming our claim still holds it. A lost claim
+  marks the workspace `lost`, closes our window and leaves the issue to its holder. That costs one comments read
+  per held job per tick.

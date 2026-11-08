@@ -16,7 +16,7 @@ import type { Config } from '../config.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { createGh } from '../gh/gh.ts';
 import { requestsRepo } from '../gh/issues.ts';
-import { currentClaim } from '../spec/markers.ts';
+import { currentClaim, formatMarker } from '../spec/markers.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
 import type { Subscription } from '../usage/types.ts';
 import { insteadOf, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
@@ -173,7 +173,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const nonce = job(w, 2)!.state.nonce;
     const asset = w.fg.releases.find((r) => r.tag === 'air-artifacts')!.assets.find((a) => a.name === `air-2-${nonce}-report.md`)!;
     assert.equal(asset.data.toString(), 'x'.repeat(70000));
-    assert.match(final, new RegExp(`\`\`\`air-artifact\\nurl: https://github.com/o/requests/releases/download/air-artifacts/air-2-${nonce}-report.md\\nsha256: ${createHash('sha256').update(asset.data).digest('hex')}\\nbytes: 70000\\nexpires: \\d{4}-\\d{2}-\\d{2}\\n\`\`\``));
+    assert.match(final, new RegExp(`\`\`\`air-artifact\\nurl: https://github.com/o/requests/releases/download/air-artifacts/air-2-${nonce}-report.md\\nsha256: ${createHash('sha256').update(asset.data).digest('hex')}\\nbytes: 70000\\n\`\`\``));
   });
 
   test('pr: pushes the next free air/<N> branch and opens the PR; no commits fails', async () => {
@@ -278,6 +278,74 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     writeFileSync(join(ws.dir, 'go'), '');
     await until(w, 'delivered', () => status(w, 7) === 'done', 20_000, third);
     assert.equal(comments(w, 7).at(-1)!.split('\n')[0], 'resumed');
+  });
+
+  test('regression: a restart never resumes a job whose claim another server now holds', async () => {
+    const w = world();
+    w.store.addIssue({ number: 23, body: body('wait') });
+    await running(w, 23);
+    const ws = job(w, 23)!;
+    killTmux(); // the window is gone, and meanwhile our claim was released and a rival claimed the issue
+    await takeOver(w, 23, ws.state.nonce);
+    const before = w.store.log.length;
+    const restarted = createServer(w.ctx);
+    await restarted.tick();
+    await restarted.idle();
+    assert.equal(readState(ws.dir).phase, 'lost');
+    assert.equal(argvLog(ws.dir).length, 1, 'not resumed');
+    assert.deepEqual(stateLabels(w, 23), ['air:claimed'], "the rival's label is untouched");
+    assert.deepEqual(w.store.log.slice(before).filter((l) => /^(addLabels|removeLabel|comment|assign|unassign) /.test(l)), []);
+  });
+
+  test('regression: a paused job whose claim was lost never rewrites labels', async () => {
+    for (const reason of ['quota', 'restart'] as const) {
+      const w = world();
+      const n = reason === 'quota' ? 24 : 25;
+      w.store.addIssue({ number: n, body: body('wait') });
+      await running(w, n);
+      const ws = job(w, n)!;
+      await stopViaCli(w, n);
+      updateState(ws.dir, { job: { ...readState(ws.dir).job!, pauseReason: reason, resumeAfter: new Date(Date.now() - 1000).toISOString() } });
+      w.subs[0] = weekly(5);
+      await takeOver(w, n, ws.state.nonce);
+      const before = w.store.log.length;
+      for (let i = 0; i < 3; i++) {
+        await w.server.tick();
+        await w.server.idle();
+      }
+      assert.equal(readState(ws.dir).phase, 'lost', reason);
+      assert.equal(argvLog(ws.dir).length, 1, `${reason}: not restarted`);
+      assert.deepEqual(stateLabels(w, n), ['air:claimed'], reason);
+      assert.deepEqual(w.store.log.slice(before).filter((l) => /^(addLabels|removeLabel|comment|assign|unassign) /.test(l)), [], reason);
+    }
+  });
+
+  test('regression: air run refuses a set-up job whose claim was lost', async () => {
+    const w = world({ manual: true });
+    jobDeps.loadConfig = () => w.ctx.config;
+    jobDeps.context = () => w.ctx;
+    let err = '';
+    w.store.addIssue({ number: 26, body: body('comment x') });
+    await until(w, 'set up', () => status(w, 26) === 'ready' && job(w, 26)!.state.phase === 'ready');
+    await takeOver(w, 26, job(w, 26)!.state.nonce);
+    assert.equal(await main(['run', '26'], { out: () => {}, err: (s) => { err += s; } }), 1);
+    assert.match(err, /no longer held by this machine's claim/);
+    assert.equal(argvLog(job(w, 26)!.dir).length, 0);
+    assert.deepEqual(stateLabels(w, 26), ['air:claimed']);
+  });
+
+  test('regression: a comment that fails after the upload reuses the asset on retry', async () => {
+    const w = world();
+    w.store.addIssue({ number: 27, body: body('artifact', ['deliver: artifact']) });
+    w.fg.failOnce = (a) => a.startsWith('api repos/o/requests/issues/27/comments --method POST') && w.fg.releases.some((r) => r.assets.length > 0);
+    await until(w, 'delivered', () => status(w, 27) === 'done');
+    assert.equal(w.fg.failOnce, undefined, 'the comment did fail once');
+    const nonce = job(w, 27)!.state.nonce;
+    assert.equal(w.fg.calls.filter((c) => c.includes(`assets?name=air-27-${nonce}.zip`)).length, 1, 'uploaded once');
+    assert.equal(w.fg.calls.filter((c) => /releases\/assets\/\d+ --method DELETE/.test(c)).length, 0, 'never deleted');
+    const asset = job(w, 27)!.state.job!.delivery!.asset!;
+    assert.match(comments(w, 27).at(-1)!, new RegExp(`url: ${asset.url.replace(/[.]/g, '\\.')}\nsha256: ${asset.sha256}\nbytes: ${asset.bytes}\n\`\`\``));
+    assert.doesNotMatch(comments(w, 27).at(-1)!, /^expires:/m, 'no expires: the spec default (14 days after close) applies');
   });
 
   test('air stop / air start: pause keeps the claim; start resumes, or starts fresh when resume fails', async () => {
@@ -433,6 +501,16 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(allWorkspaces(w.root, 'o/requests').length, 0);
   });
 });
+
+/** Our claim on #n is released and a rival server claims the issue and labels it, as another server would. */
+async function takeOver(w: World, n: number, nonce: string) {
+  w.store.post(n, 'bot', 'OWNER', formatMarker({ kind: 'release', version: 0, host: 'box', nonce }));
+  w.store.post(n, 'rival', 'OWNER', formatMarker({ kind: 'claim', version: 0, host: 'rival-box', nonce: 'rivalnonce1234' }));
+  const i = w.store.issues.get(n)!;
+  i.labels = [...i.labels.filter((l) => !l.startsWith('air:')), 'air:claimed'];
+  i.assignees = ['rival'];
+  assert.equal((await holder(w, n))?.host, 'rival-box');
+}
 
 async function stopViaCli(w: World, n: number) {
   jobDeps.loadConfig = () => w.ctx.config;

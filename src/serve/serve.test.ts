@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseMarkers } from '../spec/markers.ts';
@@ -9,7 +9,7 @@ import { extractZip } from '../workspace/zip.ts';
 import { agentArgv, findCodexSession, restartInstruction } from './agent.ts';
 import { artifactBlock, COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
 import { committedUsage, exhausted } from './server.ts';
-import { acquireServeLock, readServerState, updateServerState } from './state.ts';
+import { acquireServeLock, LOCK_GRACE_MS, readServerState, updateServerState } from './state.ts';
 import { zipDir } from './zipout.ts';
 
 const dirs: string[] = [];
@@ -144,4 +144,18 @@ test('serve lock: one server per state dir; a dead holder is taken over', () => 
   unlock();
   writeFileSync(join(d, 'serve.lock'), '999999999\n');
   acquireServeLock(d)();
+  assert.deepEqual(readdirSync(d), [], 'no temp files left behind');
+});
+
+test('regression: an empty or half-written lock is held, not stale, until the grace period passes', () => {
+  // It used to read as pid 0, so a second server unlinked a lock the first was still writing.
+  const d = tmp();
+  for (const content of ['', '12']) {
+    writeFileSync(join(d, 'serve.lock'), content);
+    assert.throws(() => acquireServeLock(d), /already running \(lock being written/, JSON.stringify(content));
+    assert.equal(readFileSync(join(d, 'serve.lock'), 'utf8'), content, 'left in place');
+  }
+  const later = () => Date.now() + LOCK_GRACE_MS + 1000;
+  acquireServeLock(d, later)();
+  assert.deepEqual(readdirSync(d), []);
 });

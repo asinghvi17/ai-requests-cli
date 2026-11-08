@@ -23,8 +23,8 @@ export interface ServeGitHub {
   openRequests(): Promise<ListedIssue[]>;
   /** The release tagged `tag` on the requests repo, created if missing. */
   release(tag: string): Promise<Release>;
-  /** Uploads `file` as asset `name` (replacing an asset of that name); resolves to its download URL. */
-  uploadAsset(release: Release, name: string, file: string, contentType: string): Promise<string>;
+  /** Uploads `file` as asset `name` (replacing an asset of that name); resolves to its id and download URL. */
+  uploadAsset(release: Release, name: string, file: string, contentType: string): Promise<{ id: number; url: string }>;
   /** Opens a pull request on `repo` (OWNER/NAME); resolves to its URL. */
   createPull(repo: string, pr: { title: string; head: string; base: string; body: string }): Promise<string>;
   /** The URL of the open PR on `repo` from its branch `head`, if any. */
@@ -80,8 +80,8 @@ export function serveGitHub(repo: string, gh: Gh): ServeGitHub {
       if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new GhError('other', `bad asset name ${JSON.stringify(name)}`);
       const old = release.assets.find((a) => a.name === name);
       if (old) await gh.api(`${base}/releases/assets/${old.id}`, { method: 'DELETE' });
-      const r = await gh.upload<{ browser_download_url: string }>(`${release.uploadUrl}?name=${encodeURIComponent(name)}`, file, contentType, { timeoutMs: UPLOAD_TIMEOUT_MS });
-      return r.browser_download_url;
+      const r = await gh.upload<{ id: number; browser_download_url: string }>(`${release.uploadUrl}?name=${encodeURIComponent(name)}`, file, contentType, { timeoutMs: UPLOAD_TIMEOUT_MS });
+      return { id: r.id, url: r.browser_download_url };
     },
     async createPull(target, pr) {
       checkRepo(target);

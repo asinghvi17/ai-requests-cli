@@ -8,7 +8,7 @@ import { code } from '../claim/text.ts';
 import type { Request } from '../spec/frontmatter.ts';
 import { sha256File } from '../workspace/context.ts';
 import { githubRepo } from '../workspace/setup.ts';
-import { updateState, type JobRecord, type State } from '../workspace/state.ts';
+import { readState, updateState, type JobRecord, type State, type UploadedAsset } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import { ARTIFACTS_TAG } from './github.ts';
 import { zipDir } from './zipout.ts';
@@ -17,8 +17,6 @@ import { zipDir } from './zipout.ts';
 export const COMMENT_LIMIT = 65_536;
 export const REPORT_FILE = 'REPORT.md';
 export const TRUNCATED_LINE = '**Truncated:** the full report is in the attached artifact.';
-/** Artifacts are kept this long after the issue closes at the latest (spec §7 `expires`). */
-export const ARTIFACT_KEEP_DAYS = 30;
 const GIT_TIMEOUT_MS = 10 * 60_000;
 
 export type Delivered = { ok: true; comment: string } | { ok: false; step: string; detail: string };
@@ -59,16 +57,12 @@ export function artifactBlock(a: { url: string; sha256: string; bytes: number; e
   return ['```air-artifact', `url: ${a.url}`, `sha256: ${a.sha256}`, `bytes: ${a.bytes}`, ...(a.expires ? [`expires: ${a.expires}`] : []), '```'].join('\n');
 }
 
-function expiry(now: Date): string {
-  return new Date(now.getTime() + ARTIFACT_KEEP_DAYS * 86_400_000).toISOString().slice(0, 10);
-}
-
 /**
  * The `comment` delivery's body: the report, then `footer`. A report that doesn't fit goes to an asset
  * (via `upload`), and the comment becomes the truncation line, the start of the report and the asset block,
  * cut to fit in COMMENT_LIMIT.
  */
-export async function reportComment(report: string, footer: string, upload: () => Promise<{ url: string; sha256: string; bytes: number; expires: string }>): Promise<string> {
+export async function reportComment(report: string, footer: string, upload: () => Promise<{ url: string; sha256: string; bytes: number; expires?: string }>): Promise<string> {
   const safe = defuseMarkers(report.replace(/\s+$/, ''));
   // A fence the report leaves open would swallow the footer (and the asset block): close it.
   const whole = `${closeFence(safe)}\n\n${footer}`;
@@ -115,19 +109,33 @@ function record(dir: string, job: JobRecord, patch: NonNullable<JobRecord['deliv
   return next;
 }
 
+/**
+ * Uploads `file` as asset `name` once: the upload is recorded in `job.delivery`, so a retry after a later step
+ * failed (say the comment) reuses it instead of replacing it. No `expires` is written: per spec §7 the asset
+ * then expires 14 days after the issue closes.
+ */
+async function uploadOnce(ctx: ServeContext, dir: string, name: string, file: () => string, contentType: string, files?: number): Promise<UploadedAsset> {
+  const job = readState(dir).job!;
+  const done = job.delivery?.asset;
+  if (done?.name === name) return done;
+  const path = file();
+  const release = await ctx.api.release(ARTIFACTS_TAG);
+  const { id, url } = await ctx.api.uploadAsset(release, name, path, contentType);
+  const asset: UploadedAsset = { name, id, url, sha256: await sha256File(path), bytes: statSync(path).size, ...(files !== undefined ? { files } : {}) };
+  record(dir, job, { asset }, ctx.now());
+  return asset;
+}
+
 async function deliverComment(ctx: ServeContext, dir: string, state: State, footer: string): Promise<Delivered> {
   const report = readReport(dir);
   if (report === undefined) return { ok: false, step: 'delivery', detail: `The agent finished without writing its report to \`out/${REPORT_FILE}\`.` };
   const comment = await reportComment(report, footer, async () => {
     const name = `air-${state.issue}-${state.nonce}-report.md`;
-    const file = join(dir, `.${name}`);
-    writeFileSync(file, report);
+    const tmp = join(dir, `.${name}`);
     try {
-      const release = await ctx.api.release(ARTIFACTS_TAG);
-      const url = await ctx.api.uploadAsset(release, name, file, 'text/markdown');
-      return { url, sha256: await sha256File(file), bytes: statSync(file).size, expires: expiry(ctx.now()) };
+      return await uploadOnce(ctx, dir, name, () => (writeFileSync(tmp, report), tmp), 'text/markdown');
     } finally {
-      rmSync(file, { force: true });
+      rmSync(tmp, { force: true });
     }
   });
   return { ok: true, comment };
@@ -136,6 +144,10 @@ async function deliverComment(ctx: ServeContext, dir: string, state: State, foot
 async function deliverArtifact(ctx: ServeContext, dir: string, state: State, footer: string): Promise<Delivered> {
   const name = `air-${state.issue}-${state.nonce}.zip`;
   const zip = join(dir, `.${name}`);
+  const block = (a: UploadedAsset) =>
+    ({ ok: true as const, comment: `The result is a zip of ${a.files} file${a.files === 1 ? '' : 's'} from \`out/\`:\n\n${artifactBlock(a)}\n\n${footer}` });
+  const done = state.job?.delivery?.asset;
+  if (done?.name === name) return block(done);
   rmSync(zip, { force: true });
   try {
     const out = join(dir, 'out');
@@ -153,11 +165,7 @@ async function deliverArtifact(ctx: ServeContext, dir: string, state: State, foo
       return { ok: false, step: 'delivery', detail: `\`out/\` could not be zipped: ${(e as Error).message}` };
     }
     if (summary.files === 0) return { ok: false, step: 'delivery', detail: 'The agent left no regular file in `out/`, so there is no artifact to deliver.' };
-    const sha256 = await sha256File(zip);
-    const release = await ctx.api.release(ARTIFACTS_TAG);
-    const url = await ctx.api.uploadAsset(release, name, zip, 'application/zip');
-    const block = artifactBlock({ url, sha256, bytes: summary.bytes, expires: expiry(ctx.now()) });
-    return { ok: true, comment: `The result is a zip of ${summary.files} file${summary.files === 1 ? '' : 's'} from \`out/\`:\n\n${block}\n\n${footer}` };
+    return block(await uploadOnce(ctx, dir, name, () => zip, 'application/zip', summary.files));
   } finally {
     rmSync(zip, { force: true });
   }

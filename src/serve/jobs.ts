@@ -55,17 +55,45 @@ export function agentMs(job: JobRecord, now: Date): number {
   return job.runMs + (job.status === 'running' && job.startedAt ? Math.max(0, now.getTime() - Date.parse(job.startedAt)) : 0);
 }
 
-/** Moves the issue to state label `to`: add it first, then drop the other held labels, so it never looks free. */
-export async function moveLabel(ctx: ServeContext, n: number, to: string): Promise<void> {
-  const labels = (await ctx.gh.issue(n)).labels;
-  if (!labels.includes(to)) await ctx.gh.addLabels(n, [to]);
-  for (const l of HELD_LABELS) if (l !== to && labels.includes(l)) await ctx.gh.removeLabel(n, l);
-}
+/** Our claim on the issue is gone (released, or another server holds it): we must not touch the issue. */
+export class ClaimLost extends Error {}
 
 /** Whether this workspace's claim still holds the issue. */
 export async function claimHolds(ctx: ServeContext, state: State): Promise<boolean> {
   const holder = currentClaim(await markedComments(await ctx.gh.comments(state.issue), ctx.trust));
   return !!holder && holder.host === state.host && holder.nonce === state.nonce;
+}
+
+/**
+ * The claim is gone: close our agent's window (local only) and mark the workspace `lost`, so the server never
+ * writes to the issue for it again. The holder, if any, owns the issue's labels now.
+ */
+export async function loseJob(ctx: ServeContext, dir: string): Promise<void> {
+  const state = readState(dir);
+  if (state.job?.paneNonce && (await ctx.tmux.listJobs()).some((j) => j.issue === state.issue && j.nonce === state.job!.paneNonce)) {
+    await ctx.tmux.stopJob(state.issue, { graceMs: ctx.stopGraceMs });
+  }
+  updateState(dir, { phase: 'lost', ...(state.job ? { job: { ...state.job, status: 'cancelled' as const, startedAt: undefined } } : {}) }, ctx.now());
+  ctx.log(`#${state.issue}: our claim no longer holds; leaving the issue alone`);
+}
+
+/** Throws ClaimLost (after `loseJob`) unless this workspace's claim still holds the issue. */
+export async function ensureHeld(ctx: ServeContext, dir: string): Promise<void> {
+  if (await claimHolds(ctx, readState(dir))) return;
+  await loseJob(ctx, dir);
+  throw new ClaimLost(`#${readState(dir).issue} is no longer held by this machine's claim`);
+}
+
+/**
+ * Moves the issue to state label `to`: add it first, then drop the other held labels, so it never looks free.
+ * Only while our claim holds: a label write on an issue someone else holds would take it over.
+ */
+export async function moveLabel(ctx: ServeContext, dir: string, to: string): Promise<void> {
+  await ensureHeld(ctx, dir);
+  const n = readState(dir).issue;
+  const labels = (await ctx.gh.issue(n)).labels;
+  if (!labels.includes(to)) await ctx.gh.addLabels(n, [to]);
+  for (const l of HELD_LABELS) if (l !== to && labels.includes(l)) await ctx.gh.removeLabel(n, l);
 }
 
 async function reading(ctx: ServeContext, name: string, refresh = false): Promise<Subscription | undefined> {
@@ -83,6 +111,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   const n = state.issue;
   let job = jobOf(state);
   if (!['ready', 'paused', 'running'].includes(job.status)) throw new Error(`#${n} is ${job.status}; it can't be started`);
+  await ensureHeld(ctx, dir);
   const request = requestOf(dir);
   const agent = ctx.config.agents[job.harness] ?? { command: [job.harness], args: [] };
   const resume = !opts.fresh && job.starts > 0 ? job.sessionId : undefined;
@@ -106,7 +135,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
     pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, ...(usageBefore ? { usageBefore } : {}),
   });
   ctx.log(`#${n}: started ${job.harness} (${job.model}) ${resume ? `resuming session ${resume}` : 'fresh'}: ${argv.map((a) => JSON.stringify(a)).join(' ')}`);
-  await moveLabel(ctx, n, 'air:running');
+  await moveLabel(ctx, dir, 'air:running');
 
   if (resume === undefined) return;
   // A resume that can't find its session exits at once: then start fresh, pointed at the work so far.
@@ -143,7 +172,7 @@ export async function stopAgent(ctx: ServeContext, dir: string, reason: PauseRea
     resumeAfter, sessionId,
   });
   ctx.log(`#${state.issue}: stopped (${reason})${resumeAfter ? `; restarts after ${resumeAfter}` : ''}`);
-  await moveLabel(ctx, state.issue, 'air:paused');
+  await moveLabel(ctx, dir, 'air:paused');
   return true;
 }
 
@@ -202,6 +231,7 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
   const request = requestOf(dir);
   let result;
   try {
+    await ensureHeld(ctx, dir); // never push, upload or comment for an issue we no longer hold
     const footer = await usageFooter(ctx, state, request);
     result = await deliver(ctx, dir, state, request, footer);
     if (result.ok) {
@@ -209,10 +239,11 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
         await ctx.gh.comment(n, result.comment);
         saveJob(ctx, dir, { delivery: { ...readState(dir).job!.delivery, commented: true } });
       }
-      await moveLabel(ctx, n, 'air:done');
+      await moveLabel(ctx, dir, 'air:done');
       await ctx.gh.unassign(n, await ctx.gh.viewer());
     }
   } catch (e) {
+    if (e instanceof ClaimLost) return;
     const attempts = (readState(dir).job!.deliveryAttempts ?? 0) + 1;
     saveJob(ctx, dir, { lastError: (e as Error).message, deliveryAttempts: attempts });
     if (attempts < MAX_DELIVERY_ATTEMPTS) {

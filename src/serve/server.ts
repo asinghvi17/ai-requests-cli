@@ -13,7 +13,7 @@ import { setup } from '../workspace/setup.ts';
 import { allWorkspaces, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import {
-  agentMs, cancelJob, claimHolds, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, moveLabel, paneTail, PAUSE_LIMIT_MS,
+  agentMs, cancelJob, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, PAUSE_LIMIT_MS,
   requestOf, saveJob, startAgent, stopAgent, type Workspace,
 } from './jobs.ts';
 import { readServerState } from './state.ts';
@@ -74,7 +74,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   function track(n: number, what: string, p: Promise<void>): void {
-    const t = p.catch((e) => ctx.log(`#${n}: ${what} failed: ${err(e)}`)).finally(() => {
+    const t = p.catch((e) => ctx.log(e instanceof ClaimLost ? `#${n}: ${what} skipped: ${err(e)}` : `#${n}: ${what} failed: ${err(e)}`)).finally(() => {
       if (inflight.get(n) === t) inflight.delete(n);
     });
     inflight.set(n, t);
@@ -124,11 +124,14 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     const job = state.job;
     if (!job) return; // set up by `air setup` by hand: `air run` gives it a job
     if (['done', 'failed', 'cancelled'].includes(job.status)) return;
-    if (job.status === 'delivering') return track(n, 'delivery', finishJob(ctx, dir));
     if (job.status === 'failing') {
+      // release() checks the claim itself; a lost one makes the workspace `lost`.
       const f = job.failure ?? { step: 'the agent', detail: 'The job failed.' };
       return track(n, 'failure', failJob(ctx, dir, f.step, f.detail));
     }
+    // Everything below may write to the issue (labels, comments, a resume): only while our claim holds.
+    if (!(await claimHolds(ctx, state))) return loseJob(ctx, dir);
+    if (job.status === 'delivering') return track(n, 'delivery', finishJob(ctx, dir));
 
     // The requester can call it off at any time before delivery.
     const issue = await ctx.gh.issue(n);
@@ -138,7 +141,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
     // Labels follow the job: an earlier label call that failed is repaired here.
     const want = job.status === 'running' ? 'air:running' : job.status === 'paused' ? 'air:paused' : undefined;
-    if (want && !issue.labels.includes(want)) await moveLabel(ctx, n, want);
+    if (want && !issue.labels.includes(want)) await moveLabel(ctx, dir, want);
 
     const now = ctx.now();
     if (job.status === 'ready') {
@@ -150,7 +153,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       if (now.getTime() - Date.parse(state.updatedAt) > STOPPING_LIMIT_MS) {
         if (jobs.some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: 0 });
         saveJob(ctx, dir, { status: 'paused', runMs: agentMs({ ...job, status: 'running' }, now), startedAt: undefined, pausedAt: now.toISOString(), pauseReason: 'operator' });
-        await moveLabel(ctx, n, 'air:paused');
+        await moveLabel(ctx, dir, 'air:paused');
       }
       return;
     }
@@ -175,7 +178,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       }
       ctx.log(`#${n}: its window was closed; paused (\`air start ${n}\` resumes it)`);
       saveJob(ctx, dir, { status: 'paused', runMs: agentMs(job, now), startedAt: undefined, pausedAt: now.toISOString(), pauseReason: 'operator' });
-      await moveLabel(ctx, n, 'air:paused');
+      await moveLabel(ctx, dir, 'air:paused');
       return;
     }
     if (first) ctx.log(`#${n}: re-adopted its running agent (${pane.windowId})`);
@@ -203,19 +206,13 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   async function watchPaused(dir: string, state: State, job: JobRecord, usage: Subscription[], now: Date): Promise<void> {
     const n = state.issue;
     if (job.pausedAt && now.getTime() - Date.parse(job.pausedAt) > PAUSE_LIMIT_MS) return track(n, 'release', expirePause(ctx, dir));
-    if (job.pauseReason === 'restart') {
-      if (await claimHolds(ctx, state)) return track(n, 'restart', startAgent(ctx, dir));
-      return;
-    }
+    // watch() checked the claim this tick; startAgent checks it again before it touches the issue.
+    if (job.pauseReason === 'restart') return track(n, 'restart', startAgent(ctx, dir));
     if (job.pauseReason !== 'quota') return;
     if (job.resumeAfter && now.getTime() < Date.parse(job.resumeAfter)) return;
     let sub = usage.find((s) => s.name === job.subscription);
     if (job.resumeAfter) sub = (await ctx.usage({ refresh: true })).find((s) => s.name === job.subscription);
     if (!sub || sub.stale || exhausted(sub, job.model)) return;
-    if (!(await claimHolds(ctx, state))) {
-      updateState(dir, { phase: 'lost' }, now);
-      return ctx.log(`#${n}: the claim no longer holds; not restarting`);
-    }
     ctx.log(`#${n}: quota is back; restarting`);
     track(n, 'restart', startAgent(ctx, dir));
   }

@@ -29,6 +29,9 @@ export type Phase = 'claimed' | 'setting-up' | 'ready' | 'failed' | 'released' |
 export type JobStatus = 'ready' | 'running' | 'stopping' | 'paused' | 'delivering' | 'failing' | 'done' | 'failed' | 'cancelled';
 export type PauseReason = 'operator' | 'quota' | 'restart';
 
+/** A release asset air uploaded (an artifact zip or an over-long report), as its `air-artifact` block needs it. */
+export interface UploadedAsset { name: string; id: number; url: string; sha256: string; bytes: number; files?: number }
+
 export interface JobRecord {
   status: JobStatus;
   harness: 'claude' | 'codex';
@@ -52,7 +55,7 @@ export interface JobRecord {
   /** Usage reading of `subscription` when the job first started, for effort calibration. */
   usageBefore?: Subscription;
   /** Delivery steps already done, so a retried delivery doesn't repeat them. */
-  delivery?: { branch?: string; prUrl?: string; assetUrl?: string; commented?: boolean };
+  delivery?: { branch?: string; prUrl?: string; asset?: UploadedAsset; commented?: boolean };
   /** Last error from a delivery attempt that will be retried, and how many attempts failed so far. */
   lastError?: string;
   deliveryAttempts?: number;

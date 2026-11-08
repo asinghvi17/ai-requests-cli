@@ -29,6 +29,10 @@
   fetches the agent's HEAD and branches into a fresh bare repo (hooks and fsmonitor off) and pushes from there to
   `repo.url` itself, the URL the permission check covered. The branch is HEAD if it has commits beyond the
   remote's `<ref>`, else the most recently committed local branch that has.
+- Claim guard: every tick re-reads the claim of each held job before acting, and `moveLabel` / `startAgent` /
+  `finishJob` check it again (`ensureHeld`). A lost claim makes the workspace `lost` and stops our agent; we
+  never relabel, comment on or resume an issue another server holds. Release paths rely on `release()`'s own
+  holder check. Uploaded assets are recorded in `job.delivery.asset`, so a retry reuses them.
 - Failure paths are retryable states: `delivering` (up to 5 attempts, then `air:failed`), `failing` (until the
   release posts), and orphaned `setting-up` workspaces (until released). Labels are repaired from the job state
   each tick. Report text is defused: marker-like lines (after any whitespace) and `air-artifact` fences, and an

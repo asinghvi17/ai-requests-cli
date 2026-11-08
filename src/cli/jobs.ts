@@ -75,6 +75,7 @@ export async function runCommand(inv: Invocation): Promise<number> {
   const dir = workspace(ctx, n);
   const job = await ensureJob(ctx, dir);
   if (job.status !== 'ready') throw new UsageError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
+  if (!(await claimHolds(ctx, readState(dir)))) throw new UsageError(`#${n} is no longer held by this machine's claim`);
   await startAgent(ctx, dir);
   inv.io.out(`started #${n}; watch it with \`air attach ${n}\`\n`);
   return 0;

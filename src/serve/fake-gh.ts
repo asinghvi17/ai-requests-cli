@@ -16,6 +16,8 @@ export interface FakeGh {
   calls: string[];
   /** Calls whose joined args match never answer. */
   hang?: (args: string) => boolean;
+  /** The first call matching this fails with a 502 (then it is cleared). */
+  failOnce?: (args: string) => boolean;
   /** The next PR is created but its response is lost (a 502). */
   failNextPull?: boolean;
 }
@@ -139,6 +141,10 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
   f.run = (args, input, signal) => {
     const joined = args.join(' ');
     f.calls.push(joined);
+    if (f.failOnce?.(joined)) {
+      f.failOnce = undefined;
+      return Promise.resolve(fail(502, 'Server Error'));
+    }
     if (f.hang?.(joined)) {
       return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
     }
