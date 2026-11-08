@@ -624,7 +624,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(await main(['debug', 'panes'], { out: (s) => { out += s; }, err: () => {} }), 0);
     assert.match(out, /^tmux: tmux \d/m);
     assert.match(out, new RegExp(`^  "45\\\\t${pane.nonce}\\\\t${pane.windowId}\\\\t`, 'm'));
-    assert.match(out, new RegExp(`^  #45 nonce ${pane.nonce} window ${pane.windowId} pane ${pane.paneId} pid \\d+ alive$`, 'm'));
+    assert.match(out, new RegExp(`^  #45 nonce ${pane.nonce} window ${pane.windowId} pane ${pane.paneId} agent pid ${pane.pid} \\(group ${pane.panePid}\\) alive$`, 'm'));
     assert.match(out, /^  #45 ready\/running paneNonce \(none\): NO MATCHING PANE/m);
 
     await w.server.tick();

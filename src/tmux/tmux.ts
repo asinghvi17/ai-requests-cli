@@ -8,7 +8,7 @@ import { constants } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
-import { launcherStatus, removeLauncher, writeLauncher } from './launcher.ts';
+import { launcherPid, launcherStatus, removeLauncher, writeLauncher } from './launcher.ts';
 
 /** The file in the workspace that holds the full task; the agent's argv only points at it. */
 export const TASK_FILE = 'AIR_TASK.md';
@@ -24,6 +24,8 @@ export interface TmuxOptions {
   /** Session name (default `air`). */
   session?: string;
   run?: TmuxRunner;
+  /** `process.kill` (throws when there is no such process); unit tests with made-up pane pids replace it. */
+  kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
 }
 
 export interface Job {
@@ -32,8 +34,13 @@ export interface Job {
   windowId: string;
   paneId: string;
   windowName: string;
-  /** PID of the pane's process (the agent, as `env` execs it). */
+  /** PID of the agent (from the launcher's pid file); the pane's own pid until the launcher has written it. */
   pid: number;
+  /**
+   * PID of the pane's process: air's launcher shell, which is the session and process group leader of the
+   * job (the agent and whatever it starts, unless they make their own group). Stops signal this group.
+   */
+  panePid: number;
   /**
    * The agent has exited: tmux closed the pane's pty (`pane_dead`) and its exit status is known, from tmux
    * (`pane_dead_status`/`_signal`, once it has reaped the child) or from the launcher's status file. A pane
@@ -41,9 +48,12 @@ export interface Job {
    * reap it (see launcher.ts); the status file covers that.
    */
   dead: boolean;
-  /** Exit status once the pane is dead (null while alive or when killed by a signal). */
+  /**
+   * Exit status once the pane is dead (null while alive). The launcher shell reports an agent killed by
+   * signal N as sh does, status 128 + N (see `signalOf`).
+   */
   exitStatus: number | null;
-  /** Signal number that killed it, once dead by a signal. */
+  /** Signal that killed the pane's process itself (rare: the launcher catches the usual ones), as tmux reports it. */
   exitSignal: number | null;
   /** The job's launcher dir, removed with its window if the launcher never ran. */
   launcher?: string;
@@ -129,10 +139,25 @@ function checkIssue(issue: number) {
 }
 
 /** Tagged panes still in `starting`: a start that never completed (the chain failed, or we crashed). */
-export interface Stale { issue: number; nonce: string; windowId: string; paneId: string; launcher?: string }
+export interface Stale { issue: number; nonce: string; windowId: string; paneId: string; panePid: number; launcher?: string }
 
-export function parseJobs(out: string, statusOf: (launcher: string | undefined) => number | null = launcherStatus): Job[] {
-  return parsePanes(out, statusOf).jobs;
+type LauncherRead = (launcher: string | undefined) => number | null;
+
+export function parseJobs(out: string, statusOf: LauncherRead = launcherStatus, pidOf: LauncherRead = launcherPid): Job[] {
+  return parsePanes(out, statusOf, pidOf).jobs;
+}
+
+/**
+ * The signal an exit status of the launcher shell stands for: sh reports a child killed by signal N as
+ * 128 + N. (An agent that exits 128 + N on purpose looks the same; only tmux's `exitSignal` is certain.)
+ */
+export function signalOf(status: number | null): number | null {
+  return status !== null && status > 128 && status <= 128 + 64 ? status - 128 : null;
+}
+
+/** "SIGINT" for 2, or undefined for an unknown number. */
+export function signalName(n: number): string | undefined {
+  return Object.entries(constants.signals).find(([, v]) => v === n)?.[0];
 }
 
 /** `pane_dead_signal`: a number on Linux, a name (`int`, `KILL`) where tmux has sys_signame (macOS, BSDs). */
@@ -143,7 +168,7 @@ function signalNumber(raw: string | undefined): number | null {
   return n ?? null;
 }
 
-export function parsePanes(out: string, statusOf: (launcher: string | undefined) => number | null = launcherStatus): { jobs: Job[]; stale: Stale[] } {
+export function parsePanes(out: string, statusOf: LauncherRead = launcherStatus, pidOf: LauncherRead = launcherPid): { jobs: Job[]; stale: Stale[] } {
   const jobs: Job[] = [], stale: Stale[] = [];
   for (const line of out.split('\n')) {
     // Every row has separators; a row without any is tmux's sanitised output (see defaultRunner), and
@@ -153,7 +178,7 @@ export function parsePanes(out: string, statusOf: (launcher: string | undefined)
     if (!job || !nonce || !/^\d+$/.test(job) || !windowId || !paneId) continue;
     const extra = launcher ? { launcher } : {};
     if (state !== 'running') {
-      stale.push({ issue: Number(job), nonce, windowId, paneId, ...extra });
+      stale.push({ issue: Number(job), nonce, windowId, paneId, panePid: Number(pid), ...extra });
       continue;
     }
     let code = status !== undefined && /^\d+$/.test(status) ? Number(status) : null;
@@ -162,7 +187,7 @@ export function parsePanes(out: string, statusOf: (launcher: string | undefined)
     if (dead === '1' && code === null && sig === null) code = statusOf(launcher);
     const isDead = dead === '1' && (code !== null || sig !== null);
     jobs.push({
-      issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: Number(pid),
+      issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: pidOf(launcher) ?? Number(pid), panePid: Number(pid),
       dead: isDead, exitStatus: isDead ? code : null, exitSignal: isDead ? sig : null, ...extra,
     });
   }
@@ -170,6 +195,39 @@ export function parsePanes(out: string, statusOf: (launcher: string | undefined)
 }
 
 const paneNumber = (id: string) => Number(id.slice(1));
+
+/** How long a stop waits after TERM to the job's process group before it sends KILL. */
+export const KILL_GRACE_MS = 2000;
+
+type Kill = NonNullable<TmuxOptions['kill']>;
+
+/** Whether `pid` (or, negative, a process group) still exists. A group of another user counts as gone. */
+function exists(kill: Kill, pid: number): boolean {
+  try {
+    kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function signal(kill: Kill, pid: number, sig: NodeJS.Signals): void {
+  try {
+    kill(pid, sig);
+  } catch {
+    // gone already
+  }
+}
+
+/** TERM process group `pgid`, wait until `agent` (if known) has exited or KILL_GRACE_MS, then KILL the group. */
+async function killGroup(kill: Kill, pgid: number, agent: number | undefined): Promise<void> {
+  if (!Number.isSafeInteger(pgid) || pgid <= 1 || !exists(kill, -pgid)) return;
+  signal(kill, -pgid, 'SIGTERM');
+  const end = Date.now() + KILL_GRACE_MS;
+  const waitFor = agent && agent > 1 && agent !== pgid ? agent : -pgid;
+  while (exists(kill, waitFor) && Date.now() < end) await sleep(50);
+  signal(kill, -pgid, 'SIGKILL');
+}
 
 /** The oldest tmux air supports: pane user options (`set-option -p`, the job tags) came in 3.0. */
 export const MIN_TMUX = { major: 3, minor: 0 };
@@ -190,6 +248,7 @@ export function createTmux(options: TmuxOptions = {}) {
   const socket = options.socket ?? 'air';
   const session = options.session ?? 'air';
   const run = options.run ?? defaultRunner(socket);
+  const kill: Kill = options.kill ?? ((pid, sig) => { process.kill(pid, sig); });
   const target = `=${session}`;
   /** Per-issue start lock (in-process). */
   const starting = new Map<number, Promise<unknown>>();
@@ -206,8 +265,14 @@ export function createTmux(options: TmuxOptions = {}) {
     return r.stdout.trim() === 'air-ok';
   }
 
-  /** Kill one of our windows (nonce-guarded) and the launcher dir, in case the launcher never ran. */
-  async function killOwned(p: Pick<Job, 'nonce' | 'paneId' | 'windowId' | 'launcher'>): Promise<void> {
+  /**
+   * Kill one of our windows (nonce-guarded) with everything the job runs, and the launcher dir. Closing the
+   * window alone only hangs up the session leader (the launcher shell): the job's process group gets TERM,
+   * then (once the agent is gone, or after KILL_GRACE_MS) KILL, before the window goes.
+   */
+  async function killOwned(p: Pick<Job, 'nonce' | 'paneId' | 'windowId' | 'launcher' | 'panePid'> & { pid?: number }): Promise<void> {
+    if (!(await guarded(p, ['display-message', '-p', '']))) return; // not ours (any more)
+    await killGroup(kill, p.panePid, p.pid);
     if (await guarded(p, ['kill-window', '-t', p.windowId])) removeLauncher(p.launcher);
   }
 

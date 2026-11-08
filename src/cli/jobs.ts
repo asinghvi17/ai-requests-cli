@@ -188,7 +188,7 @@ export async function debugCommand(inv: Invocation): Promise<number> {
   try {
     jobs = await ctx.tmux.listJobs();
     out(`jobs air parses: ${jobs.length}`);
-    for (const j of jobs) out(`  #${j.issue} nonce ${j.nonce} window ${j.windowId} pane ${j.paneId} pid ${j.pid} ${j.dead ? `dead (status ${j.exitStatus ?? '-'}, signal ${j.exitSignal ?? '-'})` : 'alive'}`);
+    for (const j of jobs) out(`  #${j.issue} nonce ${j.nonce} window ${j.windowId} pane ${j.paneId} agent pid ${j.pid} (group ${j.panePid}) ${j.dead ? `dead (status ${j.exitStatus ?? '-'}, signal ${j.exitSignal ?? '-'})` : 'alive'}`);
   } catch (e) {
     out(`jobs air parses: listJobs failed: ${(e as Error).message}`);
   }

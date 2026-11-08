@@ -5,9 +5,9 @@ import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTmux, parseJobs, quoteTmux, tmuxVersionProblem, socketPath, TASK_FILE, TASK_INSTRUCTION, type RunResult } from './tmux.ts';
+import { createTmux, parseJobs, quoteTmux, signalName, signalOf, tmuxVersionProblem, socketPath, TASK_FILE, TASK_INSTRUCTION, type RunResult } from './tmux.ts';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
-import { launcherStatus, shQuote, writeLauncher } from './launcher.ts';
+import { launcherPid, launcherStatus, shQuote, writeLauncher } from './launcher.ts';
 
 const ws = mkdtempSync(join(tmpdir(), 'air-tmux-unit-'));
 after(() => rmSync(ws, { recursive: true, force: true }));
@@ -27,6 +27,14 @@ function fake(handlers: Array<[(args: string[]) => boolean, (args: string[]) => 
 }
 const is = (cmd: string) => (args: string[]) => args[0] === cmd;
 const row = (...f: string[]) => f.join('\t');
+/** Fake panes have made-up pids: signals go here, never to real process groups. Groups listed in `liveGroups` exist. */
+const signals: Array<[number, NodeJS.Signals | 0]> = [];
+const liveGroups = new Set<number>();
+const noKill = (pid: number, sig: NodeJS.Signals | 0) => {
+  signals.push([pid, sig]);
+  if (!liveGroups.has(-pid)) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+  if (sig === 'SIGTERM') liveGroups.delete(-pid); // the group dies of it
+};
 /** A list-panes row for a running job pane. */
 const jobRow = (issue: string, nonce: string, w: string, p: string, dead = '0', status = '') =>
   row(issue, nonce, w, p, `#${issue}`, '1', dead, status, 'running');
@@ -77,8 +85,8 @@ describe('tmux (fake runner)', () => {
       row('8', 'ghi', '@3', '%3', 'air-new-ghi', '13', '0', '', 'starting'),
     ].join('\n'));
     assert.deepEqual(jobs, [
-      { issue: 42, nonce: 'abc', windowId: '@1', paneId: '%1', windowName: '#42', pid: 11, dead: false, exitStatus: null, exitSignal: null },
-      { issue: 7, nonce: 'def', windowId: '@2', paneId: '%2', windowName: '#7', pid: 12, dead: true, exitStatus: 3, exitSignal: null },
+      { issue: 42, nonce: 'abc', windowId: '@1', paneId: '%1', windowName: '#42', pid: 11, panePid: 11, dead: false, exitStatus: null, exitSignal: null },
+      { issue: 7, nonce: 'def', windowId: '@2', paneId: '%2', windowName: '#7', pid: 12, panePid: 12, dead: true, exitStatus: 3, exitSignal: null },
     ]);
   });
 
@@ -99,6 +107,8 @@ describe('tmux (fake runner)', () => {
     process.kill(-child.pid!, 'SIGINT');
     assert.equal(await exited, 130);
     assert.equal(launcherStatus(m.dir), 130);
+    const agent = launcherPid(m.dir);
+    assert.ok(agent && agent !== child.pid, 'the pid file holds the agent, not the launcher');
     m.cleanup();
 
     assert.equal(launcherStatus('/etc'), null, 'only our own launcher dirs are read');
@@ -121,11 +131,22 @@ describe('tmux (fake runner)', () => {
       assert.equal(tmuxVersionProblem(ok), undefined, ok);
     for (const old of ['tmux 2.9a', 'tmux 2.6', 'tmux 1.8'])
       assert.match(tmuxVersionProblem(old)!, new RegExp(`^${old} is too old: air needs tmux 3\\.0 or newer`));
-    const old = createTmux({ run: async (a) => (a[0] === '-V' ? ok('tmux 2.9a\n') : fail('unexpected')) });
+    const old = createTmux({ kill: noKill, run: async (a) => (a[0] === '-V' ? ok('tmux 2.9a\n') : fail('unexpected')) });
     await assert.rejects(old.checkVersion(), /tmux 2\.9a is too old/);
-    const missing = createTmux({ run: async () => { throw Object.assign(new Error('spawn tmux ENOENT'), { code: 'ENOENT' }); } });
+    const missing = createTmux({ kill: noKill, run: async () => { throw Object.assign(new Error('spawn tmux ENOENT'), { code: 'ENOENT' }); } });
     await assert.rejects(missing.checkVersion(), /tmux is not usable: spawn tmux ENOENT\. air needs tmux 3\.0 or newer/);
-    assert.equal(await createTmux({ run: async () => ok('tmux 3.4\n') }).checkVersion(), 'tmux 3.4');
+    assert.equal(await createTmux({ kill: noKill, run: async () => ok('tmux 3.4\n') }).checkVersion(), 'tmux 3.4');
+  });
+
+  test('Job.pid is the agent from the pid file; panePid stays the pane', () => {
+    const [a, b] = parseJobs([row('1', 'n', '@1', '%1', '#1', '500', '0', '', 'running', '/tmp/air-launch-p'), row('2', 'm', '@2', '%2', '#2', '600', '0', '', 'running', '')].join('\n'),
+      () => null, (dir) => (dir === '/tmp/air-launch-p' ? 501 : null));
+    assert.deepEqual([a!.pid, a!.panePid, b!.pid, b!.panePid], [501, 500, 600, 600]);
+  });
+
+  test('signalOf reads sh\'s 128 + N convention', () => {
+    assert.deepEqual([signalOf(130), signalOf(137), signalOf(143), signalOf(128), signalOf(3), signalOf(null), signalOf(200)], [2, 9, 15, null, null, null, null]);
+    assert.equal(signalName(2), 'SIGINT');
   });
 
   test('pane_dead_signal may be a name (macOS, BSDs) or a number (Linux)', () => {
@@ -148,24 +169,24 @@ describe('tmux (fake runner)', () => {
   test('regression: sanitised list-panes output (tabs as `_`) is an error, not "no jobs"', async () => {
     assert.throws(() => parseJobs('42_abc_@1_%1_#42_11_0__running__\n'), /unparseable row .*is the tmux client UTF-8/);
     const { run } = fake([[is('list-panes'), () => ok('__@0_%0_log_10_0____\n42_abc_@1_%1_#42_11_0__running__\n')]]);
-    await assert.rejects(createTmux({ run }).listJobs(), /unparseable row/);
+    await assert.rejects(createTmux({ kill: noKill, run }).listJobs(), /unparseable row/);
   });
 
   test('a socket air cannot connect to for another reason is an error, not "no server"', async () => {
     const { run } = fake([[is('list-panes'), () => fail('error connecting to /very/long/path/tmux-501/air (File name too long)')]]);
-    await assert.rejects(createTmux({ run }).listJobs(), /File name too long/);
+    await assert.rejects(createTmux({ kill: noKill, run }).listJobs(), /File name too long/);
     const gone = fake([[is('list-panes'), () => fail('error connecting to /tmp/tmux-501/air (No such file or directory)')]]);
-    assert.deepEqual(await createTmux({ run: gone.run }).listJobs(), []);
+    assert.deepEqual(await createTmux({ kill: noKill, run: gone.run }).listJobs(), []);
   });
 
   test('listJobs is empty without a server', async () => {
     const { run } = fake([[is('list-panes'), () => fail('no server running on /tmp/tmux-1/air')]]);
-    assert.deepEqual(await createTmux({ run }).listJobs(), []);
+    assert.deepEqual(await createTmux({ kill: noKill, run }).listJobs(), []);
   });
 
   test('ensureSession creates the session only when missing', async () => {
     const f = fake([[is('has-session'), () => fail("can't find session: air")]]);
-    assert.equal(await createTmux({ run: f.run }).ensureSession({ argv: ['air', 'serve'] }), true);
+    assert.equal(await createTmux({ kill: noKill, run: f.run }).ensureSession({ argv: ['air', 'serve'] }), true);
     const ns = f.calls[1]!;
     assert.deepEqual(ns.slice(0, 8), ['new-session', '-d', '-s', 'air', '-n', 'log', '--', '/bin/sh']);
     assert.equal(ns.length, 9); // `air serve` runs through a launcher, not on the tmux command line
@@ -173,24 +194,24 @@ describe('tmux (fake runner)', () => {
     rmSync(join(ns[8]!, '..'), { recursive: true });
     assert.match(script, /exec 'env' 'air' 'serve'/);
     const g = fake([]);
-    assert.equal(await createTmux({ run: g.run }).ensureSession(), false);
+    assert.equal(await createTmux({ kill: noKill, run: g.run }).ensureSession(), false);
     assert.equal(g.calls.length, 1);
   });
 
   test('ensureSession treats a lost creation race as success', async () => {
     const f = fake([[is('has-session'), () => fail("can't find session: air")], [is('new-session'), () => fail('duplicate session: air')]]);
-    assert.equal(await createTmux({ run: f.run }).ensureSession(), false);
+    assert.equal(await createTmux({ kill: noKill, run: f.run }).ensureSession(), false);
     const g = fake([[is('has-session'), () => fail("can't find session: air")], [is('new-session'), () => fail('boom')]]);
-    await assert.rejects(createTmux({ run: g.run }).ensureSession(), /boom/);
+    await assert.rejects(createTmux({ kill: noKill, run: g.run }).ensureSession(), /boom/);
   });
 
   test('regression: a server still exiting after kill-server means no jobs, and a new session waits for it', async () => {
     // Seen on CI: the client connected to a server that kill-server had told to exit.
     const gone = fail('server exited unexpectedly');
-    assert.deepEqual(await createTmux({ run: fake([[is('list-panes'), () => gone]]).run }).listJobs(), []);
+    assert.deepEqual(await createTmux({ kill: noKill, run: fake([[is('list-panes'), () => gone]]).run }).listJobs(), []);
     let tries = 0;
     const f = fake([[is('has-session'), () => gone], [is('new-session'), () => (++tries < 3 ? gone : ok())]]);
-    assert.equal(await createTmux({ run: f.run }).ensureSession(), true);
+    assert.equal(await createTmux({ kill: noKill, run: f.run }).ensureSession(), true);
     assert.equal(tries, 3);
   });
 
@@ -199,9 +220,9 @@ describe('tmux (fake runner)', () => {
       [is('list-panes'), () => ok([jobRow('1', 'a', '@1', '%1'), row('2', 'b', '@2', '%2', 'air-new-b', '5', '0', '', 'starting')].join('\n'))],
       [is('if-shell'), () => ok('air-ok\n')],
     ]);
-    const jobs = await createTmux({ run: f.run }).listJobs();
+    const jobs = await createTmux({ kill: noKill, run: f.run }).listJobs();
     assert.deepEqual(jobs.map(j => j.issue), [1]);
-    const kills = f.calls.filter(c => c[0] === 'if-shell');
+    const kills = f.calls.filter(c => c[0] === 'if-shell' && /kill-window/.test(c[5]!));
     assert.equal(kills.length, 1);
     assert.deepEqual(kills[0]!.slice(3, 5), ['%2', '#{==:#{@air_nonce},b}']);
     assert.match(kills[0]![5]!, /'kill-window' '-t' '@2'/);
@@ -212,8 +233,8 @@ describe('tmux (fake runner)', () => {
       [is('list-panes'), () => ok([jobRow('5', 'new', '@9', '%10'), jobRow('5', 'old', '@3', '%3')].join('\n'))],
       [is('if-shell'), () => ok('air-ok\n')],
     ]);
-    assert.equal(await createTmux({ run: f.run }).isAlive(5), true);
-    const kills = f.calls.filter(c => c[0] === 'if-shell');
+    assert.equal(await createTmux({ kill: noKill, run: f.run }).isAlive(5), true);
+    const kills = f.calls.filter(c => c[0] === 'if-shell' && /kill-window/.test(c[5]!));
     assert.equal(kills.length, 1);
     assert.equal(kills[0]![3], '%10');
   });
@@ -221,7 +242,7 @@ describe('tmux (fake runner)', () => {
   test('capture returns exactly the last lines, with a default for bad counts', async () => {
     const screen = ['h1', 'h2', 'a', 'b', 'c', '', '', ''].join('\n') + '\n';
     const f = fake([[is('list-panes'), () => ok(jobRow('5', 'n', '@3', '%3'))], [is('capture-pane'), () => ok(screen)]]);
-    const t = createTmux({ run: f.run });
+    const t = createTmux({ kill: noKill, run: f.run });
     assert.equal(await t.capture(5, 2), 'b\nc');
     assert.equal(await t.capture(5, 2.7), 'b\nc');
     for (const bad of [0, -3, NaN, Infinity, 0.5]) {
@@ -232,9 +253,9 @@ describe('tmux (fake runner)', () => {
 
   test('capture returns null when the pane vanishes after lookup', async () => {
     const f = fake([[is('list-panes'), () => ok(jobRow('5', 'n', '@3', '%3'))], [is('capture-pane'), () => fail("can't find pane: %3")]]);
-    assert.equal(await createTmux({ run: f.run }).capture(5), null);
+    assert.equal(await createTmux({ kill: noKill, run: f.run }).capture(5), null);
     const g = fake([[is('list-panes'), () => ok(jobRow('5', 'n', '@3', '%3'))], [is('capture-pane'), () => fail('no server running on /tmp/x')]]);
-    assert.equal(await createTmux({ run: g.run }).capture(5), null);
+    assert.equal(await createTmux({ kill: noKill, run: g.run }).capture(5), null);
   });
 
   test('stopJob tolerates the pane vanishing mid-stop', async () => {
@@ -243,7 +264,7 @@ describe('tmux (fake runner)', () => {
       [is('list-panes'), () => ++lists === 1 ? ok(jobRow('5', 'n', '@3', '%3')) : fail('no server running on /tmp/x')],
       [is('if-shell'), () => fail("can't find pane: %3")],
     ]);
-    assert.deepEqual(await createTmux({ run: f.run }).stopJob(5, { graceMs: 10 }), { exitStatus: null });
+    assert.deepEqual(await createTmux({ kill: noKill, run: f.run }).stopJob(5, { graceMs: 10 }), { exitStatus: null });
   });
 
   test('startJob tags and respawns in one tmux invocation', async () => {
@@ -252,7 +273,7 @@ describe('tmux (fake runner)', () => {
       [is('show-options'), () => ok('tmux-256color\n')],
       [is('new-window'), () => ok('@3 %5\n')],
     ]);
-    const id = await createTmux({ run: f.run }).startJob({ issue: 42, cwd: ws, argv: ['claude'], env: { FOO: '1' }, task: 'x'.repeat(1_000_000) });
+    const id = await createTmux({ kill: noKill, run: f.run }).startJob({ issue: 42, cwd: ws, argv: ['claude'], env: { FOO: '1' }, task: 'x'.repeat(1_000_000) });
     assert.equal(id, '@3');
     assert.deepEqual(f.calls.map(c => c[0]), ['list-panes', 'has-session', 'show-options', 'new-window']);
     const chain = f.calls[3]!;
@@ -277,7 +298,9 @@ describe('tmux (fake runner)', () => {
     assert.ok(!chain.includes('claude') && !chain.includes(ws) && !chain.some(w => w.startsWith('FOO=')));
     const script = readFileSync(argv[1]!, 'utf8');
     rmSync(join(argv[1]!, '..'), { recursive: true });
-    assert.match(script, /^'env' '-i' /m); // run as a child, so the launcher records its exit status
+    // Run as a child (in the foreground), behind a tiny sh that records its pid, so the launcher can record its exit status.
+    assert.match(script, /^'\/bin\/sh' '-c' 'printf "%s\\n" "\$\$" > "\$1"; shift; exec "\$@"' 'air-agent' '[^']+\/pid' 'env' '-i' .* 9>&-$/m);
+    assert.match(script, /^trap : INT QUIT TERM$/m); // not HUP: a hangup must kill the launcher, so its reaper runs
     assert.match(script, /^air_exit "\$\?"$/m);
     assert.ok(script.includes(`'FOO=1'`) && script.includes(`'TERM=tmux-256color'`) && !script.includes('GH_TOKEN'));
     assert.ok(script.includes(`cd -- '${ws}'`));
@@ -289,7 +312,7 @@ describe('tmux (fake runner)', () => {
 
   test('startJob: separator-like argv words never reach the tmux command line', async () => {
     const f = fake([[is('list-panes'), () => ok('')], [is('new-window'), () => ok('@3 %5\n')]]);
-    await createTmux({ run: f.run }).startJob({ issue: 3, cwd: ws, argv: ['sh', '-c', 'true', ';', 'run-shell', 'touch /x', 'y;', '{', '}'], env: { A: 'b;' } });
+    await createTmux({ kill: noKill, run: f.run }).startJob({ issue: 3, cwd: ws, argv: ['sh', '-c', 'true', ';', 'run-shell', 'touch /x', 'y;', '{', '}'], env: { A: 'b;' } });
     const chain = f.calls.find(c => c[0] === 'new-window')!;
     // Every separator is one of ours: exactly one between each command, and no other word ends in `;`.
     assert.equal(chain.filter(w => w === ';').length, 10);
@@ -301,12 +324,12 @@ describe('tmux (fake runner)', () => {
 
   test('startJob refuses a second window for the same issue', async () => {
     const { run } = fake([[is('list-panes'), () => ok(jobRow('42', 'n', '@1', '%1'))]]);
-    await assert.rejects(createTmux({ run }).startJob({ issue: 42, cwd: ws, argv: ['x'] }), /already has a window/);
+    await assert.rejects(createTmux({ kill: noKill, run }).startJob({ issue: 42, cwd: ws, argv: ['x'] }), /already has a window/);
   });
 
   test('startJob refuses a missing workspace', async () => {
     const { run } = fake([]);
-    await assert.rejects(createTmux({ run }).startJob({ issue: 1, cwd: join(ws, 'nope'), argv: ['x'] }), /not a directory/);
+    await assert.rejects(createTmux({ kill: noKill, run }).startJob({ issue: 1, cwd: join(ws, 'nope'), argv: ['x'] }), /not a directory/);
   });
 
   test('startJob kills its window when the chain fails part way', async () => {
@@ -314,7 +337,7 @@ describe('tmux (fake runner)', () => {
       [is('list-panes'), () => ok('')],
       [is('new-window'), () => ({ code: 1, stdout: '@3 %5\n', stderr: 'boom' })],
     ]);
-    await assert.rejects(createTmux({ run: f.run }).startJob({ issue: 1, cwd: ws, argv: ['x'] }), /boom/);
+    await assert.rejects(createTmux({ kill: noKill, run: f.run }).startJob({ issue: 1, cwd: ws, argv: ['x'] }), /boom/);
     const last = f.calls.at(-1)!;
     assert.equal(last[0], 'if-shell');
     assert.match(last[5]!, /'kill-window' '-t' '@3'/);
@@ -331,7 +354,7 @@ describe('tmux (fake runner)', () => {
       await new Promise(r => setTimeout(r, 5));
       try { return await f.run(args); } finally { active--; }
     };
-    const t = createTmux({ run });
+    const t = createTmux({ kill: noKill, run });
     const results = await Promise.allSettled([1, 2, 3].map(() => t.startJob({ issue: 42, cwd: ws, argv: ['x'] })));
     assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
     assert.equal(results.filter(r => r.status === 'rejected').length, 2);
@@ -341,28 +364,41 @@ describe('tmux (fake runner)', () => {
     rmSync(join(chain[chain.indexOf('/bin/sh') + 1]!, '..'), { recursive: true }); // the launcher never ran
   });
 
-  test('stopJob guards every write with the nonce and kills after the grace period', async () => {
+  test('stopJob guards every write with the nonce, and signals the job group before it kills the window', async () => {
+    const order: string[] = [];
     const f = fake([
-      [is('list-panes'), () => ok(jobRow('42', 'n0nce', '@1', '%1'))],
-      [is('if-shell'), () => ok('air-ok\n')],
+      [is('list-panes'), () => ok(row('42', 'n0nce', '@1', '%1', '#42', '4242', '0', '', 'running'))],
+      [is('if-shell'), (a) => { if (/kill-window/.test(a[5]!)) order.push('kill-window'); return ok('air-ok\n'); }],
     ]);
-    const r = await createTmux({ run: f.run }).stopJob(42, { graceMs: 50, keys: ['C-c'] });
+    liveGroups.add(4242);
+    const r = await createTmux({ kill: (pid, sig) => { if (sig) order.push(`${sig} ${pid}`); noKill(pid, sig); }, run: f.run }).stopJob(42, { graceMs: 50, keys: ['C-c'] });
     assert.deepEqual(r, { exitStatus: null });
     const guards = f.calls.filter(c => c[0] === 'if-shell');
-    assert.equal(guards.length, 2);
+    assert.equal(guards.length, 3);
     for (const g of guards) assert.deepEqual(g.slice(0, 5), ['if-shell', '-F', '-t', '%1', '#{==:#{@air_nonce},n0nce}']);
     assert.match(guards[0]![5]!, /send-keys/);
-    assert.match(guards[1]![5]!, /'kill-window' '-t' '@1'/);
+    assert.match(guards[1]![5]!, /'display-message' '-p' ''/); // ownership, before any signal
+    assert.match(guards[2]![5]!, /'kill-window' '-t' '@1'/);
+    assert.deepEqual(order, ['SIGTERM -4242', 'SIGKILL -4242', 'kill-window']);
+  });
+
+  test('no signal for a pane that is not ours any more', async () => {
+    const f = fake([[is('list-panes'), () => ok(row('42', 'n', '@1', '%1', '#42', '4243', '1', '0', 'running'))], [is('if-shell'), () => ok('')]]);
+    liveGroups.add(4243);
+    signals.length = 0;
+    await createTmux({ kill: noKill, run: f.run }).stopJob(42);
+    assert.deepEqual(signals, [], 'the nonce check failed: no signal, no kill');
+    liveGroups.delete(4243);
   });
 
   test('stopJob of an unknown job is undefined', async () => {
     const { run } = fake([[is('list-panes'), () => ok('')]]);
-    assert.equal(await createTmux({ run }).stopJob(9), undefined);
+    assert.equal(await createTmux({ kill: noKill, run }).stopJob(9), undefined);
   });
 
   test('attachArgs targets the window itself and checks the full socket path', async () => {
     const { run } = fake([[is('list-panes'), () => ok(jobRow('42', 'n', '@4', '%4'))]]);
-    const t = createTmux({ run });
+    const t = createTmux({ kill: noKill, run });
     const ours = socketPath('air', { TMUX_TMPDIR: '/tt' });
     assert.equal(ours, `/tt/tmux-${process.getuid!()}/air`);
     assert.deepEqual(await t.attachArgs(undefined, {}), ['tmux', '-L', 'air', 'attach-session', '-t', '=air']);

@@ -14,6 +14,7 @@ import { lint } from '../spec/lint.ts';
 import { currentClaim } from '../spec/markers.ts';
 import type { Subscription } from '../usage/types.ts';
 import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
+import { signalName, signalOf } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../workspace/task.ts';
 import { readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
 import { agentArgv, findCodexSession, type Harness, restartInstruction, RESUME_INSTRUCTION } from './agent.ts';
@@ -307,8 +308,17 @@ export async function paneTail(ctx: ServeContext, n: number): Promise<string> {
   }
 }
 
+/**
+ * Why the agent's exit failed the job. The launcher shell reports an agent killed by signal N as status
+ * 128 + N (see tmux.ts `signalOf`), so such a status reads as "killed by signal N (status 128 + N)".
+ */
 export function exitDetail(status: number | null, signal: number | null, pane: string): string {
-  return `The agent exited ${status !== null ? `with status ${status}` : `on signal ${signal ?? '?'}`} without finishing.${pane.trim() ? `\n\nLast lines of its window:\n\n${fenced(pane)}` : ''}`;
+  const by = (n: number) => `signal ${n}${signalName(n) ? ` (${signalName(n)})` : ''}`;
+  const sig = signal ?? signalOf(status);
+  const how = sig !== null
+    ? `was killed by ${by(sig)}${status !== null ? ` (status ${status} = 128 + ${sig})` : ''}`
+    : status !== null ? `exited with status ${status}` : 'exited';
+  return `The agent ${how} without finishing.${pane.trim() ? `\n\nLast lines of its window:\n\n${fenced(pane)}` : ''}`;
 }
 
 /** The job record for a matched request: the subscription's harness (a manual one funds its configured one). */

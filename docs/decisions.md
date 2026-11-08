@@ -175,3 +175,12 @@ Alternatives considered:
   (tmux issue 4559, fixed in 3.6). The job launcher now runs the agent as a child and records its exit status in a file
   in its private dir. air uses tmux's status when it has one, else that file. Details in src/tmux/NOTES.md.
 - `air serve`, `air run` and `air start` refuse tmux older than 3.0 (pane user options). Checked on 3.0a to 3.8.
+
+## 2026-11-08: nothing of a job outlives its window
+
+- Review of PR #10: once the launcher ran the agent as a child, `kill-window` left the agent running (the hangup signals
+  only the session leader). A stop now TERMs, then KILLs, the job's process group before it kills the window, and the
+  launcher's reaper does the same when the launcher shell dies (a raw `kill-window`, a dying tmux server). Details in
+  src/tmux/NOTES.md.
+- `Job.pid` is the agent's pid (the launcher records it); `Job.panePid` is the launcher shell, the group leader.
+- An agent killed by signal N reports status 128 + N; failure comments say "killed by signal N (status 128 + N)".
