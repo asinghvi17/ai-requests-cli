@@ -1,12 +1,13 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTmux, parseJobs, quoteTmux, socketPath, TASK_FILE, TASK_INSTRUCTION, type RunResult } from './tmux.ts';
+import { createTmux, parseJobs, quoteTmux, tmuxVersionProblem, socketPath, TASK_FILE, TASK_INSTRUCTION, type RunResult } from './tmux.ts';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
-import { shQuote, writeLauncher } from './launcher.ts';
+import { launcherStatus, shQuote, writeLauncher } from './launcher.ts';
 
 const ws = mkdtempSync(join(tmpdir(), 'air-tmux-unit-'));
 after(() => rmSync(ws, { recursive: true, force: true }));
@@ -79,6 +80,57 @@ describe('tmux (fake runner)', () => {
       { issue: 42, nonce: 'abc', windowId: '@1', paneId: '%1', windowName: '#42', pid: 11, dead: false, exitStatus: null, exitSignal: null },
       { issue: 7, nonce: 'def', windowId: '@2', paneId: '%2', windowName: '#7', pid: 12, dead: true, exitStatus: 3, exitSignal: null },
     ]);
+  });
+
+  test('a status launcher records the exit status, also of a child killed by C-c', async () => {
+    const l = writeLauncher({ argv: ['/bin/sh', '-c', 'exit 3'], cwd: ws, clearEnv: true, status: true });
+    const r = spawnSync(l.argv[0]!, l.argv.slice(1), { encoding: 'utf8' });
+    assert.equal(r.status, 3);
+    assert.ok(!existsSync(l.argv[1]!), 'the script deletes itself');
+    assert.equal(launcherStatus(l.dir), 3);
+    l.cleanup();
+    assert.equal(launcherStatus(l.dir), null);
+
+    // C-c reaches the whole foreground process group: the agent dies of it, the launcher outlives it.
+    const m = writeLauncher({ argv: ['sleep', '30'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, clearEnv: true, status: true });
+    const child = spawn(m.argv[0]!, m.argv.slice(1), { detached: true, stdio: 'ignore' });
+    const exited = new Promise<number | null>((res) => child.on('exit', (code) => res(code)));
+    await sleep(300);
+    process.kill(-child.pid!, 'SIGINT');
+    assert.equal(await exited, 130);
+    assert.equal(launcherStatus(m.dir), 130);
+    m.cleanup();
+
+    assert.equal(launcherStatus('/etc'), null, 'only our own launcher dirs are read');
+  });
+
+  test('regression: a dead pane tmux never reaped (tmux < 3.6 with utempter) is dead with the launcher status', () => {
+    const statusOf = (dir: string | undefined) => (dir === '/tmp/air-launch-x' ? 0 : null);
+    const [reaped, unreaped, unknown] = parseJobs([
+      row('7', 'a', '@2', '%2', '#7', '12', '1', '4', 'running', '/tmp/air-launch-x', ''),
+      row('8', 'b', '@3', '%3', '#8', '13', '1', '', 'running', '/tmp/air-launch-x', ''),
+      row('9', 'c', '@4', '%4', '#9', '14', '1', '', 'running', '/tmp/air-launch-y', ''),
+    ].join('\n'), statusOf);
+    assert.deepEqual([reaped!.dead, reaped!.exitStatus], [true, 4], "tmux's own status wins");
+    assert.deepEqual([unreaped!.dead, unreaped!.exitStatus], [true, 0]);
+    assert.deepEqual([unknown!.dead, unknown!.exitStatus], [false, null]);
+  });
+
+  test('tmux versions: 3.0 and newer are fine, older ones are refused with a clear message', async () => {
+    for (const ok of ['tmux 3.0', 'tmux 3.0a', 'tmux 3.4', 'tmux 3.8', 'tmux 10.1', 'tmux next-3.6', 'tmux openbsd-7.5', 'tmux master'])
+      assert.equal(tmuxVersionProblem(ok), undefined, ok);
+    for (const old of ['tmux 2.9a', 'tmux 2.6', 'tmux 1.8'])
+      assert.match(tmuxVersionProblem(old)!, new RegExp(`^${old} is too old: air needs tmux 3\\.0 or newer`));
+    const old = createTmux({ run: async (a) => (a[0] === '-V' ? ok('tmux 2.9a\n') : fail('unexpected')) });
+    await assert.rejects(old.checkVersion(), /tmux 2\.9a is too old/);
+    const missing = createTmux({ run: async () => { throw Object.assign(new Error('spawn tmux ENOENT'), { code: 'ENOENT' }); } });
+    await assert.rejects(missing.checkVersion(), /tmux is not usable: spawn tmux ENOENT\. air needs tmux 3\.0 or newer/);
+    assert.equal(await createTmux({ run: async () => ok('tmux 3.4\n') }).checkVersion(), 'tmux 3.4');
+  });
+
+  test('pane_dead_signal may be a name (macOS, BSDs) or a number (Linux)', () => {
+    const jobs = parseJobs(['int', 'KILL', 'SIGTERM', '9', 'bogus'].map((sig, i) => row(String(i + 1), 'n', '@1', `%${i}`, '#1', '1', '1', '', 'running', '', sig)).join('\n'), () => null);
+    assert.deepEqual(jobs.map((j) => [j.dead, j.exitSignal]), [[true, 2], [true, 9], [true, 15], [true, 9], [false, null]]);
   });
 
   test('regression: a pane whose pty closed before tmux reaped it is not dead yet', () => {
@@ -225,7 +277,8 @@ describe('tmux (fake runner)', () => {
     assert.ok(!chain.includes('claude') && !chain.includes(ws) && !chain.some(w => w.startsWith('FOO=')));
     const script = readFileSync(argv[1]!, 'utf8');
     rmSync(join(argv[1]!, '..'), { recursive: true });
-    assert.match(script, /exec 'env' '-i' /);
+    assert.match(script, /^'env' '-i' /m); // run as a child, so the launcher records its exit status
+    assert.match(script, /^air_exit "\$\?"$/m);
     assert.ok(script.includes(`'FOO=1'`) && script.includes(`'TERM=tmux-256color'`) && !script.includes('GH_TOKEN'));
     assert.ok(script.includes(`cd -- '${ws}'`));
     assert.ok(script.includes(`'claude' '${TASK_INSTRUCTION}'`));

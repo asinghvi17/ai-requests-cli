@@ -51,6 +51,7 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   if (raw !== undefined && (typeof raw !== 'string' || !/^\d+$/.test(raw))) throw new UsageError(`--once-wait must be a number of seconds, got ${JSON.stringify(raw)}`);
   const onceWaitMs = typeof raw === 'string' ? Number(raw) * 1000 : undefined;
   const ctx = contextFor(inv);
+  if (!(await tmuxUsable(ctx, inv))) return 1;
   const unlock = acquireServeLock(ctx.stateDir);
   const server = createServer(ctx, { manual: inv.flags.manual === true });
   if (ctx.logFile) {
@@ -77,9 +78,21 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   return 0;
 }
 
+/** Checks tmux (present, new enough) before anything starts an agent; prints why not. */
+async function tmuxUsable(ctx: ServeContext, inv: Invocation): Promise<boolean> {
+  try {
+    await ctx.tmux.checkVersion();
+    return true;
+  } catch (e) {
+    inv.io.err(`air: ${(e as Error).message}\n`);
+    return false;
+  }
+}
+
 export async function runCommand(inv: Invocation): Promise<number> {
   const n = issueArg(inv.positionals[0]);
   const ctx = contextFor(inv);
+  if (!(await tmuxUsable(ctx, inv))) return 1;
   const dir = workspace(ctx, n);
   const job = await ensureJob(ctx, dir);
   if (job.status !== 'ready') throw new UsageError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
@@ -107,6 +120,7 @@ export async function stopCommand(inv: Invocation): Promise<number> {
 export async function startCommand(inv: Invocation): Promise<number> {
   const n = issueArg(inv.positionals[0]);
   const ctx = contextFor(inv);
+  if (!(await tmuxUsable(ctx, inv))) return 1;
   const dir = workspace(ctx, n);
   const state = readState(dir);
   const job = jobOf(state);

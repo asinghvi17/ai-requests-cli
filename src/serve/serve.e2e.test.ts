@@ -637,6 +637,19 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.match(out, new RegExp(`^  #45 ready/running paneNonce ${pane.nonce}: window ${pane.windowId}`, 'm'));
   });
 
+  test('air serve, run and start refuse a tmux older than 3.0', async () => {
+    const w = world();
+    jobDeps.loadConfig = () => w.ctx.config;
+    jobDeps.context = () => w.ctx;
+    w.ctx.tmux = createTmux({ socket, run: async (a) => (a[0] === '-V' ? { code: 0, stdout: 'tmux 2.9a\n', stderr: '' } : { code: 1, stdout: '', stderr: 'unexpected' }) });
+    for (const argv of [['serve', '--once'], ['run', '1'], ['start', '1']]) {
+      let err = '';
+      assert.equal(await main(argv, { out: () => {}, err: (s) => { err += s; } }), 1, argv.join(' '));
+      assert.match(err, /^air: tmux 2\.9a is too old: air needs tmux 3\.0 or newer/, argv.join(' '));
+    }
+    assert.deepEqual(w.store.log, [], 'nothing touched GitHub');
+  });
+
   test('--once polls again when the issue list is still empty, then exits', async () => {
     const w = world();
     // GitHub's list lags a request filed seconds ago: it shows up only after the first poll.

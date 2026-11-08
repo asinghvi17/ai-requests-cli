@@ -188,9 +188,11 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     const job = (await t.listJobs()).find(j => j.issue === 7)!;
     assert.equal(job.exitStatus, 3);
     assert.equal(await t.isAlive(7), false);
-    // remain-on-exit's "Pane is dead" line sits on the screen's last row, below blank rows.
+    // remain-on-exit's "Pane is dead" line sits on the screen's last row, below blank rows. tmux draws it only
+    // once it has reaped the child, which tmux < 3.6 with utempter may never do (the status file covers that).
     assert.match((await t.capture(7, 200))!, /hello-from-job/);
-    assert.match((await t.capture(7, 1))!, /^Pane is dead \(status 3/);
+    const last = (await t.capture(7, 1))!;
+    assert.ok(/^Pane is dead \(status 3/.test(last) || last === 'hello-from-job', last);
     assert.deepEqual(await t.stopJob(7), { exitStatus: 3 });
     assert.deepEqual(await t.listJobs(), []);
     assert.equal(await t.capture(7), null);

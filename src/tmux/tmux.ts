@@ -4,10 +4,11 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, statSync, writeFileSync } from 'node:fs';
+import { constants } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
-import { removeLauncher, writeLauncher } from './launcher.ts';
+import { launcherStatus, removeLauncher, writeLauncher } from './launcher.ts';
 
 /** The file in the workspace that holds the full task; the agent's argv only points at it. */
 export const TASK_FILE = 'AIR_TASK.md';
@@ -34,9 +35,10 @@ export interface Job {
   /** PID of the pane's process (the agent, as `env` execs it). */
   pid: number;
   /**
-   * The agent has exited and tmux has reaped it. tmux closes a pane's pty (`pane_dead`) before it reaps the
-   * child and records the status, so a pane that is `pane_dead` with neither status nor signal yet counts as
-   * alive: it is dead an instant later, with its real exit status.
+   * The agent has exited: tmux closed the pane's pty (`pane_dead`) and its exit status is known, from tmux
+   * (`pane_dead_status`/`_signal`, once it has reaped the child) or from the launcher's status file. A pane
+   * that is `pane_dead` with no status from either counts as alive. tmux < 3.6 with utempter may never
+   * reap it (see launcher.ts); the status file covers that.
    */
   dead: boolean;
   /** Exit status once the pane is dead (null while alive or when killed by a signal). */
@@ -129,11 +131,19 @@ function checkIssue(issue: number) {
 /** Tagged panes still in `starting`: a start that never completed (the chain failed, or we crashed). */
 export interface Stale { issue: number; nonce: string; windowId: string; paneId: string; launcher?: string }
 
-export function parseJobs(out: string): Job[] {
-  return parsePanes(out).jobs;
+export function parseJobs(out: string, statusOf: (launcher: string | undefined) => number | null = launcherStatus): Job[] {
+  return parsePanes(out, statusOf).jobs;
 }
 
-export function parsePanes(out: string): { jobs: Job[]; stale: Stale[] } {
+/** `pane_dead_signal`: a number on Linux, a name (`int`, `KILL`) where tmux has sys_signame (macOS, BSDs). */
+function signalNumber(raw: string | undefined): number | null {
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const n = (constants.signals as Record<string, number | undefined>)[`SIG${raw.toUpperCase().replace(/^SIG/, '')}`];
+  return n ?? null;
+}
+
+export function parsePanes(out: string, statusOf: (launcher: string | undefined) => number | null = launcherStatus): { jobs: Job[]; stale: Stale[] } {
   const jobs: Job[] = [], stale: Stale[] = [];
   for (const line of out.split('\n')) {
     // Every row has separators; a row without any is tmux's sanitised output (see defaultRunner), and
@@ -146,9 +156,10 @@ export function parsePanes(out: string): { jobs: Job[]; stale: Stale[] } {
       stale.push({ issue: Number(job), nonce, windowId, paneId, ...extra });
       continue;
     }
-    const code = status !== undefined && /^\d+$/.test(status) ? Number(status) : null;
-    const sig = signal !== undefined && /^\d+$/.test(signal) ? Number(signal) : null;
-    // Dead only once tmux has reaped it (see Job.dead): a closed pty alone is not an exit.
+    let code = status !== undefined && /^\d+$/.test(status) ? Number(status) : null;
+    const sig = signalNumber(signal);
+    // Dead only with a known status (see Job.dead): a closed pty alone is not an exit.
+    if (dead === '1' && code === null && sig === null) code = statusOf(launcher);
     const isDead = dead === '1' && (code !== null || sig !== null);
     jobs.push({
       issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: Number(pid),
@@ -159,6 +170,21 @@ export function parsePanes(out: string): { jobs: Job[]; stale: Stale[] } {
 }
 
 const paneNumber = (id: string) => Number(id.slice(1));
+
+/** The oldest tmux air supports: pane user options (`set-option -p`, the job tags) came in 3.0. */
+export const MIN_TMUX = { major: 3, minor: 0 };
+
+/**
+ * Why `tmux -V` output `v` is unusable, or undefined if it is fine. Versions are `tmux 3.4`, `tmux 3.0a`,
+ * `tmux next-3.6`, or `tmux openbsd-7.5` (a current tmux); one that doesn't parse is given the benefit of the doubt.
+ */
+export function tmuxVersionProblem(v: string): string | undefined {
+  const m = /(?:^|[\s-])(\d+)\.(\d+)/.exec(v);
+  if (!m || /openbsd/i.test(v)) return undefined;
+  const [major, minor] = [Number(m[1]), Number(m[2])];
+  if (major > MIN_TMUX.major || (major === MIN_TMUX.major && minor >= MIN_TMUX.minor)) return undefined;
+  return `${v.trim()} is too old: air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer (tested with 3.0a to 3.8). Install a newer tmux.`;
+}
 
 export function createTmux(options: TmuxOptions = {}) {
   const socket = options.socket ?? 'air';
@@ -228,6 +254,26 @@ export function createTmux(options: TmuxOptions = {}) {
     return jobs;
   }
 
+  /** `tmux -V`, e.g. "tmux 3.4". Throws if tmux can't be run. */
+  async function version(): Promise<string> {
+    const r = await run(['-V']);
+    if (r.code !== 0) throw new Error(`tmux -V: ${r.stderr.trim() || `exit ${r.code}`}`);
+    return r.stdout.trim();
+  }
+
+  /** Throws unless tmux runs and is new enough (see MIN_TMUX). */
+  async function checkVersion(): Promise<string> {
+    let v: string;
+    try {
+      v = await version();
+    } catch (e) {
+      throw new Error(`tmux is not usable: ${(e as Error).message}. air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer.`);
+    }
+    const problem = tmuxVersionProblem(v);
+    if (problem) throw new Error(problem);
+    return v;
+  }
+
   /** The raw `list-panes -a` result in air's format, for `air debug panes`. */
   async function listPanesRaw(): Promise<RunResult & { format: string }> {
     return { ...(await run(['list-panes', '-a', '-F', LIST_FORMAT])), format: LIST_FORMAT };
@@ -268,7 +314,7 @@ export function createTmux(options: TmuxOptions = {}) {
     if (env.TERM === undefined) env.TERM = (await run(['show-options', '-sv', 'default-terminal'])).stdout.trim() || 'tmux-256color';
     checkJob(argv, env);
     // argv, env and cwd go into a launcher script; the tmux command line below holds only our own words.
-    const launcher = writeLauncher({ argv, env, cwd: input.cwd, clearEnv: true });
+    const launcher = writeLauncher({ argv, env, cwd: input.cwd, clearEnv: true, status: true });
     const nonce = randomBytes(12).toString('hex');
     // Commands later in a chain default to the session's current pane, not the new one: target the
     // new window by an exact, unique temporary name.
@@ -366,7 +412,7 @@ export function createTmux(options: TmuxOptions = {}) {
     await run(['kill-server']);
   }
 
-  return { socket, session, ensureSession, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, attachArgs, killServer };
+  return { socket, session, version, checkVersion, ensureSession, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, attachArgs, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;
