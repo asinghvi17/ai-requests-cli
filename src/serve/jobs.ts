@@ -112,6 +112,9 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   // A resume that can't find its session exits at once: then start fresh, pointed at the work so far.
   const end = Date.now() + ctx.resumeCheckMs;
   for (;;) {
+    // Someone else (`air stop`, a cancel) took over the job meanwhile: it is theirs now.
+    const cur = readState(dir).job;
+    if (cur?.status !== 'running' || cur.paneNonce !== pane?.nonce) return;
     const p = (await ctx.tmux.listJobs()).find((j) => j.issue === n && j.nonce === pane?.nonce);
     if (!p || p.dead) {
       if (isDone(dir)) return; // it finished at once: the watcher delivers
@@ -164,12 +167,17 @@ export async function usageFooter(ctx: ServeContext, state: State, request: Requ
   return lines.join('\n');
 }
 
-/** Gives the issue up with `air:failed` and a comment saying why. */
+/**
+ * Gives the issue up with `air:failed` and a comment saying why. The job is `failing` until the release is
+ * posted, so a gh error here is retried by the next tick instead of leaving the claim held.
+ */
 export async function failJob(ctx: ServeContext, dir: string, step: string, detail: string): Promise<void> {
-  const state = readState(dir);
-  if (state.job && !['done', 'failed', 'cancelled'].includes(state.job.status)) {
-    if ((await ctx.tmux.listJobs()).some((j) => j.issue === state.issue)) await ctx.tmux.stopJob(state.issue, { graceMs: 0 });
+  let state = readState(dir);
+  if (state.job && state.job.status !== 'failing') {
+    saveJob(ctx, dir, { status: 'failing', failure: { step, detail }, runMs: agentMs(state.job, ctx.now()), startedAt: undefined });
+    state = readState(dir);
   }
+  if ((await ctx.tmux.listJobs()).some((j) => j.issue === state.issue)) await ctx.tmux.stopJob(state.issue, { graceMs: 0 });
   let footer = '';
   try {
     footer = state.job ? `\n\n${await usageFooter(ctx, state, requestOf(dir))}` : '';
@@ -177,10 +185,13 @@ export async function failJob(ctx: ServeContext, dir: string, step: string, deta
     // no footer
   }
   const r = await release({ gh: ctx.gh, issue: state.issue, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce, failure: { step, detail: `${detail}${footer}` } });
-  if (state.job) saveJob(ctx, dir, { status: 'failed', startedAt: undefined });
+  if (state.job) saveJob(ctx, dir, { status: 'failed' });
   if (r.status !== 'released') updateState(dir, { phase: 'lost', failure: step }, ctx.now());
   ctx.log(`#${state.issue}: failed at ${step}${r.status === 'released' ? '' : ` (release refused: ${r.message})`}`);
 }
+
+/** Delivery attempts (one per tick) before a delivery that keeps failing fails the request. */
+export const MAX_DELIVERY_ATTEMPTS = 5;
 
 /** Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. */
 export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
@@ -202,9 +213,13 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
       await ctx.gh.unassign(n, await ctx.gh.viewer());
     }
   } catch (e) {
-    saveJob(ctx, dir, { lastError: (e as Error).message });
-    ctx.log(`#${n}: delivery failed, will retry: ${(e as Error).message}`);
-    return;
+    const attempts = (readState(dir).job!.deliveryAttempts ?? 0) + 1;
+    saveJob(ctx, dir, { lastError: (e as Error).message, deliveryAttempts: attempts });
+    if (attempts < MAX_DELIVERY_ATTEMPTS) {
+      ctx.log(`#${n}: delivery failed (attempt ${attempts}), will retry: ${(e as Error).message}`);
+      return;
+    }
+    return failJob(ctx, dir, 'delivery', `Delivery failed ${attempts} times. The last error was:\n\n${fenced((e as Error).message)}`);
   }
   if (!result.ok) return failJob(ctx, dir, result.step, result.detail);
   saveJob(ctx, dir, { status: 'done', lastError: undefined });

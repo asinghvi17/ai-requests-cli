@@ -25,6 +25,12 @@
   isn't exhausted and a claim that still holds restart it.
 - gh: `createGh` bounds every call (default 2 min, uploads 30 min) with an AbortSignal; `spawnGh` runs gh in its
   own process group and kills the group on timeout. Tests drive the real gh argv layer through `fake-gh.ts`.
-- PR delivery runs git with argv only and the server's environment (the volunteer's credential helper). The
-  branch is HEAD if it has commits beyond `origin/<ref>`, else the most recently committed local branch that has.
+- PR delivery never runs git with credentials inside `repo/`: the agent controlled its config and hooks. air
+  fetches the agent's HEAD and branches into a fresh bare repo (hooks and fsmonitor off) and pushes from there to
+  `repo.url` itself, the URL the permission check covered. The branch is HEAD if it has commits beyond the
+  remote's `<ref>`, else the most recently committed local branch that has.
+- Failure paths are retryable states: `delivering` (up to 5 attempts, then `air:failed`), `failing` (until the
+  release posts), and orphaned `setting-up` workspaces (until released). Labels are repaired from the job state
+  each tick. Report text is defused: marker-like lines (after any whitespace) and `air-artifact` fences, and an
+  open code fence is closed before the footer or the asset block.
 - Not here: `air sweep` (daily, per spec §7) belongs to the sweep work; the loop has no hook for it yet.

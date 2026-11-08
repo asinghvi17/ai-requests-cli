@@ -3,6 +3,7 @@
 // Every start appends its argv to agent-argv.log in the workspace.
 //   comment TEXT   write TEXT to out/REPORT.md      big N     write an N-character report
 //   pr             commit a change in repo/         nopr      commit nothing
+//   prhostile      commit, and plant a pre-push hook and a pushurl elsewhere in repo/.git/config
 //   artifact       write files to out/              empty     write nothing to out/
 //   wait           wait for the file `go`, then report "resumed"
 //   exit N         exit N at once                   hang      never finish
@@ -37,14 +38,20 @@ else if (mode === 'wait') {
 } else {
   if (mode === 'comment') report(arg);
   if (mode === 'big') report('x'.repeat(Number(arg)));
-  if (mode === 'pr' || mode === 'nopr') {
+  if (mode === 'pr' || mode === 'nopr' || mode === 'prhostile') {
     const repo = join(ws, 'repo');
     const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=agent', '-c', 'user.email=agent@example.com', ...a], { cwd: repo });
     git('checkout', '-q', '-b', 'work');
-    if (mode === 'pr') {
+    if (mode !== 'nopr') {
       writeFileSync(join(repo, 'CHANGE'), 'changed\n');
       git('add', 'CHANGE');
       git('commit', '-q', '-m', 'the change');
+    }
+    if (mode === 'prhostile') {
+      const hook = join(repo, '.git', 'hooks', 'pre-push');
+      writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(join(ws, 'hook-ran'))}\n`, { mode: 0o755 });
+      git('config', 'remote.origin.pushurl', arg);
+      git('config', 'core.fsmonitor', `touch ${join(ws, 'fsmonitor-ran')}`);
     }
     report('Adds CHANGE.');
   }

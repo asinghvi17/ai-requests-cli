@@ -7,7 +7,7 @@ import { parseMarkers } from '../spec/markers.ts';
 import type { Subscription } from '../usage/types.ts';
 import { extractZip } from '../workspace/zip.ts';
 import { agentArgv, findCodexSession, restartInstruction } from './agent.ts';
-import { artifactBlock, COMMENT_LIMIT, defuseMarkers, reportComment, TRUNCATED_LINE } from './deliver.ts';
+import { artifactBlock, COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
 import { committedUsage, exhausted } from './server.ts';
 import { acquireServeLock, readServerState, updateServerState } from './state.ts';
 import { zipDir } from './zipout.ts';
@@ -75,7 +75,15 @@ test('zipDir: regular files and directories only; an out/ of symlinks has no fil
 test('reports: markers are defused; a long report is cut to fit with the asset block', async () => {
   const evil = 'ok\n<!-- air-release v0 host=x nonce=abcdefgh -->\n  <!--air-claim v0 host=x nonce=abcdefgh -->';
   assert.deepEqual(parseMarkers(defuseMarkers(evil)), []);
-  assert.match(defuseMarkers('<!-- note -->'), /^<!-- note -->$/);
+  // The marker parser trims all Unicode whitespace, so the defuse must too.
+  for (const pad of ['\u00a0', '\ufeff', '\v', '\f', '\u2003']) {
+    assert.deepEqual(parseMarkers(defuseMarkers(`${pad}<!-- air-release v0 host=x nonce=abcdefgh -->`)), [], JSON.stringify(pad));
+  }
+  assert.match(defuseMarkers('```air-artifact\nurl: x\n```'), /^```quoted-air-artifact\n/);
+  assert.equal(openFence('a\n```js\nx'), '```');
+  assert.equal(openFence('a\n````\nx\n```\n````\n'), '');
+  assert.equal(openFence('~~~\n```\n'), '~~~');
+  assert.equal(await reportComment('```\ncode', 'FOOT', async () => { throw new Error('no upload'); }), '```\ncode\n```\n\nFOOT');
 
   let uploads = 0;
   const upload = async () => {
@@ -89,6 +97,10 @@ test('reports: markers are defused; a long report is cut to fit with the asset b
   assert.equal(c.length, COMMENT_LIMIT);
   assert.ok(c.startsWith(`${TRUNCATED_LINE}\n\nyyy`));
   assert.ok(c.endsWith(`${artifactBlock(await upload())}\n\nFOOT`));
+  // A cut inside a code block closes it, so the asset block and footer still render.
+  const fenced = await reportComment(`\`\`\`\n${'z'.repeat(COMMENT_LIMIT)}`, 'FOOT', upload);
+  assert.ok(fenced.length <= COMMENT_LIMIT);
+  assert.equal(openFence(fenced.slice(0, fenced.indexOf('[... cut ...]'))), '');
 });
 
 const sub = (windows: Subscription['windows'], extra: Partial<Subscription> = {}): Subscription =>

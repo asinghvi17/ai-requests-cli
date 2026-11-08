@@ -23,9 +23,10 @@ export type Phase = 'claimed' | 'setting-up' | 'ready' | 'failed' | 'released' |
  * The agent's lifecycle once setup passed (`air serve`, `air run/stop/start`). ready: waiting for a start
  * (`--manual`). running: in its tmux window. stopping: being stopped by `air stop` or the server, so pane
  * death is not a finish. paused: stopped, claim and workspace kept. delivering: the agent finished and
- * the result is going back. done / failed / cancelled: over.
+ * the result is going back. failing: giving the issue up as failed (retried until the release posts).
+ * done / failed / cancelled: over.
  */
-export type JobStatus = 'ready' | 'running' | 'stopping' | 'paused' | 'delivering' | 'done' | 'failed' | 'cancelled';
+export type JobStatus = 'ready' | 'running' | 'stopping' | 'paused' | 'delivering' | 'failing' | 'done' | 'failed' | 'cancelled';
 export type PauseReason = 'operator' | 'quota' | 'restart';
 
 export interface JobRecord {
@@ -52,8 +53,11 @@ export interface JobRecord {
   usageBefore?: Subscription;
   /** Delivery steps already done, so a retried delivery doesn't repeat them. */
   delivery?: { branch?: string; prUrl?: string; assetUrl?: string; commented?: boolean };
-  /** Last error from a delivery attempt that will be retried. */
+  /** Last error from a delivery attempt that will be retried, and how many attempts failed so far. */
   lastError?: string;
+  deliveryAttempts?: number;
+  /** Why the job is `failing`, so a retried failure posts the same reason. */
+  failure?: { step: string; detail: string };
 }
 
 export interface State {

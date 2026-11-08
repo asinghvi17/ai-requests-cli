@@ -68,6 +68,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   /** Last "no fit" reason logged per issue, so an unchanged one isn't logged every tick. */
   const noFit = new Map<number, string>();
   let adopting = true;
+  /** Workspaces left `setting-up` by a setup that died (a restart, or a release that failed): to release. */
+  const orphans = new Set<string>();
 
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -86,10 +88,17 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   async function prepare(dir: string): Promise<void> {
     const { issue: n } = readState(dir);
     ctx.log(`#${n}: setting up in ${dir}`);
-    const r = await setup({
-      gh: ctx.gh, issue: n, root: ctx.root, host: ctx.host, ghHost: ctx.ghHost, env: ctx.env, trust: ctx.trust, now: ctx.now,
-      ...(ctx.download ? { download: ctx.download } : {}), ...(ctx.setupTimeoutMs ? { timeoutMs: ctx.setupTimeoutMs } : {}),
-    });
+    let r;
+    try {
+      r = await setup({
+        gh: ctx.gh, issue: n, root: ctx.root, host: ctx.host, ghHost: ctx.ghHost, env: ctx.env, trust: ctx.trust, now: ctx.now,
+        ...(ctx.download ? { download: ctx.download } : {}), ...(ctx.setupTimeoutMs ? { timeoutMs: ctx.setupTimeoutMs } : {}),
+      });
+    } catch (e) {
+      // Setup (or the release after a failed setup) threw part way: give the claim back on a later tick.
+      if (readState(dir).phase === 'setting-up') orphans.add(dir);
+      throw e;
+    }
     if (r.status === 'failed') return ctx.log(`#${n}: setup failed at ${r.step}: ${r.message}`);
     if (r.status === 'refused') return ctx.log(`#${n}: setup refused: ${r.message}`);
     if (opts.manual) return ctx.log(`#${n}: set up; start it with \`air run ${n}\``);
@@ -102,22 +111,34 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     const n = state.issue;
     if (state.phase === 'claimed') return track(n, 'setup', prepare(dir));
     if (state.phase === 'setting-up') {
-      // Only a server that died mid-setup leaves this behind (setups in progress are in `inflight`).
-      if (!first) return;
-      await release({ gh: ctx.gh, issue: n, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
-        failure: { step: 'setup', detail: 'The server restarted while setting up this request.' } });
+      // Setups in progress are in `inflight`; at startup, any left behind died with the last server. (A setup
+      // `air setup` runs by hand in another process is left alone while this server runs.)
+      if (first) orphans.add(dir);
+      if (!orphans.has(dir)) return;
+      const r = await release({ gh: ctx.gh, issue: n, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
+        failure: { step: 'setup', detail: 'Setup was interrupted (the server restarted, or failed while giving the claim back).' } });
+      if (r.status !== 'released') updateState(dir, { phase: 'lost' }, ctx.now());
+      orphans.delete(dir);
       return;
     }
     const job = state.job;
     if (!job) return; // set up by `air setup` by hand: `air run` gives it a job
     if (['done', 'failed', 'cancelled'].includes(job.status)) return;
     if (job.status === 'delivering') return track(n, 'delivery', finishJob(ctx, dir));
+    if (job.status === 'failing') {
+      const f = job.failure ?? { step: 'the agent', detail: 'The job failed.' };
+      return track(n, 'failure', failJob(ctx, dir, f.step, f.detail));
+    }
 
     // The requester can call it off at any time before delivery.
     const issue = await ctx.gh.issue(n);
     if (issue.state !== 'open' || issue.labels.includes('air:cancel')) {
       return track(n, 'cancel', cancelJob(ctx, dir, issue.state !== 'open' ? 'the issue was closed' : 'the requester added `air:cancel`'));
     }
+
+    // Labels follow the job: an earlier label call that failed is repaired here.
+    const want = job.status === 'running' ? 'air:running' : job.status === 'paused' ? 'air:paused' : undefined;
+    if (want && !issue.labels.includes(want)) await moveLabel(ctx, n, want);
 
     const now = ctx.now();
     if (job.status === 'ready') {
@@ -143,6 +164,9 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       return track(n, 'delivery', finishJob(ctx, dir));
     }
     if (!pane) {
+      // The tick's job list may predate a start that just finished (here or in `air run/start`): look again.
+      const fresh = readState(dir).job;
+      if (fresh?.status !== 'running' || (await ctx.tmux.listJobs()).some((j) => j.issue === n && j.nonce === fresh.paneNonce)) return;
       if (first) {
         // The window is gone (a reboot, or tmux died) while we were down: resume the agent.
         ctx.log(`#${n}: its window is gone after a restart; resuming`);
@@ -289,7 +313,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   function busy(): boolean {
     if (inflight.size) return true;
     return held().some((w) => w.state.phase !== 'ready' || (w.state.job !== undefined &&
-      (['running', 'stopping', 'delivering'].includes(w.state.job.status) || (w.state.job.status === 'ready' && !opts.manual))));
+      (['running', 'stopping', 'delivering', 'failing'].includes(w.state.job.status) || (w.state.job.status === 'ready' && !opts.manual))));
   }
 
   /**

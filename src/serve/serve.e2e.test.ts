@@ -20,7 +20,8 @@ import { currentClaim } from '../spec/markers.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
 import type { Subscription } from '../usage/types.ts';
 import { insteadOf, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
-import { allWorkspaces, readState } from '../workspace/state.ts';
+import { allWorkspaces, readState, updateState } from '../workspace/state.ts';
+import { claim } from '../claim/claim.ts';
 import { extractZip } from '../workspace/zip.ts';
 import type { ServeContext } from './context.ts';
 import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';
@@ -192,6 +193,45 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(stateLabels(w, 4), ['air:failed']);
     assert.match(comments(w, 4).at(-1)!, /No changes were produced/);
     assert.equal(await holder(w, 4), undefined, 'a failure releases the claim');
+  });
+
+  test("pr: the agent's repo config can't run code or redirect the push; a PR whose response was lost is found", async () => {
+    const w = world();
+    w.store.setPermission('o/target', 'alice', 'write');
+    const elsewhere = makeBareRepo(tmp('air-serve-elsewhere-')).bare;
+    w.fg.failNextPull = true;
+    w.store.addIssue({ number: 20, title: 'Hostile', body: body(`prhostile ${elsewhere}`, PR, CONTEXT) });
+    await until(w, 'delivered', () => status(w, 20) === 'done');
+    const dir = job(w, 20)!.dir;
+    assert.equal(existsSync(join(dir, 'hook-ran')), false);
+    assert.equal(existsSync(join(dir, 'fsmonitor-ran')), false);
+    assert.equal(spawnSync('git', ['--git-dir', elsewhere, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/20']).status, 1, 'nothing pushed elsewhere');
+    assert.equal(spawnSync('git', ['--git-dir', bare.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/20']).status, 0);
+    assert.equal(w.fg.pulls.filter((p) => p.head === 'air/20').length, 1);
+    assert.match(comments(w, 20).at(-1)!, /^Opened https:\/\/github.com\/o\/target\/pull\/\d+ from branch `air\/20`/);
+  });
+
+  test('a delivery that keeps failing fails the request after a few attempts', async () => {
+    const w = world({ timeoutMs: 200 });
+    w.fg.hang = (a) => a.includes('releases/tags/air-artifacts');
+    w.store.addIssue({ number: 21, body: body('artifact', ['deliver: artifact']) });
+    await until(w, 'failed', () => status(w, 21) === 'failed');
+    assert.equal(job(w, 21)!.state.job!.deliveryAttempts, 5);
+    assert.match(comments(w, 21).at(-1)!, /failed at delivery[\s\S]*Delivery failed 5 times[\s\S]*timed out/);
+    assert.deepEqual(stateLabels(w, 21), ['air:failed']);
+  });
+
+  test('a setup cut off by a restart is released as failed', async () => {
+    const w = world();
+    w.store.addIssue({ number: 22, body: body('comment x') });
+    const r = await claim({ gh: w.ctx.gh, issue: 22, root: w.root, host: 'box', waitMs: 0 });
+    assert.equal(r.status, 'won');
+    updateState((r as { dir: string }).dir, { phase: 'setting-up' });
+    await w.server.tick();
+    await w.server.idle();
+    assert.equal(job(w, 22)!.state.phase, 'failed');
+    assert.deepEqual(stateLabels(w, 22), ['air:failed']);
+    assert.equal(await holder(w, 22), undefined);
   });
 
   test('artifact: zips regular files of out/ to a release asset; an empty out/ fails', async () => {

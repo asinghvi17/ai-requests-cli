@@ -16,6 +16,8 @@ export interface FakeGh {
   calls: string[];
   /** Calls whose joined args match never answer. */
   hang?: (args: string) => boolean;
+  /** The next PR is created but its response is lost (a 502). */
+  failNextPull?: boolean;
 }
 
 const ok = (v: unknown): RunResult => ({ code: 0, stdout: v === undefined ? '' : JSON.stringify(v), stderr: '' });
@@ -65,10 +67,21 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
         return ok({ permission: role === 'maintain' ? 'write' : role === 'triage' ? 'read' : role, role_name: role });
       }
       if ((m = /^repos\/([^/]+\/[^/]+)\/pulls$/.exec(path)) && method === 'POST') {
+        const req = body as { head: string };
+        if (f.pulls.some((p) => p.repo === m![1] && p.head === req.head)) return fail(422, 'Validation Failed');
+        if (f.failNextPull) {
+          f.failNextPull = false;
+          f.pulls.push({ repo: m[1]!, number: 100 + f.pulls.length, ...(body as { title: string; head: string; base: string; body: string }), url: `https://github.com/${m[1]}/pull/${100 + f.pulls.length}` });
+          return fail(502, 'Server Error');
+        }
         const number = 100 + f.pulls.length;
         const pr = { repo: m[1]!, number, ...(body as { title: string; head: string; base: string; body: string }), url: `https://github.com/${m[1]}/pull/${number}` };
         f.pulls.push(pr);
         return ok({ number, html_url: pr.url });
+      }
+      if ((m = /^repos\/([^/]+\/[^/]+)\/pulls\?state=open&head=([^&]+)$/.exec(path)) && method === 'GET') {
+        const [, branch] = decodeURIComponent(m[2]!).split(':');
+        return ok(f.pulls.filter((p) => p.repo === m![1] && p.head === branch).map((p) => ({ number: p.number, html_url: p.url })));
       }
       if (!path.startsWith(base)) return fail(404, 'Not Found');
       const rest = path.slice(base.length);

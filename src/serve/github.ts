@@ -27,6 +27,8 @@ export interface ServeGitHub {
   uploadAsset(release: Release, name: string, file: string, contentType: string): Promise<string>;
   /** Opens a pull request on `repo` (OWNER/NAME); resolves to its URL. */
   createPull(repo: string, pr: { title: string; head: string; base: string; body: string }): Promise<string>;
+  /** The URL of the open PR on `repo` from its branch `head`, if any. */
+  findPull(repo: string, head: string): Promise<string | undefined>;
 }
 
 type RawUser = { login?: string } | null;
@@ -85,6 +87,12 @@ export function serveGitHub(repo: string, gh: Gh): ServeGitHub {
       checkRepo(target);
       const r = await gh.api<{ html_url: string }>(`repos/${target}/pulls`, { method: 'POST', body: pr });
       return r.html_url;
+    },
+    async findPull(target, head) {
+      checkRepo(target);
+      const owner = target.split('/')[0]!;
+      const list = await gh.api<{ html_url: string }[]>(`repos/${target}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`);
+      return list[0]?.html_url;
     },
   };
 }
