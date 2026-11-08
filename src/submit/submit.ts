@@ -10,12 +10,17 @@ import { splitLines, type Diagnostic } from '../spec/frontmatter.ts';
 import { sha256File } from '../workspace/context.ts';
 import { DEFAULT_EXCLUDES, collectFiles } from './collect.ts';
 import { allowed, findSecrets } from './secrets.ts';
-import { writeZip } from './zipwrite.ts';
+import { writeZip, ZipWriteError } from './zipwrite.ts';
 
 export const REQUEST_LABEL = 'ai-request';
-/** Default `context.expires`: this many days after submitting. Open issues keep their zip regardless. */
-export const DEFAULT_EXPIRES_DAYS = 30;
 const MAX_ASSET_BYTES = 2 * 1024 ** 3;
+
+export interface ContextFields {
+  url: string;
+  sha256: string;
+  bytes: number;
+  expires?: string;
+}
 
 export class SubmitError extends Error {
   /** Lint result, when the body was refused for failing lint. */
@@ -39,7 +44,10 @@ export interface SubmitOptions {
   allowFiles?: readonly string[];
   /** Directory names skipped at any depth. Default `DEFAULT_EXCLUDES`. */
   excludes?: readonly string[];
-  /** `context.expires`, `YYYY-MM-DD`. Default `DEFAULT_EXPIRES_DAYS` from `now`. */
+  /**
+   * `context.expires`, `YYYY-MM-DD`. Absent by default, so spec §7's default applies: the zip is kept 14
+   * days after the issue closes.
+   */
   expires?: string;
   now?: Date;
   /** Injectable for tests; default: the real repo through gh. */
@@ -55,7 +63,7 @@ export interface SubmitResult {
   files: string[];
   /** Set when an issue was filed. */
   issue?: { number: number; url: string };
-  context?: { url: string; sha256: string; bytes: number; expires: string };
+  context?: ContextFields;
 }
 
 /**
@@ -79,14 +87,15 @@ export function blankTemplateHeader(body: string): string {
  * Inserts a `context:` map at the end of the front matter. Returns the new body and where the block went
  * (0-based line index and length), so diagnostics can be mapped back to the original lines.
  */
-export function fillContext(body: string, ctx: { url: string; sha256: string; bytes: number; expires: string }): { body: string; at: number; count: number } {
+export function fillContext(body: string, ctx: ContextFields): { body: string; at: number; count: number } {
   const lines = splitLines(body);
   let open = 0;
   while (open < lines.length && lines[open]!.trim() === '') open++;
   let close = open + 1;
   while (close < lines.length && lines[close]!.trimEnd() !== '---') close++;
   if (lines[open]?.trimEnd() !== '---' || close >= lines.length) throw new SubmitError('the body must start with a `---` front-matter block');
-  const block = ['context:', `  url: ${ctx.url}`, `  sha256: ${ctx.sha256}`, `  bytes: ${ctx.bytes}`, `  expires: ${ctx.expires}`];
+  const block = ['context:', `  url: ${ctx.url}`, `  sha256: ${ctx.sha256}`, `  bytes: ${ctx.bytes}`];
+  if (ctx.expires !== undefined) block.push(`  expires: ${ctx.expires}`);
   return { body: [...lines.slice(0, close), ...block, ...lines.slice(close)].join('\n'), at: close, count: block.length };
 }
 
@@ -104,10 +113,6 @@ export function titleFromTask(result: LintResult): string | undefined {
   const line = text.split('\n').map((l) => l.replace(/^[#>*\-\s]+/, '').trim()).find((l) => l !== '');
   if (!line) return undefined;
   return line.length > 80 ? `${line.slice(0, 77).trimEnd()}...` : line;
-}
-
-export function defaultExpires(now: Date): string {
-  return new Date(now.getTime() + DEFAULT_EXPIRES_DAYS * 86_400_000).toISOString().slice(0, 10);
 }
 
 function assetName(dir: string, now: Date): string {
@@ -134,9 +139,11 @@ export async function submit(opts: SubmitOptions): Promise<SubmitResult> {
   const log = opts.log ?? (() => {});
   let body = blankTemplateHeader(opts.body);
   let inserted: { at: number; count: number } | undefined;
-  const expires = opts.expires ?? defaultExpires(now);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(expires) || Number.isNaN(Date.parse(`${expires}T00:00:00Z`))) throw new SubmitError(`--expires must be YYYY-MM-DD, got ${JSON.stringify(expires)}`);
-  if (expires < now.toISOString().slice(0, 10)) throw new SubmitError(`--expires ${expires} is in the past`);
+  const expires = opts.expires;
+  if (expires !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(expires) || Number.isNaN(Date.parse(`${expires}T00:00:00Z`))) throw new SubmitError(`--expires must be YYYY-MM-DD, got ${JSON.stringify(expires)}`);
+    if (expires < now.toISOString().slice(0, 10)) throw new SubmitError(`--expires ${expires} is in the past`);
+  }
 
   let files: string[] = [];
   let zip: { path: string; tmp: string; ctx: SubmitResult['context'] & {} } | undefined;
@@ -155,8 +162,13 @@ export async function submit(opts: SubmitOptions): Promise<SubmitResult> {
       if (files.length === 0) throw new SubmitError(`${opts.dir}: no files to zip`);
       const tmp = mkdtempSync(join(tmpdir(), 'air-submit-'));
       const path = join(tmp, assetName(dir, now));
-      zip = { path, tmp, ctx: { url: '', sha256: '', bytes: 0, expires } };
-      zip.ctx.bytes = await writeZip(path, files.map((f) => ({ name: f, path: join(dir, ...f.split('/')) })));
+      zip = { path, tmp, ctx: { url: '', sha256: '', bytes: 0, ...(expires !== undefined ? { expires } : {}) } };
+      try {
+        zip.ctx.bytes = await writeZip(path, files.map((f) => ({ name: f, path: join(dir, ...f.split('/')) })));
+      } catch (e) {
+        if (e instanceof ZipWriteError) throw new SubmitError(`can't zip ${opts.dir}: ${e.message}`);
+        throw e;
+      }
       if (zip.ctx.bytes > MAX_ASSET_BYTES) throw new SubmitError(`the context zip is ${zip.ctx.bytes} bytes; release assets are limited to 2 GiB`);
       zip.ctx.sha256 = await sha256File(path);
       // Where GitHub will serve it; replaced by the uploaded asset's own URL below.

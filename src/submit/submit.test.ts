@@ -62,8 +62,10 @@ test('submit zips the dir, uploads it, fills in context: and files the issue', a
   const linted = lint(filed.body);
   assert.ok(linted.ok, JSON.stringify(linted.errors));
   assert.deepEqual(linted.request!.context, {
-    url: asset.url, bytes: asset.data!.length, sha256: createHash('sha256').update(asset.data!).digest('hex'), expires: '2026-12-07',
+    url: asset.url, bytes: asset.data!.length, sha256: createHash('sha256').update(asset.data!).digest('hex'),
   });
+  // No --expires: no date, so spec §7 keeps the zip 14 days after the issue closes.
+  assert.doesNotMatch(filed.body, /expires:/);
   assert.equal(r.issue!.url, 'https://github.com/o/requests/issues/1');
 
   // The uploaded zip extracts to the collected files.
@@ -82,6 +84,7 @@ test('submit uses the URL GitHub reports for the asset', async () => {
   assert.match(r.context!.url, /^https:\/\/ghe\.example\.com\/o\/requests\/releases\/download\/air-context\//);
   assert.equal(lint(gh.filed[0]!.body).request!.context!.url, r.context!.url);
   assert.equal(lint(gh.filed[0]!.body).request!.context!.expires, '2027-01-31');
+  assert.equal(r.context!.expires, '2027-01-31');
 });
 
 test('dry run returns the final body and file list and touches nothing', async () => {
@@ -90,7 +93,7 @@ test('dry run returns the final body and file list and touches nothing', async (
   assert.equal(r.title, 'CSV summary');
   assert.deepEqual(r.files, ['.gitignore', 'data/a.csv', 'data/b.csv']);
   assert.equal(r.issue, undefined);
-  assert.match(r.body, /^context:\n {2}url: https:\/\/github\.com\/o\/requests\/releases\/download\/air-context\/.+\.zip\n {2}sha256: [0-9a-f]{64}\n {2}bytes: \d+\n {2}expires: 2026-12-07\n---$/m);
+  assert.match(r.body, /^context:\n {2}url: https:\/\/github\.com\/o\/requests\/releases\/download\/air-context\/.+\.zip\n {2}sha256: [0-9a-f]{64}\n {2}bytes: \d+\n---$/m);
   assert.ok(lint(r.body).ok);
   assert.deepEqual(gh.log, []);
 });
@@ -163,4 +166,10 @@ test('submit validates --expires', async () => {
   for (const expires of ['2026-13-01x', 'tomorrow', '2026-11-06']) {
     await assert.rejects(submit({ repo: 'o/requests', body: BODY, releases: fakeReleases(), now: NOW, expires }), SubmitError);
   }
+});
+
+test('a file name the zip format forbids is a refusal, not a crash', { skip: process.platform === 'win32' }, async () => {
+  const dir = tree({ 'data/a.csv': '1\n', 'back\\slash.txt': 'x' });
+  await assert.rejects(submit({ repo: 'o/requests', body: BODY, dir, releases: fakeReleases(), now: NOW, dryRun: true }), (e: unknown) =>
+    e instanceof SubmitError && /backslash/.test(e.message));
 });

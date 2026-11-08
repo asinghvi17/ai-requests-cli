@@ -36,6 +36,10 @@ test('gitignore patterns', () => {
   assert.ok(match('[ab].md', 'b.md'));
   assert.ok(!match('[!ab].md', 'b.md'));
   assert.ok(match('[!ab].md', 'c.md'));
+  // A negated class never matches a path separator.
+  assert.ok(!match('x[!ab]y', 'x/y'));
+  assert.ok(!match('/x[!ab]y', 'x/y'));
+  assert.ok(match('x[!ab]y', 'xcy'));
   // Negation: the last matching rule wins.
   assert.ok(!match('*.log\n!keep.log', 'keep.log'));
   assert.ok(match('*.log\n!keep.log\nkeep.log', 'keep.log'));

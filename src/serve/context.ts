@@ -7,6 +7,7 @@ import { defaultHost } from '../claim/claim.ts';
 import { createTrust, type Trust } from '../claim/trust.ts';
 import { createGh } from '../gh/gh.ts';
 import { requestsRepo, type RequestsRepo } from '../gh/issues.ts';
+import { releases, type Releases } from '../gh/releases.ts';
 import type { MatchConfig } from '../match/match.ts';
 import { createTmux, type Tmux } from '../tmux/tmux.ts';
 import { configFile, loadConfig as loadSubscriptions, readAll, stateDir as usageStateDir } from '../usage/index.ts';
@@ -44,6 +45,8 @@ export interface ServeContext {
   setupTimeoutMs?: number;
   download?: Download;
   codexHome?: string;
+  /** Release assets for the daily sweep; default: the requests repo through gh. */
+  releases?: Releases;
 }
 
 export const SERVE_LOG = 'serve.log';
@@ -76,6 +79,7 @@ export function serveContext(config: Config, repo: string, opts: { echo?: (line:
   return {
     gh: issues,
     api: serveGitHub(repo, gh),
+    releases: releases(repo, gh),
     tmux: createTmux(),
     config,
     root: config.workspace_root,

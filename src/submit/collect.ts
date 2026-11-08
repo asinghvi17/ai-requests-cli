@@ -38,7 +38,8 @@ function classToRegex(glob: string, i: number): [string, number] | undefined {
     body += c === '\\' || c === '^' || c === '[' ? `\\${c}` : c;
   }
   if (j >= glob.length) return undefined;
-  return [`[${neg ? '^' : ''}${body}]`, j];
+  // A negated class still never matches `/`.
+  return [neg ? `[^/${body}]` : `[${body}]`, j];
 }
 
 function globToRegex(glob: string): string {
