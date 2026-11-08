@@ -149,8 +149,10 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     comments = await gh.comments(n);
     holder = currentClaim(await markedComments(comments, trust));
   } catch (e) {
-    // We never learned whether we hold it: withdraw the claim rather than leave one nobody acts on.
-    await gh.deleteComment(mine.id).catch(() => {});
+    // We never learned whether we hold it: withdraw the claim rather than leave one nobody acts on. If the
+    // comment can't be deleted, a release marker for it ends the claim just the same.
+    await gh.deleteComment(mine.id).catch(() =>
+      gh.comment(n, `Withdrawn by ${code(host)}: it could not complete the claim.\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n`)).catch(() => {});
     await gh.unassign(n, viewer).catch(() => {});
     throw e;
   }
@@ -200,6 +202,8 @@ export interface ReleaseOptions {
   now?: () => Date;
   /** Release because of a failure: sets `air:failed` and explains why. */
   failure?: { step: string; detail: string };
+  /** Text of the release comment when it isn't a failure (default: `Released by <host>.`). */
+  message?: string;
   /** The claim to release. Default: the nonce of this machine's workspace for the holding claim. */
   nonce?: string;
 }
@@ -231,7 +235,7 @@ export async function release(opts: ReleaseOptions): Promise<ReleaseResult> {
   const viewer = await gh.viewer();
   const message = opts.failure
     ? `air on ${code(host)} failed at ${opts.failure.step} and released this request.\n\n${opts.failure.detail}\n\nRemove \`air:failed\` to offer it again.`
-    : `Released by ${code(host)}.`;
+    : opts.message ?? `Released by ${code(host)}.`;
   await giveUp(gh, n, viewer, host, nonce, { message, failed: opts.failure !== undefined, labels: issue.labels });
 
   if (ws) {

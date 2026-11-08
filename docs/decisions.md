@@ -127,6 +127,48 @@ Alternatives considered:
   user's credential setup) plus `GIT_TERMINAL_PROMPT=0`.
 
 
+## 2026-11-07: `air serve` loop and job lifecycle (`src/serve/`)
+
+- The loop is code, no model call. Workspace `state.json` carries a `job` record and is the only job state;
+  the server rescans it each tick, so restarts and the `air run/stop/start` commands need no IPC.
+  `serve.json` holds only the `air pause` flag.
+- Interactive agents don't exit when done, so AIR_TASK.md tells the agent to create `AIR_DONE`; the server then
+  closes the session and delivers. Pane exit 0 also delivers; non-zero fails.
+- Claude Code gets `--session-id <uuid>` from air, so `air start` can `--resume` it; Codex's id comes from its
+  rollout files. A failed resume falls back to a fresh start pointed at `out/` and the git log.
+- Agent argv comes from new `[agents.<harness>]` config (`command`, `args`) plus the tier's model;
+  `tick_seconds` sets the tick. Subscriptions to read are still `subscriptions.json` (usage module), matched by
+  name against `[subscriptions.<name>]` settings.
+- `air:done` unassigns the server's account (release markers are not posted for done issues, per §9).
+- Any pause (operator, quota) lasting 48 h releases the claim with a comment.
+- Artifacts and over-long reports carry no `expires`, so spec §7's default applies: 14 days after the issue closes.
+- Every gh call has a timeout (2 min; uploads 30 min) and gh runs in its own process group, killed on expiry.
+- No write to an issue (label, comment, resume) without first confirming our claim still holds it. A lost claim
+  marks the workspace `lost`, closes our window and leaves the issue to its holder. That costs one comments read
+  per held job per tick.
+
+## 2026-11-07: AIR_DONE wins over a closed or dead window; `--once` waits for a lagging issue list
+
+- An agent may exit right after creating `AIR_DONE`, and its window can be gone by the next tick. Wherever the
+  server finds a job's window closed or its pane dead (a live tick, a restart, re-adoption), it checks `AIR_DONE`
+  first and delivers if it is there. Only without it does a closed window pause the job, or a non-zero exit fail it.
+- `air start` and `air run` deliver instead of starting the agent when `AIR_DONE` already exists and the claim holds,
+  so a job paused before that check existed can still be finished.
+- GitHub's issue list lags a request filed seconds earlier. A `--once` poll that finds no candidates polls again
+  every 10 s for up to `--once-wait` seconds (default 60) and logs each empty poll.
+
+## 2026-11-08: tmux clients run with `-u`; a missing window needs two ticks
+
+- Root cause of the live Mac smoke-run pause: tmux treats a client as UTF-8 only if `TMUX` is set or `LC_ALL`, `LC_CTYPE`
+  or `LANG` contains `UTF-8`. Otherwise it sanitises command output, and every tab of the `list-panes -F` format
+  becomes `_` (tmux 3.6 and 3.8 alike). No row parsed, `startAgent` recorded no pane nonce, and the next tick found
+  "no window" for a live agent. air's tmux calls now always pass `-u`. A row without separators is an error, never "no panes".
+- "error connecting to" means no server only for a missing socket or a refused connection (not, say, a path too long).
+- One tick that cannot find a running job's window never decides its fate: only a second consecutive miss (same
+  pane) pauses it, or resumes it after a restart. AIR_DONE is checked first. A running job with no recorded pane
+  adopts its issue's only tagged pane.
+- `air debug panes` (hidden) prints tmux's raw rows (with and without `-u`), the jobs air parses and the jobs it holds.
+
 ## 2026-11-07: `air submit`, `air sweep`, `air lint` and CI
 
 - Context zips are written by a small writer on `node:zlib` (deflate, stored for empty files, no zip64:
@@ -136,9 +178,17 @@ Alternatives considered:
   so a directory that isn't a repo works the same. Default skipped dirs: `DEFAULT_EXCLUDES` in
   `src/submit/collect.ts`; `--exclude` adds, `--no-default-excludes` clears.
 - The secrets check reports a path and a reason, never the matched text. `--allow-file` takes a path or a
-  directory. `context.expires` defaults to 30 days after submitting; open or active issues keep it anyway.
+  directory. `context.expires` is written only with `--expires`: without it spec §7 keeps the zip until 14
+  days after the issue closes. (A fixed default date counted from submission would leave a long-open
+  request's zip with no retention at all once it closed.)
+- The zip writer checks every entry name against spec §5 (relative, no `..`, `\`, drive letter or control
+  characters) and opens each file with `O_NOFOLLOW` after an `lstat`, so only regular files go in and
+  symlinks are never followed. A failed write removes the partial zip.
 - If filing the issue fails after the upload, submit deletes the zip: no issue would refer to it, so
   `air sweep` would never collect it.
 - Sweep errs toward keeping: any error listing assets, issues or comments, or checking trust, aborts before
   deleting anything; a body that no longer parses still holds any asset URL it contains (default expiry);
   asset URLs compare with host/owner/repo case-folded. Only a failed delete is per-asset.
+- `air serve` runs `sweep()` at most once per 24 h (spec §7), in the background of the tick loop, never with
+  `--once`. The start time is recorded in `serve.json` (`lastSweepAt`) before the sweep runs, so a failing
+  sweep is retried the next day, not every tick; a failure is only logged.

@@ -17,8 +17,10 @@ test('defaults', () => {
   assert.deepEqual(parseConfig('', HOME), {
     workspace_root: '/home/u/air',
     max_jobs: 1,
+    tick_seconds: 60,
     subscriptions: {},
     models: { claude: { small: 'haiku', medium: 'sonnet', large: 'opus' } },
+    agents: {},
   });
 });
 
@@ -27,6 +29,7 @@ test('full config', () => {
 repo = "acme/ai-requests"
 workspace_root = "~/work/air"
 max_jobs = 3
+tick_seconds = 30
 
 [subscriptions.max]
 harness = "claude"
@@ -44,11 +47,18 @@ large = "claude-opus-5-5"
 small = "s"
 medium = "m"
 large = "l"
+
+[agents.claude]
+command = ["/opt/claude/bin/claude"]
+args = ["--permission-mode", "acceptEdits"]
+
+[agents.codex]
 `, HOME);
   assert.deepEqual(c, {
     repo: 'acme/ai-requests',
     workspace_root: '/home/u/work/air',
     max_jobs: 3,
+    tick_seconds: 30,
     subscriptions: {
       max: { harness: 'claude', scale: 20, reserve: 0.3 },
       'codex-pro': { harness: 'codex', scale: 1, reserve: 0, budget: 40 },
@@ -56,6 +66,10 @@ large = "l"
     models: {
       claude: { small: 'haiku', medium: 'sonnet', large: 'claude-opus-5-5' },
       codex: { small: 's', medium: 'm', large: 'l' },
+    },
+    agents: {
+      claude: { command: ['/opt/claude/bin/claude'], args: ['--permission-mode', 'acceptEdits'] },
+      codex: { command: ['codex'], args: [] },
     },
   });
 });
@@ -75,6 +89,11 @@ test('validation errors', () => {
     ['[models.claude]\nhuge = "x"', /unknown key models.claude.huge/],
     ['a = ', /line 1/],
     ['[models.toString]\nsmall = "s"', /models.toString is missing medium, large/],
+    ['tick_seconds = 0', /tick_seconds must be a number >= 1/],
+    ['[agents.gemini]\ncommand = ["g"]', /agents.gemini: harness must be one of claude, codex/],
+    ['[agents.claude]\ncommand = []', /agents.claude.command must not be empty/],
+    ['[agents.claude]\ncommand = "claude"', /agents.claude.command must be an array of strings/],
+    ['[agents.claude]\nargs = [1]', /agents.claude.args must be an array of strings/],
     ['[subscriptions.constructor]\nharness = "claude"', /is not allowed/],
   ];
   for (const [src, re] of cases) assert.throws(() => parseConfig(src, HOME), (e: unknown) => e instanceof ConfigError && re.test(e.message), src);

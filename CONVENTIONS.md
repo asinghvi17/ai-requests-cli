@@ -20,6 +20,7 @@
 | `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`), release assets and repo-wide listings (`releases.ts`), and in-memory fakes for tests |
 | `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
+| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery |
 | `src/submit/` | `air submit`: file collection (`.gitignore`), secrets check, zip writer |
 | `src/sweep/` | `air sweep`: expired release assets |
 | `docs/decisions.md` | decision log: append, newest last |

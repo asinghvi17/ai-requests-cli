@@ -76,9 +76,34 @@ describe('tmux (fake runner)', () => {
       row('8', 'ghi', '@3', '%3', 'air-new-ghi', '13', '0', '', 'starting'),
     ].join('\n'));
     assert.deepEqual(jobs, [
-      { issue: 42, nonce: 'abc', windowId: '@1', paneId: '%1', windowName: '#42', pid: 11, dead: false, exitStatus: null },
-      { issue: 7, nonce: 'def', windowId: '@2', paneId: '%2', windowName: '#7', pid: 12, dead: true, exitStatus: 3 },
+      { issue: 42, nonce: 'abc', windowId: '@1', paneId: '%1', windowName: '#42', pid: 11, dead: false, exitStatus: null, exitSignal: null },
+      { issue: 7, nonce: 'def', windowId: '@2', paneId: '%2', windowName: '#7', pid: 12, dead: true, exitStatus: 3, exitSignal: null },
     ]);
+  });
+
+  test('regression: a pane whose pty closed before tmux reaped it is not dead yet', () => {
+    // tmux sets pane_dead when the pty closes, but pane_dead_status/_signal only once it has reaped the child.
+    // Reading "dead, no status" as an exit gave flaky null exit statuses (seen on CI under bun).
+    const [exiting, signalled] = parseJobs([
+      row('7', 'def', '@2', '%2', '#7', '12', '1', '', 'running', '', ''),
+      row('8', 'ghi', '@3', '%3', '#8', '13', '1', '', 'running', '', '9'),
+    ].join('\n'));
+    assert.equal(exiting!.dead, false);
+    assert.equal(exiting!.exitStatus, null);
+    assert.deepEqual([signalled!.dead, signalled!.exitStatus, signalled!.exitSignal], [true, null, 9]);
+  });
+
+  test('regression: sanitised list-panes output (tabs as `_`) is an error, not "no jobs"', async () => {
+    assert.throws(() => parseJobs('42_abc_@1_%1_#42_11_0__running__\n'), /unparseable row .*is the tmux client UTF-8/);
+    const { run } = fake([[is('list-panes'), () => ok('__@0_%0_log_10_0____\n42_abc_@1_%1_#42_11_0__running__\n')]]);
+    await assert.rejects(createTmux({ run }).listJobs(), /unparseable row/);
+  });
+
+  test('a socket air cannot connect to for another reason is an error, not "no server"', async () => {
+    const { run } = fake([[is('list-panes'), () => fail('error connecting to /very/long/path/tmux-501/air (File name too long)')]]);
+    await assert.rejects(createTmux({ run }).listJobs(), /File name too long/);
+    const gone = fake([[is('list-panes'), () => fail('error connecting to /tmp/tmux-501/air (No such file or directory)')]]);
+    assert.deepEqual(await createTmux({ run: gone.run }).listJobs(), []);
   });
 
   test('listJobs is empty without a server', async () => {
@@ -105,6 +130,16 @@ describe('tmux (fake runner)', () => {
     assert.equal(await createTmux({ run: f.run }).ensureSession(), false);
     const g = fake([[is('has-session'), () => fail("can't find session: air")], [is('new-session'), () => fail('boom')]]);
     await assert.rejects(createTmux({ run: g.run }).ensureSession(), /boom/);
+  });
+
+  test('regression: a server still exiting after kill-server means no jobs, and a new session waits for it', async () => {
+    // Seen on CI: the client connected to a server that kill-server had told to exit.
+    const gone = fail('server exited unexpectedly');
+    assert.deepEqual(await createTmux({ run: fake([[is('list-panes'), () => gone]]).run }).listJobs(), []);
+    let tries = 0;
+    const f = fake([[is('has-session'), () => gone], [is('new-session'), () => (++tries < 3 ? gone : ok())]]);
+    assert.equal(await createTmux({ run: f.run }).ensureSession(), true);
+    assert.equal(tries, 3);
   });
 
   test('listJobs kills panes left in starting and never adopts them', async () => {

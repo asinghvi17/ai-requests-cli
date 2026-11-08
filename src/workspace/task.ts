@@ -3,6 +3,9 @@
 import { parseFrontMatter, type Request } from '../spec/frontmatter.ts';
 import type { State } from './state.ts';
 
+/** The agent creates this file in the workspace root when it is done; `air serve` then delivers. */
+export const DONE_FILE = 'AIR_DONE';
+
 /** The request body after its front matter. */
 export function requestText(body: string): string {
   const fm = parseFrontMatter(body);
@@ -45,6 +48,9 @@ export function taskPrompt(state: State, request: Request, body: string, dir: st
     '## Delivering',
     '',
     DELIVERY[request.deliver](request),
+    '',
+    `When you have finished, and only then, create the empty file \`${DONE_FILE}\` in \`${dir}\`. air delivers the result`,
+    'as soon as that file appears, and closes your session.',
     '',
     'The request follows. Its "Done when" list is how the result will be judged.',
     '',

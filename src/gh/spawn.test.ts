@@ -1,7 +1,7 @@
 // spawnGh against real processes: fake `gh` scripts put first on PATH.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GhError, createGh, spawnGh } from './gh.ts';
@@ -48,3 +48,32 @@ test('missing gh is a missing_gh error', async () => {
   dirs.push(process.env.PATH);
   await assert.rejects(spawnGh(['api', 'x']), (e: unknown) => e instanceof GhError && e.kind === 'missing_gh');
 });
+
+test('a hanging gh is killed at the timeout and the call rejects with a timeout error', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'air-hang-'));
+  dirs.push(dir);
+  const pidFile = join(dir, 'pid');
+  fakeGh(`echo $$ > ${pidFile}; exec sleep 600`);
+  const t0 = Date.now();
+  await assert.rejects(createGh(spawnGh, { timeoutMs: 300 }).api('repos/o/r'), (e: unknown) => e instanceof GhError && e.kind === 'timeout' && /timed out/.test(e.message));
+  assert.ok(Date.now() - t0 < 2000);
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  for (let i = 0; i < 50 && alive(pid); i++) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(alive(pid), false, 'gh was killed');
+});
+
+test('an already-aborted signal rejects at once', async () => {
+  fakeGh('sleep 600');
+  const ctl = new AbortController();
+  ctl.abort();
+  await assert.rejects(spawnGh(['api', 'x'], undefined, ctl.signal), (e: unknown) => e instanceof GhError && e.kind === 'timeout');
+});
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}

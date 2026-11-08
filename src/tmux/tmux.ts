@@ -33,9 +33,16 @@ export interface Job {
   windowName: string;
   /** PID of the pane's process (the agent, as `env` execs it). */
   pid: number;
+  /**
+   * The agent has exited and tmux has reaped it. tmux closes a pane's pty (`pane_dead`) before it reaps the
+   * child and records the status, so a pane that is `pane_dead` with neither status nor signal yet counts as
+   * alive: it is dead an instant later, with its real exit status.
+   */
   dead: boolean;
   /** Exit status once the pane is dead (null while alive or when killed by a signal). */
   exitStatus: number | null;
+  /** Signal number that killed it, once dead by a signal. */
+  exitSignal: number | null;
   /** The job's launcher dir, removed with its window if the launcher never ran. */
   launcher?: string;
 }
@@ -62,11 +69,16 @@ export interface StopOptions {
 
 const SEP = '\t';
 const LIST_FORMAT = ['#{@air_job}', '#{@air_nonce}', '#{window_id}', '#{pane_id}', '#{window_name}',
-  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}'].join(SEP);
+  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}', '#{pane_dead_signal}'].join(SEP);
 
-export function defaultRunner(socket: string): TmuxRunner {
+/**
+ * `-u`: the client is UTF-8 whatever the caller's locale. A client tmux thinks is not UTF-8 (no `UTF-8` in
+ * LC_ALL, LC_CTYPE or LANG, as in a Mac shell without a locale) gets its output sanitised, and every tab
+ * of a `-F` format becomes `_`: then no list-panes line parses and every job looks gone.
+ */
+export function defaultRunner(socket: string, env: NodeJS.ProcessEnv = process.env): TmuxRunner {
   return (args) => new Promise((resolve, reject) => {
-    const child = spawn('tmux', ['-L', socket, ...args], { env: clientEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('tmux', ['-u', '-L', socket, ...args], { env: clientEnv(env), stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.setEncoding('utf8').on('data', d => { stdout += d; });
     child.stderr.setEncoding('utf8').on('data', d => { stderr += d; });
@@ -81,13 +93,24 @@ export function quoteTmux(word: string): string {
   return `'${word.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * No server (so no jobs). "server exited unexpectedly" is a client that connected to a server on its way out:
+ * `kill-server` returns before the server process is gone, and its panes are gone with it.
+ */
 function noServer(stderr: string): boolean {
-  return /no server running|error connecting to|can't find session|no such session/i.test(stderr);
+  return /no server running|can't find session|no such session|server exited unexpectedly/i.test(stderr) || noSocket(stderr);
 }
+
+/** "error connecting to <socket> (<reason>)" means no server only when the socket is missing or refuses. */
+function noSocket(stderr: string): boolean {
+  return /error connecting to .*\((No such file or directory|Connection refused)\)/i.test(stderr);
+}
+
+const exiting = (stderr: string) => /server exited unexpectedly/i.test(stderr);
 
 /** The target (pane, window or server) went away under us. */
 function vanished(stderr: string): boolean {
-  return /can't find (pane|window|session)|no such (pane|window)|no server running|error connecting to|server exited/i.test(stderr);
+  return /can't find (pane|window|session)|no such (pane|window)|no server running|server exited/i.test(stderr) || noSocket(stderr);
 }
 
 /** Where `tmux -L <socket>` puts its socket. */
@@ -113,17 +136,23 @@ export function parseJobs(out: string): Job[] {
 export function parsePanes(out: string): { jobs: Job[]; stale: Stale[] } {
   const jobs: Job[] = [], stale: Stale[] = [];
   for (const line of out.split('\n')) {
-    const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher] = line.split(SEP);
+    // Every row has separators; a row without any is tmux's sanitised output (see defaultRunner), and
+    // reading it as "no panes" would close every job.
+    if (line.trim() && !line.includes(SEP)) throw new Error(`tmux list-panes: unparseable row ${JSON.stringify(line.slice(0, 200))} (tabs replaced: is the tmux client UTF-8?)`);
+    const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher, signal] = line.split(SEP);
     if (!job || !nonce || !/^\d+$/.test(job) || !windowId || !paneId) continue;
     const extra = launcher ? { launcher } : {};
     if (state !== 'running') {
       stale.push({ issue: Number(job), nonce, windowId, paneId, ...extra });
       continue;
     }
-    const isDead = dead === '1';
+    const code = status !== undefined && /^\d+$/.test(status) ? Number(status) : null;
+    const sig = signal !== undefined && /^\d+$/.test(signal) ? Number(signal) : null;
+    // Dead only once tmux has reaped it (see Job.dead): a closed pty alone is not an exit.
+    const isDead = dead === '1' && (code !== null || sig !== null);
     jobs.push({
       issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: Number(pid),
-      dead: isDead, exitStatus: isDead && status !== undefined && /^\d+$/.test(status) ? Number(status) : null, ...extra,
+      dead: isDead, exitStatus: isDead ? code : null, exitSignal: isDead ? sig : null, ...extra,
     });
   }
   return { jobs, stale };
@@ -171,7 +200,12 @@ export function createTmux(options: TmuxOptions = {}) {
       ? writeLauncher({ argv: opts.argv?.length ? opts.argv : [process.env.SHELL || '/bin/sh'], env: opts.env, cwd: opts.cwd })
       : undefined;
     if (launcher) args.push('--', ...launcher.argv);
-    const r = await run(args);
+    let r = await run(args);
+    // A server still shutting down took our connection: wait for it to go, then start a fresh one.
+    for (let i = 0; i < 20 && r.code !== 0 && exiting(r.stderr); i++) {
+      await sleep(50);
+      r = await run(args);
+    }
     if (r.code === 0) return true;
     launcher?.cleanup();
     if (/duplicate session/i.test(r.stderr)) return false; // lost a race with another ensureSession
@@ -192,6 +226,11 @@ export function createTmux(options: TmuxOptions = {}) {
     const { jobs, stale } = parsePanes(r.stdout);
     for (const p of stale) await killOwned(p);
     return jobs;
+  }
+
+  /** The raw `list-panes -a` result in air's format, for `air debug panes`. */
+  async function listPanesRaw(): Promise<RunResult & { format: string }> {
+    return { ...(await run(['list-panes', '-a', '-F', LIST_FORMAT])), format: LIST_FORMAT };
   }
 
   /** The job's pane. Should duplicates exist anyway, keep the oldest (lowest pane id) and kill the rest. */
@@ -327,7 +366,7 @@ export function createTmux(options: TmuxOptions = {}) {
     await run(['kill-server']);
   }
 
-  return { socket, session, ensureSession, startJob, listJobs, stopJob, isAlive, capture, attachArgs, killServer };
+  return { socket, session, ensureSession, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, attachArgs, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;

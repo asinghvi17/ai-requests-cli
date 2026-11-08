@@ -39,8 +39,9 @@ air lint request.md                          # check a body against spec/v0.md
 
 `DIR` is zipped honouring `.gitignore` and skipping `.git/`, `node_modules/` and similar (`--exclude NAME`
 adds more). Files that look like secrets (`.env*`, keys, credentials, token patterns) are refused unless you
-pass `--allow-file PATH` for each. The zip goes on the requests repo's `air-context` release with an
-expiry (`--expires`, default 30 days); `air sweep` deletes expired zips of closed requests.
+pass `--allow-file PATH` for each. The zip goes on the requests repo's `air-context` release. It is kept while
+the issue is open or being worked on, then 14 days after it closes, or until `--expires YYYY-MM-DD` if you
+give one. `air sweep` (which `air serve` runs daily) deletes expired zips.
 
 ## Volunteer quickstart
 
@@ -60,12 +61,23 @@ reserve = 0.3    # keep 30% of each window for yourself
 small = "haiku"
 medium = "sonnet"
 large = "opus"
-# Codex works the same way: [subscriptions.codex] with harness = "codex", and a [models.codex] table.
+
+[agents.claude]  # how air starts the agent
+command = ["claude"]
+args = ["--permission-mode", "acceptEdits"]   # whatever lets it work unattended on your machine
+# Codex works the same way: [subscriptions.codex] with harness = "codex", [models.codex] and [agents.codex].
 ```
 
 Then check what quota air sees, and start serving:
 
 ```sh
-air usage
-air serve
+air usage            # quota air reads for each subscription
+air serve            # tick every 60 s: claim what fits, set it up, start the agent in tmux, deliver
+air serve --manual   # claim and set up, but wait for `air run ISSUE`
+air serve --once     # one tick, then wait for its jobs to finish (re-polls for up to 60 s if it finds nothing: --once-wait)
+air attach [ISSUE]   # watch the server log (window 0) or a job
+air stop ISSUE       # interrupt the agent; keeps the claim and workspace (air:paused)
+air start ISSUE      # resume the agent's own session
+air pause | resume   # stop or resume taking new work; running jobs continue
+air release ISSUE    # give a claimed request back
 ```
