@@ -226,13 +226,30 @@ if ! gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' | grep
   gh label create ai-request --repo "$REPO" --description "air request" --color 1d76db
 fi
 OTHERS=$(gh issue list --repo "$REPO" --label ai-request --state open --limit 100 --json number --jq '.[].number' | tr '\n' ' ')
-[ -z "${OTHERS// /}" ] || die "open ai-request issues already exist ($OTHERS): air serve would claim the oldest one. Close them or use another repo."
+if [ -n "${OTHERS// /}" ]; then
+  HINT=""
+  for o in $OTHERS; do HINT="$HINT
+  bash $0 --cleanup $o"; done
+  die "open ai-request issues already exist (${OTHERS% }): air serve would claim the oldest one.
+Close them first. For smoke-test issues left by an earlier run (titles starting \"$TITLE_PREFIX\"):$HINT
+Close any other issue by hand, or use another repo."
+fi
 
 say "filing the test issue"
 URL=$(gh issue create --repo "$REPO" --title "$TITLE" --body-file "$WORK/body.md" --label ai-request)
 N=${URL##*/}
 echo "$N" > "$LAST_ISSUE_FILE"
 echo "issue: $URL"
+[[ "$N" =~ ^[0-9]+$ ]] || die "could not read the issue number from '$URL'"
+
+# GitHub's issue list (and its label index) lags a just-created issue: wait until air would see it.
+say "waiting for #$N to show up in the open ai-request list (timeout ${SMOKE_LIST_TIMEOUT:-120}s)"
+LIST_END=$(( $(date +%s) + ${SMOKE_LIST_TIMEOUT:-120} ))
+until gh issue list --repo "$REPO" --label ai-request --state open --limit 100 --json number --jq '.[].number' | grep -x "$N" >/dev/null; do
+  [ "$(date +%s)" -lt "$LIST_END" ] || die "#$N did not show up in the open ai-request list within ${SMOKE_LIST_TIMEOUT:-120}s. Close it with: bash $0 --cleanup $N"
+  sleep 3
+done
+echo "#$N is listed"
 
 # ---------------------------------------------------------------------------------------------- serve
 say "air serve --once (timeout ${SERVE_TIMEOUT}s)"

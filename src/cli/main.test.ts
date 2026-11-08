@@ -96,7 +96,7 @@ test('usage errors exit 1 with the command usage', async () => {
 test('per-command --help', async () => {
   const r = await call('serve', '--help');
   assert.equal(r.code, 0);
-  assert.match(r.out, /usage: air serve \[--repo OWNER\/NAME\] \[--manual\] \[--once\]/);
+  assert.match(r.out, /usage: air serve \[--repo OWNER\/NAME\] \[--manual\] \[--once \[--once-wait SECONDS\]\]/);
 });
 
 test('runs as a script', () => {

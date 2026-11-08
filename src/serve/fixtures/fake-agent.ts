@@ -7,6 +7,7 @@
 //   artifact       write files to out/              empty     write nothing to out/
 //   wait           wait for the file `go`, then report "resumed"
 //   exit N         exit N at once                   hang      never finish
+//   exitdone       wait for the file `go`, then report "finished", create AIR_DONE and exit 0 at once
 // A start with --resume (or `resume`) exits 3 at once if the file `resume-fails` exists.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -27,6 +28,15 @@ console.log(`fake agent: ${mode} ${arg}`);
 
 if (mode === 'exit') process.exit(Number(arg));
 if (mode === 'hang') idle();
+else if (mode === 'exitdone') {
+  const t = setInterval(() => {
+    if (!existsSync(join(ws, 'go'))) return;
+    clearInterval(t);
+    report('finished');
+    done();
+    process.exit(0);
+  }, 50);
+}
 else if (mode === 'wait') {
   const t = setInterval(() => {
     if (!existsSync(join(ws, 'go'))) return;

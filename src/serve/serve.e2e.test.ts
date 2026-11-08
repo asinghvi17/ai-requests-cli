@@ -500,6 +500,109 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(comments(w, 19).length, 0);
     assert.equal(allWorkspaces(w.root, 'o/requests').length, 0);
   });
+
+  test('regression: an agent that exits right after AIR_DONE, closing its window, is delivered, not paused', async () => {
+    const w = world();
+    w.store.addIssue({ number: 40, body: body('exitdone') });
+    await running(w, 40);
+    const dir = job(w, 40)!.dir;
+    // One tick sees the window already closed, and AIR_DONE appears (the agent writes it and exits) only after
+    // that tick checked for it: the order of the live Mac run.
+    let step = 0;
+    w.ctx.tmux = {
+      ...tmuxClient,
+      listJobs: async () => {
+        if (step === 1) {
+          step = 2;
+          return (await tmuxClient.listJobs()).filter((j) => j.issue !== 40);
+        }
+        if (step === 2) {
+          step = 0;
+          writeFileSync(join(dir, 'go'), '');
+          await waitFor(async () => existsSync(join(dir, 'AIR_DONE')) && !!(await tmuxClient.listJobs()).find((j) => j.issue === 40)?.dead);
+          await tmuxClient.stopJob(40, { graceMs: 0 });
+        }
+        return tmuxClient.listJobs();
+      },
+    };
+    step = 1;
+    await w.server.tick();
+    await w.server.idle();
+    assert.equal(step, 0, 'the tick looked for the window twice');
+    assert.equal(status(w, 40), 'done', w.logs.join('\n'));
+    assert.ok(w.logs.some((l) => /#40: its window is gone and AIR_DONE is there; delivering/.test(l)));
+    assert.ok(!w.logs.some((l) => /#40: its window was closed; paused/.test(l)));
+    assert.deepEqual(stateLabels(w, 40), ['air:done']);
+    assert.equal(comments(w, 40).at(-1)!.split('\n')[0], 'finished');
+  });
+
+  test('regression: air start delivers a paused job whose agent already created AIR_DONE', async () => {
+    const w = world();
+    jobDeps.loadConfig = () => w.ctx.config;
+    jobDeps.context = () => w.ctx;
+    let out = '';
+    const io = { out: (s: string) => { out += s; }, err: () => {} };
+    w.store.addIssue({ number: 41, body: body('exitdone') });
+    await running(w, 41);
+    const dir = job(w, 41)!.dir;
+    writeFileSync(join(dir, 'go'), '');
+    await waitFor(async () => existsSync(join(dir, 'AIR_DONE')) && !!(await tmuxClient.listJobs()).find((j) => j.issue === 41)?.dead);
+    // The state the closed-window bug left behind: paused by "the operator", window gone, AIR_DONE and the report there.
+    await tmuxClient.stopJob(41, { graceMs: 0 });
+    const j = readState(dir).job!;
+    updateState(dir, { job: { ...j, status: 'paused', startedAt: undefined, pausedAt: new Date().toISOString(), pauseReason: 'operator' } }, new Date());
+    const i = w.store.issues.get(41)!;
+    i.labels = [...i.labels.filter((l) => !l.startsWith('air:')), 'air:paused'];
+    assert.ok(existsSync(join(dir, 'out', 'REPORT.md')));
+    assert.equal((await holder(w, 41))?.nonce, readState(dir).nonce);
+
+    assert.equal(await main(['start', '41'], io), 0);
+    assert.match(out, /#41 had already finished \(AIR_DONE\); delivered it/);
+    assert.equal(status(w, 41), 'done');
+    assert.equal(job(w, 41)!.state.phase, 'done');
+    assert.deepEqual(stateLabels(w, 41), ['air:done']);
+    assert.equal(comments(w, 41).at(-1)!.split('\n')[0], 'finished');
+    assert.equal(argvLog(dir).length, 1, 'the agent was not started again');
+    assert.equal((await tmuxClient.listJobs()).some((x) => x.issue === 41), false);
+  });
+
+  test('regression: air run delivers a set-up job whose AIR_DONE already exists', async () => {
+    const w = world({ manual: true });
+    jobDeps.loadConfig = () => w.ctx.config;
+    jobDeps.context = () => w.ctx;
+    let out = '';
+    const io = { out: (s: string) => { out += s; }, err: () => {} };
+    w.store.addIssue({ number: 42, body: body('exitdone') });
+    await until(w, 'set up', () => status(w, 42) === 'ready' && job(w, 42)!.state.phase === 'ready');
+    const dir = job(w, 42)!.dir;
+    writeFileSync(join(dir, 'out', 'REPORT.md'), 'by hand');
+    writeFileSync(join(dir, 'AIR_DONE'), '');
+    assert.equal(await main(['run', '42'], io), 0);
+    assert.match(out, /#42 had already finished \(AIR_DONE\); delivered it/);
+    assert.equal(status(w, 42), 'done');
+    assert.equal(comments(w, 42).at(-1)!.split('\n')[0], 'by hand');
+    assert.equal(argvLog(dir).length, 0, 'no agent was started');
+  });
+
+  test('--once polls again when the issue list is still empty, then exits', async () => {
+    const w = world();
+    // GitHub's list lags a request filed seconds ago: it shows up only after the first poll.
+    const late = setTimeout(() => w.store.addIssue({ number: 43, body: body('comment late') }), 500);
+    try {
+      await w.server.run({ once: true, onceWaitMs: 15_000, oncePollMs: 200, watchMs: 100 });
+    } finally {
+      clearTimeout(late);
+    }
+    assert.equal(status(w, 43), 'done', w.logs.join('\n'));
+    assert.ok(w.logs.some((l) => /^--once: no open requests to claim yet; polling again in 0\.2 s/.test(l)), w.logs.join('\n'));
+
+    const idle = world();
+    const t0 = Date.now();
+    await idle.server.run({ once: true, onceWaitMs: 600, oncePollMs: 200 });
+    assert.ok(Date.now() - t0 >= 600);
+    assert.ok(idle.logs.filter((l) => /^--once: no open requests to claim yet/.test(l)).length >= 2, idle.logs.join('\n'));
+    assert.match(idle.logs.at(-1)!, /^--once: no open requests to claim after waiting 0\.6 s; exiting$/);
+  });
 });
 
 /** Our claim on #n is released and a rival server claims the issue and labels it, as another server would. */
@@ -510,6 +613,14 @@ async function takeOver(w: World, n: number, nonce: string) {
   i.labels = [...i.labels.filter((l) => !l.startsWith('air:')), 'air:claimed'];
   i.assignees = ['rival'];
   assert.equal((await holder(w, n))?.host, 'rival-box');
+}
+
+async function waitFor(check: () => Promise<boolean>, ms = 10_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > end) throw new Error('timed out');
+    await sleep(50);
+  }
 }
 
 async function stopViaCli(w: World, n: number) {

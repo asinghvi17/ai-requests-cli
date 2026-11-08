@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { loadConfig, type Config } from '../config.ts';
 import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
-import { claimHolds, ensureJob, jobOf, startAgent, stopAgent } from '../serve/jobs.ts';
+import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent } from '../serve/jobs.ts';
 import { acquireServeLock, readServerState, updateServerState } from '../serve/state.ts';
 import { stateDir as usageStateDir } from '../usage/index.ts';
 import { activeWorkspace, readState } from '../workspace/state.ts';
@@ -42,6 +42,10 @@ function workspace(ctx: ServeContext, n: number): string {
 }
 
 export async function serveCommand(inv: Invocation): Promise<number> {
+  const raw = inv.flags['once-wait'];
+  if (raw !== undefined && inv.flags.once !== true) throw new UsageError('--once-wait needs --once');
+  if (raw !== undefined && (typeof raw !== 'string' || !/^\d+$/.test(raw))) throw new UsageError(`--once-wait must be a number of seconds, got ${JSON.stringify(raw)}`);
+  const onceWaitMs = typeof raw === 'string' ? Number(raw) * 1000 : undefined;
   const ctx = contextFor(inv);
   const unlock = acquireServeLock(ctx.stateDir);
   const server = createServer(ctx, { manual: inv.flags.manual === true });
@@ -60,7 +64,7 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   try {
-    await server.run({ once: inv.flags.once === true, signal: ctl.signal });
+    await server.run({ once: inv.flags.once === true, signal: ctl.signal, ...(onceWaitMs !== undefined ? { onceWaitMs } : {}) });
   } finally {
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
@@ -76,7 +80,7 @@ export async function runCommand(inv: Invocation): Promise<number> {
   const job = await ensureJob(ctx, dir);
   if (job.status !== 'ready') throw new UsageError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
   if (!(await claimHolds(ctx, readState(dir)))) throw new UsageError(`#${n} is no longer held by this machine's claim`);
-  await startAgent(ctx, dir);
+  if ((await startOrDeliver(ctx, dir)) === 'delivered') return delivered(inv, dir, n);
   inv.io.out(`started #${n}; watch it with \`air attach ${n}\`\n`);
   return 0;
 }
@@ -104,9 +108,27 @@ export async function startCommand(inv: Invocation): Promise<number> {
   const job = jobOf(state);
   if (job.status !== 'paused') throw new UsageError(`#${n} is ${job.status}, not paused`);
   if (!(await claimHolds(ctx, state))) throw new UsageError(`#${n} is no longer held by this machine's claim`);
-  await startAgent(ctx, dir);
+  if ((await startOrDeliver(ctx, dir)) === 'delivered') return delivered(inv, dir, n);
   inv.io.out(`started #${n}\n`);
   return 0;
+}
+
+/** Reports a delivery `startOrDeliver` made in place of a start (AIR_DONE was already there). */
+function delivered(inv: Invocation, dir: string, n: number): number {
+  const state = readState(dir);
+  const job = state.job;
+  if (job?.status === 'done') {
+    inv.io.out(`#${n} had already finished (AIR_DONE); delivered it\n`);
+    return 0;
+  }
+  if (job?.status === 'delivering') {
+    inv.io.err(`#${n} had already finished (AIR_DONE), but its delivery failed: ${job.lastError ?? 'unknown error'}; \`air serve\` retries it\n`);
+  } else if (state.phase === 'lost') {
+    inv.io.err(`#${n} is no longer held by this machine's claim; nothing was delivered\n`);
+  } else {
+    inv.io.err(`#${n} had already finished (AIR_DONE), but delivery failed${job?.failure ? ` at ${job.failure.step}` : ''}; the request is released as failed\n`);
+  }
+  return 1;
 }
 
 export function pauseCommand(inv: Invocation): number {

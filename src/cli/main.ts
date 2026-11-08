@@ -26,10 +26,10 @@ const REPO: FlagSpecs = { repo: { type: 'string' } };
 export const COMMANDS: Record<string, Command> = {
   submit: { usage: 'submit [--repo OWNER/NAME] [FILE]', summary: 'file a request issue', args: [], flags: { repo: { type: 'string' } } },
   serve: {
-    usage: 'serve [--repo OWNER/NAME] [--manual] [--once]',
-    summary: 'poll the requests repo, claim fitting requests and start agents (--manual: wait for `air run`; --once: one tick, then wait for its jobs)',
+    usage: 'serve [--repo OWNER/NAME] [--manual] [--once [--once-wait SECONDS]]',
+    summary: 'poll the requests repo, claim fitting requests and start agents (--manual: wait for `air run`; --once: one tick, then wait for its jobs; a --once that finds no request polls again every 10 s for --once-wait seconds, default 60)',
     args: [],
-    flags: { ...REPO, manual: { type: 'boolean' }, once: { type: 'boolean' } },
+    flags: { ...REPO, manual: { type: 'boolean' }, once: { type: 'boolean' }, 'once-wait': { type: 'string' } },
     run: serveCommand,
   },
   claim: { usage: 'claim [--repo OWNER/NAME] ISSUE', summary: 'claim a request', args: ['ISSUE'], flags: REPO, run: claimCommand },

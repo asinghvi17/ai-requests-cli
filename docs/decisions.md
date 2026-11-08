@@ -146,3 +146,13 @@ Alternatives considered:
 - No write to an issue (label, comment, resume) without first confirming our claim still holds it. A lost claim
   marks the workspace `lost`, closes our window and leaves the issue to its holder. That costs one comments read
   per held job per tick.
+
+## 2026-11-07: AIR_DONE wins over a closed or dead window; `--once` waits for a lagging issue list
+
+- An agent may exit right after creating `AIR_DONE`, and its window can be gone by the next tick. Wherever the
+  server finds a job's window closed or its pane dead (a live tick, a restart, re-adoption), it checks `AIR_DONE`
+  first and delivers if it is there. Only without it does a closed window pause the job, or a non-zero exit fail it.
+- `air start` and `air run` deliver instead of starting the agent when `AIR_DONE` already exists and the claim holds,
+  so a job paused before that check existed can still be finished.
+- GitHub's issue list lags a request filed seconds earlier. A `--once` poll that finds no candidates polls again
+  every 10 s for up to `--once-wait` seconds (default 60) and logs each empty poll.
