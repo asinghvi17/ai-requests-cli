@@ -176,6 +176,14 @@ test('deliver: pr checks the author can write to the target before running anyth
   assert.ok(!off.gh.log.some((l) => l.startsWith('permission o/target')));
 });
 
+test('the push-target host falls back to GH_HOST from the environment', async () => {
+  const { gh, opts } = await claimed(prBody('true'), { env: { ...SERVER_ENV, GH_HOST: 'ghe.example.com' } });
+  gh.setPermission('o/target', 'alice', 'write');
+  const r = await setup(opts);
+  assert.equal(r.status === 'failed' && r.step, 'the push permission check');
+  assert.match(r.status === 'failed' ? r.message : '', /not on ghe\.example\.com/);
+});
+
 test('deliver: pr with write access clones the repo and runs setup in repo/', async () => {
   const { gh, opts, dir } = await claimed(prBody('git rev-parse HEAD > ../head.txt; pwd > ../pwd.txt'), { env: insteadOf(bare.bare, PR_URL, SERVER_ENV) });
   gh.setPermission('o/target', 'alice', 'write');

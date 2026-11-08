@@ -126,7 +126,7 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
       checkLogin(login);
       let r: { permission?: string; role_name?: string };
       try {
-        r = await gh.api(`repos/${target}/collaborators/${login}/permission`);
+        r = await gh.api(`repos/${target}/collaborators/${encodeURIComponent(login)}/permission`);
       } catch (e) {
         if (e instanceof GhError && e.kind === 'not_found') return 'none';
         throw e;

@@ -96,7 +96,7 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
     // §6: before running anything for a PR, the issue author must be able to write to the target repo.
     if (request.deliver === 'pr') {
       step = 'the push permission check';
-      const target = githubRepo(request.repo!.url, opts.ghHost ?? 'github.com');
+      const target = githubRepo(request.repo!.url, opts.ghHost ?? ((opts.env ?? process.env).GH_HOST || 'github.com'));
       if ('error' in target) throw new StepError(target.error);
       let role;
       try {

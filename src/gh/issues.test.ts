@@ -49,8 +49,10 @@ test('removing an absent label is fine; permission reads role_name, 404 is none'
     'repos/o/r/collaborators/m/permission': { stdout: '{"permission":"write","role_name":"maintain"}' },
     'repos/o/r/collaborators/w/permission': { stdout: '{"permission":"write","role_name":"custom-role"}' },
     'repos/o/r/collaborators/n/permission': notFound,
+    'repos/o/r/collaborators/dependabot%5Bbot%5D/permission': { stdout: '{"permission":"write","role_name":"write"}' },
   });
   await repo.removeLabel(5, 'x');
+  assert.equal(await repo.permission('o/r', 'dependabot[bot]'), 'write');
   assert.equal(await repo.permission('o/r', 'm'), 'maintain');
   assert.equal(await repo.permission('o/r', 'w'), 'write');
   assert.equal(await repo.permission('o/r', 'n'), 'none');

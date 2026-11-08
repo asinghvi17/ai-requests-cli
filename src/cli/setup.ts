@@ -5,7 +5,7 @@ import { target } from './requests.ts';
 
 export async function setupCommand(inv: Invocation): Promise<number> {
   const t = target(inv);
-  const r = await setup({ gh: t.gh, issue: t.issue, root: t.root });
+  const r = await setup({ gh: t.gh, issue: t.issue, root: t.root, ghHost: process.env.GH_HOST || undefined });
   if (r.status === 'ready') {
     inv.io.out(`set up ${t.gh.repo}#${t.issue} in ${r.dir}\nnext: air run ${t.issue}\n`);
     return 0;

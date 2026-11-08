@@ -30,7 +30,13 @@ export function exec(argv: string[], opts: ExecOptions): Promise<ExecResult> {
   const [cmd, ...args] = argv;
   if (!cmd) throw new Error('exec: empty argv');
   const stdin = openSync('/dev/null', 'r');
-  const out = openSync(opts.log, 'a');
+  let out: number;
+  try {
+    out = openSync(opts.log, 'a');
+  } catch (e) {
+    closeSync(stdin);
+    throw e;
+  }
   return new Promise<ExecResult>((resolve, reject) => {
     let child;
     try {

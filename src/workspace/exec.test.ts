@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -64,4 +64,11 @@ test('background children are reaped when the command exits', async () => {
   assert.equal(r.code, 0);
   await sleep(100);
   assert.throws(() => process.kill(Number(readFileSync(join(d, 'bg'), 'utf8')), 0), /ESRCH/);
+});
+
+test('a log that cannot be opened throws without leaking the /dev/null fd', () => {
+  const d = tmp();
+  const before = readdirSync('/proc/self/fd').length;
+  for (let i = 0; i < 5; i++) assert.throws(() => exec(['true'], { cwd: d, env: childEnv({}), log: join(d, 'no-such-dir', 'log') }), /ENOENT/);
+  assert.equal(readdirSync('/proc/self/fd').length, before);
 });
