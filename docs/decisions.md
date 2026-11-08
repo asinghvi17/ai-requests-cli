@@ -101,3 +101,7 @@ Alternatives considered:
   files. A ledger that cannot be trusted is moved aside, and its subscriptions read as unknown until an explicit
   `air usage reset-ledger`, because lost spend must never look like an unused budget. Usage CLIs get an allowlisted environment.
 - 2026-11-07: effort matching (`src/match/`). Costs are shares of one weekly window times `scale`, a cost multiplier relative to the reference (largest) plan (Pro = 5). A monthly or manual-monthly window uses the same shares times 7/30, because a month holds about 30/7 weeks of the same work. Manual subscriptions declare the agent harness they fund (`harness = "claude"` or `"codex"`) and match like any subscription of it; without one they are ignored. Unknown usage (stale, incomplete, non-finite) takes nothing.
+- 2026-11-07: tmux jobs are tagged with pane options `@air_job`/`@air_nonce` and found only by those tags (re-adoption
+  after a restart needs no state file). Jobs run under `env -i` with an allowlist; denied names (GH_*, GITHUB_*, AWS_*,
+  SSH_*, ...) throw even when a caller passes them. Why: the volunteer shares the session, and the agent must never see
+  the server's credentials.
