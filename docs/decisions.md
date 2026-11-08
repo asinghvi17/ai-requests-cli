@@ -105,3 +105,24 @@ Alternatives considered:
   after a restart needs no state file). Jobs run under `env -i` with an allowlist; denied names (GH_*, GITHUB_*, AWS_*,
   SSH_*, ...) throw even when a caller passes them. Why: the volunteer shares the session, and the agent must never see
   the server's credentials.
+
+## 2026-11-07: claiming and workspace setup (`src/claim/`, `src/workspace/`)
+
+- `air:claimed` is added only after the re-read confirms our claim holds (spec §9 step 3), not before the
+  wait: a loser removing a label it added would also remove the winner's. Self-assignment happens before
+  the wait; a loser unassigns unless the holder posted from the same GitHub account.
+- Untrusted issue authors get no reply. Lint failures get one comment per body version (tagged with a hash
+  of the body), and newer `air` versions get one `air-unsupported` marker per host and version.
+- Anything air quotes that it didn't write (lint messages, setup output) goes in a fence longer than any
+  backtick run in it, so it can't carry a counted marker or mention anyone.
+- Each claim gets a fresh `<workspace_root>/<owner>__<name>/<issue>-<nonce>/` with `state.json` (phase:
+  claimed, setting-up, ready, failed, released, lost). The body snapshot (`request.md`) is written when
+  the claim is won, so `air setup` in another process uses the body as claimed.
+- Context zips are read by a ~300-line reader on `node:zlib` (zip64 included). Beyond the spec's checks it
+  also rejects `.`/empty path segments, control characters, non-UTF-8 names, duplicates and file/directory
+  clashes, encryption, and methods other than stored/deflate, and checks each entry's CRC and declared size.
+- `setup`/`check` run with an allowlisted environment (same idea as the tmux layer in PR #5; the lists
+  should merge), in their own process group, which is killed on timeout and again when the command exits
+  so background processes don't outlive their step. git runs with the server's environment (it needs the
+  user's credential setup) plus `GIT_TERMINAL_PROMPT=0`.
+
