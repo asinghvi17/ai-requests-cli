@@ -29,3 +29,37 @@ fresh server.
 Locale (the live Mac smoke run): a tmux client with no `UTF-8` in LC_ALL/LC_CTYPE/LANG (and no TMUX) is not UTF-8, and
 tmux sanitises its command output: each tab in a `-F` format comes back as `_`. Every client call passes `-u`, and
 `parsePanes` throws on a row without separators instead of reading it as "no panes".
+
+## Supported tmux: 3.0 and newer
+
+`air serve`, `air run` and `air start` refuse older versions (`MIN_TMUX`): pane user options (`set-option -p`, our job tags)
+came in 3.0. Checked with the tmux and serve e2e suites on source builds of 3.0a, 3.1c, 3.2a, 3.3a, 3.4 (also built
+`--enable-utempter`, as Ubuntu and Debian ship it), 3.6 (also with utempter) and 3.8. 2.9a fails, as expected.
+
+Exit status (Ubuntu 24.04 CI, tmux 3.4): tmux before 3.6 built with utempter can lose a pane's SIGCHLD. In libutempter,
+`utempter_remove_record` sets SIGCHLD to SIG_DFL while it forks and waits for its helper, so a pane child exiting in that
+window is never reaped: tmux shows it `pane_dead` with no `pane_dead_status`, for good (tmux issue 4559, fixed in 3.6 by
+fa5f3cef, which re-raises SIGCHLD). So job panes run a status launcher (`launcher.ts`): `/bin/sh` stays as the pane's
+process (session and process group leader), runs the agent in the foreground of its group (C-c and the terminal reach the
+agent as before), records the agent's pid in `<launcher dir>/pid` and its exit status in `<launcher dir>/status`. The shell
+holds the pty until it exits, so a pane is never `pane_dead` before the file exists. `parsePanes` uses tmux's status when
+it has one, else the file; `Job.pid` is the agent (from the pid file), `Job.panePid` the launcher shell.
+
+Signals: the launcher catches INT, QUIT and TERM (to outlive the agent and record its status; caught signals are reset in
+the child). An agent killed by signal N therefore reports as sh does, status 128 + N, and `exitSignal` stays null (it is
+only set if tmux saw the launcher itself die of a signal). Failure comments read "killed by signal N (status 128 + N)";
+an agent that exits 128 + N on purpose reads the same. `pane_dead_signal` is a number on Linux but a name (`int`) where tmux
+has `sys_signame` (macOS, BSDs); both parse.
+
+No orphans: closing a window (`kill-window`, a dying tmux server) hangs up the pty, and the kernel then signals only the
+session leader, never the rest of the group. Two layers make sure nothing of a job outlives it:
+- `stopJob`/`killOwned` check the nonce, send the job's process group (`-panePid`) TERM, wait for the agent to exit (at most
+  `KILL_GRACE_MS`), send KILL, and only then kill the window.
+- The launcher does not catch HUP, so a raw hangup kills it. Its reaper, a background subshell in the same group, holds the
+  read end of a FIFO whose only writer is the launcher shell. When that shell is gone (an exiting process closes its fds
+  even as a zombie tmux never reaps, so `kill -0` would not do), the reaper sends the group TERM, and KILL after
+  `REAP_GRACE_SECONDS`. It runs after every launcher exit, so it also ends background processes an agent left behind.
+A process that makes its own process group or session escapes both; agents don't, today.
+
+The launcher dir lives until the window is killed (`killOwned`). Unit tests with made-up pane pids pass a fake `kill`, so
+they never signal real process groups.

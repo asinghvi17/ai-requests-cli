@@ -8,6 +8,7 @@ import type { Subscription } from '../usage/types.ts';
 import { extractZip } from '../workspace/zip.ts';
 import { agentArgv, findCodexSession, restartInstruction } from './agent.ts';
 import { artifactBlock, COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
+import { exitDetail } from './jobs.ts';
 import { committedUsage, exhausted } from './server.ts';
 import { acquireServeLock, LOCK_GRACE_MS, readServerState, updateServerState } from './state.ts';
 import { zipDir } from './zipout.ts';
@@ -158,4 +159,11 @@ test('regression: an empty or half-written lock is held, not stale, until the gr
   const later = () => Date.now() + LOCK_GRACE_MS + 1000;
   acquireServeLock(d, later)();
   assert.deepEqual(readdirSync(d), []);
+});
+
+test('exitDetail: a status of 128 + N reads as killed by signal N', () => {
+  assert.equal(exitDetail(4, null, ''), 'The agent exited with status 4 without finishing.');
+  assert.equal(exitDetail(130, null, ''), 'The agent was killed by signal 2 (SIGINT) (status 130 = 128 + 2) without finishing.');
+  assert.equal(exitDetail(137, null, ''), 'The agent was killed by signal 9 (SIGKILL) (status 137 = 128 + 9) without finishing.');
+  assert.equal(exitDetail(null, 15, 'last'), 'The agent was killed by signal 15 (SIGTERM) without finishing.\n\nLast lines of its window:\n\n```\nlast\n```');
 });
