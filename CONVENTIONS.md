@@ -20,6 +20,7 @@
 | `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`) and an in-memory fake for tests |
 | `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
+| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery |
 | `docs/decisions.md` | decision log: append, newest last |
 | `src/config.ts`, `src/toml.ts` | config loading and the TOML-subset parser |
 | `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed) |

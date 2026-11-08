@@ -335,6 +335,16 @@ test('an error after posting withdraws the claim instead of leaving it to hold t
   assert.deepEqual(gh.issues.get(7)!.assignees, []);
 });
 
+test('a claim that fails after posting and cannot be deleted is released instead', async () => {
+  // Seen live: a gh that refused both the self-assign and the comment delete left the claim holding the issue.
+  const { gh, opts } = setup();
+  gh.assign = async () => { throw new GhError('other', 'unsupported API write route/method'); };
+  gh.deleteComment = async () => { throw new GhError('other', 'unsupported API write route/method'); };
+  await assert.rejects(claim(opts), /unsupported/);
+  assert.equal(gh.issues.get(7)!.comments.length, 2);
+  assert.equal(currentClaim(await markedComments(await gh.comments(7), createTrust(gh))), undefined);
+});
+
 test('release refuses a same-named host whose claim this machine has no workspace for', async () => {
   const { gh, opts } = setup();
   gh.post(7, 'bot', 'OWNER', claimMarker('box-a', 'zzzzzzzzzzzz'));

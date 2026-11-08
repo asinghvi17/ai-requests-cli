@@ -126,3 +126,23 @@ Alternatives considered:
   so background processes don't outlive their step. git runs with the server's environment (it needs the
   user's credential setup) plus `GIT_TERMINAL_PROMPT=0`.
 
+
+## 2026-11-07: `air serve` loop and job lifecycle (`src/serve/`)
+
+- The loop is code, no model call. Workspace `state.json` carries a `job` record and is the only job state;
+  the server rescans it each tick, so restarts and the `air run/stop/start` commands need no IPC.
+  `serve.json` holds only the `air pause` flag.
+- Interactive agents don't exit when done, so AIR_TASK.md tells the agent to create `AIR_DONE`; the server then
+  closes the session and delivers. Pane exit 0 also delivers; non-zero fails.
+- Claude Code gets `--session-id <uuid>` from air, so `air start` can `--resume` it; Codex's id comes from its
+  rollout files. A failed resume falls back to a fresh start pointed at `out/` and the git log.
+- Agent argv comes from new `[agents.<harness>]` config (`command`, `args`) plus the tier's model;
+  `tick_seconds` sets the tick. Subscriptions to read are still `subscriptions.json` (usage module), matched by
+  name against `[subscriptions.<name>]` settings.
+- `air:done` unassigns the server's account (release markers are not posted for done issues, per §9).
+- Any pause (operator, quota) lasting 48 h releases the claim with a comment.
+- Artifacts and over-long reports carry no `expires`, so spec §7's default applies: 14 days after the issue closes.
+- Every gh call has a timeout (2 min; uploads 30 min) and gh runs in its own process group, killed on expiry.
+- No write to an issue (label, comment, resume) without first confirming our claim still holds it. A lost claim
+  marks the workspace `lost`, closes our window and leaves the issue to its holder. That costs one comments read
+  per held job per tick.

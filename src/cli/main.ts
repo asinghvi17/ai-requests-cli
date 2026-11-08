@@ -7,6 +7,7 @@ import { claimCommand } from './claim.ts';
 import { releaseCommand } from './release.ts';
 import { UsageError } from './requests.ts';
 import { setupCommand } from './setup.ts';
+import { attachCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
 export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
@@ -25,19 +26,20 @@ const REPO: FlagSpecs = { repo: { type: 'string' } };
 export const COMMANDS: Record<string, Command> = {
   submit: { usage: 'submit [--repo OWNER/NAME] [FILE]', summary: 'file a request issue', args: [], flags: { repo: { type: 'string' } } },
   serve: {
-    usage: 'serve [--manual]',
-    summary: 'poll the requests repo, claim fitting requests and start agents (--manual: wait for `air run`)',
+    usage: 'serve [--repo OWNER/NAME] [--manual] [--once]',
+    summary: 'poll the requests repo, claim fitting requests and start agents (--manual: wait for `air run`; --once: one tick, then wait for its jobs)',
     args: [],
-    flags: { manual: { type: 'boolean' } },
+    flags: { ...REPO, manual: { type: 'boolean' }, once: { type: 'boolean' } },
+    run: serveCommand,
   },
   claim: { usage: 'claim [--repo OWNER/NAME] ISSUE', summary: 'claim a request', args: ['ISSUE'], flags: REPO, run: claimCommand },
   setup: { usage: 'setup [--repo OWNER/NAME] ISSUE', summary: 'prepare the workspace for a claimed request', args: ['ISSUE'], flags: REPO, run: setupCommand },
-  run: { usage: 'run ISSUE', summary: 'start the agent for a set-up request', args: ['ISSUE'], flags: {} },
-  attach: { usage: 'attach ISSUE', summary: "attach to a request's tmux window", args: ['ISSUE'], flags: {} },
-  stop: { usage: 'stop ISSUE', summary: "stop a request's agent", args: ['ISSUE'], flags: {} },
-  start: { usage: 'start ISSUE', summary: 'restart a stopped agent', args: ['ISSUE'], flags: {} },
-  pause: { usage: 'pause', summary: 'stop claiming new requests', args: [], flags: {} },
-  resume: { usage: 'resume', summary: 'resume claiming requests', args: [], flags: {} },
+  run: { usage: 'run [--repo OWNER/NAME] ISSUE', summary: 'start the agent for a set-up request', args: ['ISSUE'], flags: REPO, run: runCommand },
+  attach: { usage: 'attach [--repo OWNER/NAME] [ISSUE]', summary: "attach to the air tmux session, or a request's window", args: [], flags: REPO, run: attachCommand },
+  stop: { usage: 'stop [--repo OWNER/NAME] ISSUE', summary: "stop a request's agent (keeps the claim and workspace)", args: ['ISSUE'], flags: REPO, run: stopCommand },
+  start: { usage: 'start [--repo OWNER/NAME] ISSUE', summary: 'resume a stopped agent', args: ['ISSUE'], flags: REPO, run: startCommand },
+  pause: { usage: 'pause', summary: 'stop claiming new requests (running jobs continue)', args: [], flags: {}, run: pauseCommand },
+  resume: { usage: 'resume', summary: 'resume claiming requests', args: [], flags: {}, run: resumeCommand },
   usage: {
     usage: 'usage [--refresh] [--json] [spend NAME AMOUNT | reset-ledger]',
     summary: 'show subscription quota',
