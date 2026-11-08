@@ -52,6 +52,23 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
+  test('regression: a caller without a UTF-8 locale still sees its jobs (tmux sanitises tabs for non-UTF-8 clients)', async () => {
+    // The live Mac smoke run: the shell had no UTF-8 LC_ALL/LC_CTYPE/LANG, tmux printed list-panes with every
+    // tab as `_`, no row parsed, and a live agent's window "was closed".
+    const noLocale = { ...process.env, LANG: 'C', LC_ALL: '', LC_CTYPE: '' };
+    const format = '#{@air_job}\t#{@air_nonce}\t#{window_id}';
+    const plain = spawnSync('tmux', ['-L', socket, 'list-panes', '-a', '-F', format], { env: clientEnv(noLocale), encoding: 'utf8' });
+    assert.equal(plain.status, 0, plain.stderr);
+    assert.ok(plain.stdout.trim() && !plain.stdout.includes('\t'), `without -u, tmux replaces the tabs: ${JSON.stringify(plain.stdout)}`);
+
+    const c = createTmux({ socket, run: defaultRunner(socket, noLocale) });
+    await c.startJob({ issue: 77, cwd: dir, argv: ['sleep', '60'] });
+    const jobs = (await c.listJobs()).filter((j) => j.issue === 77);
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0]!.dead, false);
+    assert.deepEqual((await t.listJobs()).find((j) => j.issue === 77)?.nonce, jobs[0]!.nonce);
+  });
+
   test('a job runs interactively in its workspace with a scrubbed environment and a task file', async () => {
     // Even secrets and shell startup hooks in tmux's own global environment must not reach the job.
     const globals = [['GITHUB_TOKEN', 'ghp_global'], ['BASH_ENV', '/nonexistent/bashenv'], ['ENV', '/nonexistent/env']] as const;

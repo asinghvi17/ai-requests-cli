@@ -71,9 +71,14 @@ const SEP = '\t';
 const LIST_FORMAT = ['#{@air_job}', '#{@air_nonce}', '#{window_id}', '#{pane_id}', '#{window_name}',
   '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}', '#{pane_dead_signal}'].join(SEP);
 
-export function defaultRunner(socket: string): TmuxRunner {
+/**
+ * `-u`: the client is UTF-8 whatever the caller's locale. A client tmux thinks is not UTF-8 (no `UTF-8` in
+ * LC_ALL, LC_CTYPE or LANG, as in a Mac shell without a locale) gets its output sanitised, and every tab
+ * of a `-F` format becomes `_`: then no list-panes line parses and every job looks gone.
+ */
+export function defaultRunner(socket: string, env: NodeJS.ProcessEnv = process.env): TmuxRunner {
   return (args) => new Promise((resolve, reject) => {
-    const child = spawn('tmux', ['-L', socket, ...args], { env: clientEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('tmux', ['-u', '-L', socket, ...args], { env: clientEnv(env), stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     child.stdout.setEncoding('utf8').on('data', d => { stdout += d; });
     child.stderr.setEncoding('utf8').on('data', d => { stderr += d; });
@@ -93,14 +98,19 @@ export function quoteTmux(word: string): string {
  * `kill-server` returns before the server process is gone, and its panes are gone with it.
  */
 function noServer(stderr: string): boolean {
-  return /no server running|error connecting to|can't find session|no such session|server exited unexpectedly/i.test(stderr);
+  return /no server running|can't find session|no such session|server exited unexpectedly/i.test(stderr) || noSocket(stderr);
+}
+
+/** "error connecting to <socket> (<reason>)" means no server only when the socket is missing or refuses. */
+function noSocket(stderr: string): boolean {
+  return /error connecting to .*\((No such file or directory|Connection refused)\)/i.test(stderr);
 }
 
 const exiting = (stderr: string) => /server exited unexpectedly/i.test(stderr);
 
 /** The target (pane, window or server) went away under us. */
 function vanished(stderr: string): boolean {
-  return /can't find (pane|window|session)|no such (pane|window)|no server running|error connecting to|server exited/i.test(stderr);
+  return /can't find (pane|window|session)|no such (pane|window)|no server running|server exited/i.test(stderr) || noSocket(stderr);
 }
 
 /** Where `tmux -L <socket>` puts its socket. */
@@ -126,6 +136,9 @@ export function parseJobs(out: string): Job[] {
 export function parsePanes(out: string): { jobs: Job[]; stale: Stale[] } {
   const jobs: Job[] = [], stale: Stale[] = [];
   for (const line of out.split('\n')) {
+    // Every row has separators; a row without any is tmux's sanitised output (see defaultRunner), and
+    // reading it as "no panes" would close every job.
+    if (line.trim() && !line.includes(SEP)) throw new Error(`tmux list-panes: unparseable row ${JSON.stringify(line.slice(0, 200))} (tabs replaced: is the tmux client UTF-8?)`);
     const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher, signal] = line.split(SEP);
     if (!job || !nonce || !/^\d+$/.test(job) || !windowId || !paneId) continue;
     const extra = launcher ? { launcher } : {};
@@ -213,6 +226,11 @@ export function createTmux(options: TmuxOptions = {}) {
     const { jobs, stale } = parsePanes(r.stdout);
     for (const p of stale) await killOwned(p);
     return jobs;
+  }
+
+  /** The raw `list-panes -a` result in air's format, for `air debug panes`. */
+  async function listPanesRaw(): Promise<RunResult & { format: string }> {
+    return { ...(await run(['list-panes', '-a', '-F', LIST_FORMAT])), format: LIST_FORMAT };
   }
 
   /** The job's pane. Should duplicates exist anyway, keep the oldest (lowest pane id) and kill the rest. */
@@ -348,7 +366,7 @@ export function createTmux(options: TmuxOptions = {}) {
     await run(['kill-server']);
   }
 
-  return { socket, session, ensureSession, startJob, listJobs, stopJob, isAlive, capture, attachArgs, killServer };
+  return { socket, session, ensureSession, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, attachArgs, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;

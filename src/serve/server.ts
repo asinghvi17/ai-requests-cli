@@ -14,7 +14,7 @@ import { allWorkspaces, readState, updateState, type JobRecord, type State } fro
 import { matchConfig, type ServeContext } from './context.ts';
 import {
   agentMs, cancelJob, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, PAUSE_LIMIT_MS,
-  requestOf, saveJob, startAgent, stopAgent, type Workspace,
+  requestOf, saveJob, startAgent, startOrDeliver, stopAgent, type Workspace,
 } from './jobs.ts';
 import { readServerState } from './state.ts';
 
@@ -24,6 +24,9 @@ export interface ServerOptions {
 }
 
 const HELD_PHASES = ['claimed', 'setting-up', 'ready'];
+/** `--once`: how long to keep polling when the first poll finds nothing, and how often. */
+export const ONCE_WAIT_MS = 60_000;
+export const ONCE_POLL_MS = 10_000;
 const STOPPING_LIMIT_MS = 5 * 60_000;
 
 /** Whether `sub` has run out: an all-model window (or the window scoped to `model`) at 100%. */
@@ -70,6 +73,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   let adopting = true;
   /** Workspaces left `setting-up` by a setup that died (a restart, or a release that failed): to release. */
   const orphans = new Set<string>();
+  /**
+   * Running jobs whose window one tick could not find, and whether that tick was the restart. A single miss
+   * never decides a job's fate: only a second consecutive miss pauses (or, after a restart, resumes) it.
+   */
+  const missing = new Map<number, { restart: boolean; nonce: string | undefined; starts: number }>();
 
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -160,7 +168,17 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     if (job.status === 'paused') return watchPaused(dir, state, job, usage, now);
 
     // running
-    const pane = jobs.find((j) => j.issue === n && j.nonce === job.paneNonce);
+    let pane = jobs.find((j) => j.issue === n && j.nonce === job.paneNonce);
+    if (!pane && job.paneNonce === undefined) {
+      // A start that could not read its pane back recorded no nonce: adopt the issue's only tagged pane.
+      const ours = jobs.filter((j) => j.issue === n);
+      if (ours.length === 1) {
+        pane = ours[0]!;
+        saveJob(ctx, dir, { paneNonce: pane.nonce });
+        ctx.log(`#${n}: adopted its window ${pane.windowId} (no pane recorded at start)`);
+      }
+    }
+    if (pane) missing.delete(n);
     if (isDone(dir)) {
       if (pane && !pane.dead) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
       else if (pane) await ctx.tmux.stopJob(n, { graceMs: 0 });
@@ -169,8 +187,22 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     if (!pane) {
       // The tick's job list may predate a start that just finished (here or in `air run/start`): look again.
       const fresh = readState(dir).job;
-      if (fresh?.status !== 'running' || (await ctx.tmux.listJobs()).some((j) => j.issue === n && j.nonce === fresh.paneNonce)) return;
-      if (first) {
+      if (fresh?.status !== 'running') return;
+      if ((await ctx.tmux.listJobs()).some((j) => j.issue === n && j.nonce === fresh.paneNonce)) return void missing.delete(n);
+      // An agent that exits right after creating AIR_DONE closes its window: that is a finish, not a pause.
+      if (isDone(dir)) {
+        missing.delete(n);
+        ctx.log(`#${n}: its window is gone and AIR_DONE is there; delivering`);
+        return track(n, 'delivery', finishJob(ctx, dir));
+      }
+      const miss = missing.get(n);
+      if (miss?.nonce !== job.paneNonce || miss?.starts !== job.starts) {
+        missing.set(n, { restart: first, nonce: job.paneNonce, starts: job.starts });
+        ctx.log(`#${n}: its window (pane ${job.paneNonce ?? 'not recorded'}) was not found; checking again next tick`);
+        return;
+      }
+      missing.delete(n);
+      if (miss!.restart || first) {
         // The window is gone (a reboot, or tmux died) while we were down: resume the agent.
         ctx.log(`#${n}: its window is gone after a restart; resuming`);
         saveJob(ctx, dir, { status: 'paused', runMs: job.runMs, startedAt: undefined, pausedAt: now.toISOString(), pauseReason: 'restart' });
@@ -183,7 +215,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     }
     if (first) ctx.log(`#${n}: re-adopted its running agent (${pane.windowId})`);
     if (pane.dead) {
-      if (pane.exitStatus === 0) {
+      // AIR_DONE may have appeared since the check above, just before the agent exited.
+      if (pane.exitStatus === 0 || isDone(dir)) {
         await ctx.tmux.stopJob(n, { graceMs: 0 });
         return track(n, 'delivery', finishJob(ctx, dir));
       }
@@ -207,28 +240,30 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     const n = state.issue;
     if (job.pausedAt && now.getTime() - Date.parse(job.pausedAt) > PAUSE_LIMIT_MS) return track(n, 'release', expirePause(ctx, dir));
     // watch() checked the claim this tick; startAgent checks it again before it touches the issue.
-    if (job.pauseReason === 'restart') return track(n, 'restart', startAgent(ctx, dir));
+    if (job.pauseReason === 'restart') return track(n, 'restart', startOrDeliver(ctx, dir).then(() => {}));
     if (job.pauseReason !== 'quota') return;
     if (job.resumeAfter && now.getTime() < Date.parse(job.resumeAfter)) return;
     let sub = usage.find((s) => s.name === job.subscription);
     if (job.resumeAfter) sub = (await ctx.usage({ refresh: true })).find((s) => s.name === job.subscription);
     if (!sub || sub.stale || exhausted(sub, job.model)) return;
     ctx.log(`#${n}: quota is back; restarting`);
-    track(n, 'restart', startAgent(ctx, dir));
+    track(n, 'restart', startOrDeliver(ctx, dir).then(() => {}));
   }
 
-  /** Poll, match, claim. */
-  async function poll(usage: Subscription[], mine: Workspace[]): Promise<void> {
+  /** Poll, match, claim. Returns how many open requests were candidates (unclaimed, not ours), if it polled. */
+  async function poll(usage: Subscription[], mine: Workspace[]): Promise<number | undefined> {
     let active = mine.filter((w) => !['done', 'failed', 'cancelled'].includes(w.state.job?.status ?? '')).length;
     for (const n of inflight.keys()) if (!mine.some((w) => w.state.issue === n)) active++;
-    if (!canTakeMore(active, ctx.config.max_jobs)) return;
+    if (!canTakeMore(active, ctx.config.max_jobs)) return undefined;
     const ours = new Set(mine.map((w) => w.state.issue));
     let free = committedUsage(usage, mine);
     const issues = await ctx.api.openRequests();
+    let candidates = 0;
     for (const issue of issues) {
       const n = issue.number;
       if (ours.has(n) || inflight.has(n)) continue;
       if (!claimable(issue).ok || issue.assignees.length > 0) continue;
+      candidates++;
       const hash = bodyHash(issue.body);
       if (skip.get(n) === hash) continue;
       const linted = lint(issue.body);
@@ -268,12 +303,16 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       ctx.log(`#${n}: claimed (nonce ${r.state.nonce}) for ${choice.subscription.name}/${choice.model}`);
       track(n, 'setup', prepare(r.dir));
       free = free.map((s) => (s.name === choice.subscription.name ? addUsage(s, choice.cost) : s));
-      if (!canTakeMore(++active, ctx.config.max_jobs)) return;
+      if (!canTakeMore(++active, ctx.config.max_jobs)) return candidates;
     }
+    return candidates;
   }
 
-  /** One tick. Never throws: every failure is logged and the next tick tries again. */
-  async function tick(o: { poll?: boolean } = {}): Promise<void> {
+  /**
+   * One tick. Never throws: every failure is logged and the next tick tries again. Returns the number of
+   * candidate requests its poll saw, or undefined when it did not poll (or the poll failed).
+   */
+  async function tick(o: { poll?: boolean } = {}): Promise<number | undefined> {
     try {
       let usage: Subscription[] = [];
       try {
@@ -294,10 +333,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
           ctx.log(`#${ws.state.issue}: ${err(e)}`);
         }
       }
-      if (o.poll === false || readServerState(ctx.stateDir).paused) return;
-      await poll(usage, held());
+      if (o.poll === false || readServerState(ctx.stateDir).paused) return undefined;
+      return await poll(usage, held());
     } catch (e) {
       ctx.log(`tick failed: ${err(e)}`);
+      return undefined;
     }
   }
 
@@ -315,13 +355,28 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   /**
    * Runs ticks until `signal` aborts. With `once`, runs one full tick, then only watches (every `watchMs`)
-   * until no job needs it any more.
+   * until no job needs it any more. A `once` poll that finds no candidates polls again every `oncePollMs`
+   * for up to `onceWaitMs`: GitHub's issue list lags a request filed seconds ago.
    */
-  async function run(o: { once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number } = {}): Promise<void> {
+  async function run(o: { once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number } = {}): Promise<void> {
     const tickMs = o.tickMs ?? ctx.config.tick_seconds * 1000;
     ctx.log(`air serve on ${ctx.host}: ${repo}, ${opts.manual ? 'manual' : 'auto'} start, max ${ctx.config.max_jobs} job(s), tick ${tickMs / 1000} s`);
-    await tick();
+    let found = await tick();
     if (o.once) {
+      const waitMs = o.onceWaitMs ?? ONCE_WAIT_MS;
+      const pollMs = Math.max(1, Math.min(o.oncePollMs ?? ONCE_POLL_MS, waitMs));
+      const end = Date.now() + waitMs;
+      while (found === 0 && !busy() && !o.signal?.aborted) {
+        const left = end - Date.now();
+        if (left <= 0) {
+          ctx.log(`--once: no open requests to claim after waiting ${waitMs / 1000} s; exiting`);
+          break;
+        }
+        ctx.log(`--once: no open requests to claim yet; polling again in ${Math.min(pollMs, left) / 1000} s (${Math.ceil(left / 1000)} s left)`);
+        await sleep(Math.min(pollMs, left), undefined, { signal: o.signal }).catch(() => {});
+        if (o.signal?.aborted) break;
+        found = await tick();
+      }
       while (!o.signal?.aborted && busy()) {
         await sleep(o.watchMs ?? 2000, undefined, { signal: o.signal }).catch(() => {});
         await idle();

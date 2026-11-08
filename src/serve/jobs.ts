@@ -158,6 +158,23 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   }
 }
 
+/**
+ * Starts the agent, unless it already finished (AIR_DONE is there, say because its window closed as it
+ * exited): then closes any window left and delivers instead. Checks the claim before either.
+ */
+export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | 'delivered'> {
+  if (!isDone(dir)) {
+    await startAgent(ctx, dir);
+    return 'started';
+  }
+  await ensureHeld(ctx, dir);
+  const n = readState(dir).issue;
+  if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
+  ctx.log(`#${n}: AIR_DONE is already there; delivering instead of starting the agent`);
+  await finishJob(ctx, dir);
+  return 'delivered';
+}
+
 /** Interrupts the agent, waits the grace period, closes its window; labels `air:paused`. Claim and workspace stay. */
 export async function stopAgent(ctx: ServeContext, dir: string, reason: PauseReason, resumeAfter?: string): Promise<boolean> {
   const state = readState(dir);

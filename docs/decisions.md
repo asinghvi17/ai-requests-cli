@@ -146,3 +146,25 @@ Alternatives considered:
 - No write to an issue (label, comment, resume) without first confirming our claim still holds it. A lost claim
   marks the workspace `lost`, closes our window and leaves the issue to its holder. That costs one comments read
   per held job per tick.
+
+## 2026-11-07: AIR_DONE wins over a closed or dead window; `--once` waits for a lagging issue list
+
+- An agent may exit right after creating `AIR_DONE`, and its window can be gone by the next tick. Wherever the
+  server finds a job's window closed or its pane dead (a live tick, a restart, re-adoption), it checks `AIR_DONE`
+  first and delivers if it is there. Only without it does a closed window pause the job, or a non-zero exit fail it.
+- `air start` and `air run` deliver instead of starting the agent when `AIR_DONE` already exists and the claim holds,
+  so a job paused before that check existed can still be finished.
+- GitHub's issue list lags a request filed seconds earlier. A `--once` poll that finds no candidates polls again
+  every 10 s for up to `--once-wait` seconds (default 60) and logs each empty poll.
+
+## 2026-11-08: tmux clients run with `-u`; a missing window needs two ticks
+
+- Root cause of the live Mac smoke-run pause: tmux treats a client as UTF-8 only if `TMUX` is set or `LC_ALL`, `LC_CTYPE`
+  or `LANG` contains `UTF-8`. Otherwise it sanitises command output, and every tab of the `list-panes -F` format
+  becomes `_` (tmux 3.6 and 3.8 alike). No row parsed, `startAgent` recorded no pane nonce, and the next tick found
+  "no window" for a live agent. air's tmux calls now always pass `-u`. A row without separators is an error, never "no panes".
+- "error connecting to" means no server only for a missing socket or a refused connection (not, say, a path too long).
+- One tick that cannot find a running job's window never decides its fate: only a second consecutive miss (same
+  pane) pauses it, or resumes it after a restart. AIR_DONE is checked first. A running job with no recorded pane
+  adopts its issue's only tagged pane.
+- `air debug panes` (hidden) prints tmux's raw rows (with and without `-u`), the jobs air parses and the jobs it holds.

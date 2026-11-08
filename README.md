@@ -12,7 +12,7 @@ goes through the user's `gh` CLI. See CONVENTIONS.md for the layout and docs/dec
 ```sh
 air serve            # tick every 60 s: claim what fits, set it up, start the agent in tmux, deliver
 air serve --manual   # claim and set up, but wait for `air run ISSUE`
-air serve --once     # one tick, then wait for its jobs to finish
+air serve --once     # one tick, then wait for its jobs to finish (re-polls for up to 60 s if it finds nothing: --once-wait)
 air attach [ISSUE]   # watch the server log (window 0) or a job
 air stop ISSUE       # interrupt the agent; keeps the claim and workspace (air:paused)
 air start ISSUE      # resume the agent's own session
