@@ -82,7 +82,7 @@ export function quoteTmux(word: string): string {
 }
 
 function noServer(stderr: string): boolean {
-  return /no server running|error connecting to|can't find session|no such session/i.test(stderr);
+  return /no server running|error connecting to|server exited unexpectedly|can't find session|no such session/i.test(stderr);
 }
 
 /** The target (pane, window or server) went away under us. */

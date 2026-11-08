@@ -167,7 +167,8 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
 
   test('exit status is readable after the pane dies, and capture works', async () => {
     await t.startJob({ issue: 7, cwd: dir, argv: ['/bin/sh', '-c', 'echo hello-from-job; exit 3'] });
-    await until('pane death', async () => (await t.listJobs()).some(j => j.issue === 7 && j.dead));
+    // tmux can report the pane dead a moment before it records the exit status.
+    await until('pane death', async () => (await t.listJobs()).some(j => j.issue === 7 && j.dead && j.exitStatus !== null));
     const job = (await t.listJobs()).find(j => j.issue === 7)!;
     assert.equal(job.exitStatus, 3);
     assert.equal(await t.isAlive(7), false);
