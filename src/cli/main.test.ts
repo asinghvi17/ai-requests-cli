@@ -76,7 +76,7 @@ test('names shared with Object.prototype are unknown commands', async () => {
 });
 
 test('unimplemented commands exit 2', async () => {
-  for (const argv of [['serve'], ['serve', '--manual'], ['run', '12'], ['stop', '7'], ['pause'], ['lint', 'x.md']]) {
+  for (const argv of [['lint', 'x.md']]) {
     const r = await call(...argv);
     assert.equal(r.code, 2, argv.join(' '));
     assert.match(r.err, /not implemented yet/);
@@ -85,9 +85,9 @@ test('unimplemented commands exit 2', async () => {
 
 test('usage errors exit 1 with the command usage', async () => {
   assert.equal((await call('frobnicate')).code, 1);
-  const missing = await call('attach');
+  const missing = await call('stop');
   assert.equal(missing.code, 1);
-  assert.match(missing.err, /missing ISSUE\nusage: air attach ISSUE/);
+  assert.match(missing.err, /missing ISSUE\nusage: air stop \[--repo OWNER\/NAME\] ISSUE/);
   const bad = await call('serve', '--auto');
   assert.equal(bad.code, 1);
   assert.match(bad.err, /unknown flag --auto/);
@@ -96,17 +96,17 @@ test('usage errors exit 1 with the command usage', async () => {
 test('per-command --help', async () => {
   const r = await call('serve', '--help');
   assert.equal(r.code, 0);
-  assert.match(r.out, /usage: air serve \[--manual\]/);
+  assert.match(r.out, /usage: air serve \[--repo OWNER\/NAME\] \[--manual\] \[--once\]/);
 });
 
 test('runs as a script', () => {
-  const r = spawnSync(process.execPath, [new URL('./main.ts', import.meta.url).pathname, 'run', '3'], { encoding: 'utf8' });
+  const r = spawnSync(process.execPath, [new URL('./main.ts', import.meta.url).pathname, 'lint', 'x.md'], { encoding: 'utf8' });
   assert.equal(r.status, 2);
-  assert.equal(r.stderr, 'air run: not implemented yet\n');
+  assert.equal(r.stderr, 'air lint: not implemented yet\n');
 });
 
-test('claim, setup and release validate ISSUE and need a repo', async () => {
-  for (const name of ['claim', 'setup', 'release']) {
+test('claim, setup, release and the job commands validate ISSUE and --repo', async () => {
+  for (const name of ['claim', 'setup', 'release', 'run', 'stop', 'start']) {
     const bad = await call(name, 'abc');
     assert.equal(bad.code, 1, name);
     assert.match(bad.err, new RegExp(`^air ${name}: ISSUE must be an issue number`), name);

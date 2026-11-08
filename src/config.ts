@@ -16,13 +16,26 @@ export type Subscription = {
   budget?: number; // manual effort budget per window, for subscriptions whose usage can't be read
 };
 
+/** `[agents.<harness>]`: how `air serve` starts that harness's agent. */
+export type Agent = {
+  /** argv prefix for the agent (default: the harness name, e.g. `["claude"]`). */
+  command: string[];
+  /** Extra arguments after air's own (e.g. a permission mode). */
+  args: string[];
+};
+
 export type Config = {
   repo?: string;
   workspace_root: string;
   max_jobs: number;
+  /** Seconds between `air serve` ticks. */
+  tick_seconds: number;
   subscriptions: Record<string, Subscription>;
   models: Record<string, Models>;
+  agents: Record<string, Agent>;
 };
+
+export const AGENT_HARNESSES = ['claude', 'codex'] as const;
 
 export const DEFAULT_MODELS: Record<string, Models> = {
   claude: { small: 'haiku', medium: 'sonnet', large: 'opus' },
@@ -59,6 +72,12 @@ function num(v: TomlValue | undefined, where: string, ok: (n: number) => boolean
   return v;
 }
 
+function strings(v: TomlValue | undefined, where: string): string[] | undefined {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) throw new ConfigError(`${where} must be an array of strings`);
+  return v as string[];
+}
+
 function only(t: TomlTable, keys: readonly string[], where: string): void {
   for (const k of Object.keys(t)) if (!keys.includes(k)) throw new ConfigError(`unknown key ${where}${k}`);
 }
@@ -70,7 +89,7 @@ export function parseConfig(src: string, home = homedir()): Config {
   } catch (e) {
     throw new ConfigError(e instanceof Error ? e.message : String(e));
   }
-  only(doc, ['repo', 'workspace_root', 'max_jobs', 'subscriptions', 'models'], '');
+  only(doc, ['repo', 'workspace_root', 'max_jobs', 'tick_seconds', 'subscriptions', 'models', 'agents'], '');
   const repo = str(doc.repo, 'repo');
   if (repo !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new ConfigError('repo must be OWNER/NAME');
   const root = expandHome(str(doc.workspace_root, 'workspace_root') ?? '~/air', home);
@@ -108,11 +127,24 @@ export function parseConfig(src: string, home = homedir()): Config {
     models[harness] = tiers as Models;
   }
 
+  const agents: Record<string, Agent> = {};
+  for (const [harness, raw] of Object.entries(table(doc.agents, 'agents'))) {
+    const w = `agents.${harness}`;
+    if (!(AGENT_HARNESSES as readonly string[]).includes(harness)) throw new ConfigError(`${w}: harness must be one of ${AGENT_HARNESSES.join(', ')}`);
+    const t = table(raw, w);
+    only(t, ['command', 'args'], `${w}.`);
+    const command = strings(t.command, `${w}.command`) ?? [harness];
+    if (command.length === 0 || command[0] === '') throw new ConfigError(`${w}.command must not be empty`);
+    agents[harness] = { command, args: strings(t.args, `${w}.args`) ?? [] };
+  }
+
   const config: Config = {
     workspace_root: root,
     max_jobs: num(doc.max_jobs, 'max_jobs', (n) => Number.isInteger(n) && n >= 1, 'a positive integer') ?? 1,
+    tick_seconds: num(doc.tick_seconds, 'tick_seconds', (n) => n >= 1, 'a number >= 1') ?? 60,
     subscriptions,
     models,
+    agents,
   };
   if (repo !== undefined) config.repo = repo;
   return config;
