@@ -29,7 +29,7 @@ test('--help lists every command; no args prints help to stderr and fails', asyn
 
 test('routes the full command set', () => {
   assert.deepEqual(Object.keys(COMMANDS).sort(), [
-    'attach', 'claim', 'lint', 'pause', 'release', 'resume', 'run', 'serve', 'setup', 'start', 'stop', 'submit', 'usage',
+    'attach', 'claim', 'lint', 'pause', 'release', 'resume', 'run', 'serve', 'setup', 'start', 'stop', 'submit', 'sweep', 'usage',
   ]);
 });
 
@@ -76,7 +76,7 @@ test('names shared with Object.prototype are unknown commands', async () => {
 });
 
 test('unimplemented commands exit 2', async () => {
-  for (const argv of [['serve'], ['serve', '--manual'], ['run', '12'], ['stop', '7'], ['pause'], ['lint', 'x.md']]) {
+  for (const argv of [['serve'], ['serve', '--manual'], ['run', '12'], ['stop', '7'], ['pause']]) {
     const r = await call(...argv);
     assert.equal(r.code, 2, argv.join(' '));
     assert.match(r.err, /not implemented yet/);

@@ -126,3 +126,19 @@ Alternatives considered:
   so background processes don't outlive their step. git runs with the server's environment (it needs the
   user's credential setup) plus `GIT_TERMINAL_PROMPT=0`.
 
+
+## 2026-11-07: `air submit`, `air sweep`, `air lint` and CI
+
+- Context zips are written by a small writer on `node:zlib` (deflate, stored for empty files, no zip64:
+  assets are capped at 2 GiB anyway). Local headers are patched in place after streaming, so there are no
+  data descriptors. Only regular files go in; symlinks and special files are skipped and reported.
+- `.gitignore` is implemented in-process (nested files, negation, anchoring, `**`), not via `git ls-files`,
+  so a directory that isn't a repo works the same. Default skipped dirs: `DEFAULT_EXCLUDES` in
+  `src/submit/collect.ts`; `--exclude` adds, `--no-default-excludes` clears.
+- The secrets check reports a path and a reason, never the matched text. `--allow-file` takes a path or a
+  directory. `context.expires` defaults to 30 days after submitting; open or active issues keep it anyway.
+- If filing the issue fails after the upload, submit deletes the zip: no issue would refer to it, so
+  `air sweep` would never collect it.
+- Sweep errs toward keeping: any error listing assets, issues or comments, or checking trust, aborts before
+  deleting anything; a body that no longer parses still holds any asset URL it contains (default expiry);
+  asset URLs compare with host/owner/repo case-folded. Only a failed delete is per-asset.

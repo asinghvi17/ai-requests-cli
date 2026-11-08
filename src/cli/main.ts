@@ -7,6 +7,9 @@ import { claimCommand } from './claim.ts';
 import { releaseCommand } from './release.ts';
 import { UsageError } from './requests.ts';
 import { setupCommand } from './setup.ts';
+import { lintCommand } from './lint.ts';
+import { submitCommand } from './submit.ts';
+import { sweepCommand } from './sweep.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
 export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
@@ -23,7 +26,17 @@ const HELP: FlagSpecs = { help: { type: 'boolean', short: 'h' } };
 const REPO: FlagSpecs = { repo: { type: 'string' } };
 
 export const COMMANDS: Record<string, Command> = {
-  submit: { usage: 'submit [--repo OWNER/NAME] [FILE]', summary: 'file a request issue', args: [], flags: { repo: { type: 'string' } } },
+  submit: {
+    usage: 'submit [--body FILE|-] [--dry-run] [--allow-file PATH]... [DIR]',
+    summary: 'file a request; DIR becomes its context zip (also: --repo, --title, --expires YYYY-MM-DD, --exclude NAME, --no-default-excludes)',
+    args: [],
+    flags: {
+      ...REPO, body: { type: 'string' }, title: { type: 'string' }, 'dry-run': { type: 'boolean' },
+      'allow-file': { type: 'string', multiple: true }, exclude: { type: 'string', multiple: true },
+      'no-default-excludes': { type: 'boolean' }, expires: { type: 'string' },
+    },
+    run: submitCommand,
+  },
   serve: {
     usage: 'serve [--manual]',
     summary: 'poll the requests repo, claim fitting requests and start agents (--manual: wait for `air run`)',
@@ -47,7 +60,8 @@ export const COMMANDS: Record<string, Command> = {
     run: ({ argv, io }) => usageCommand(argv, { out: (s) => io.out(`${s}\n`), err: (s) => io.err(`${s}\n`) }),
   },
   release: { usage: 'release [--repo OWNER/NAME] ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: REPO, run: releaseCommand },
-  lint: { usage: 'lint [FILE]', summary: "check a request's front matter", args: [], flags: {} },
+  lint: { usage: 'lint [FILE|-]', summary: 'check a request body against the spec', args: [], flags: {}, run: lintCommand },
+  sweep: { usage: 'sweep [--repo OWNER/NAME] [--dry-run]', summary: 'delete expired context and artifact assets', args: [], flags: { ...REPO, 'dry-run': { type: 'boolean' } }, run: sweepCommand },
 };
 
 export function helpText(): string {
