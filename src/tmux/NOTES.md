@@ -19,3 +19,9 @@ separator, so `x;` `run-shell ...` would run tmux commands. They go into a priva
 Env scope: the scrub covers the inherited environment only (`env -i` + allowlist; `BASH_ENV`/`ENV` are denied). HOME
 is the volunteer's real one on purpose (the agent needs their login and config), so dotfiles their shell sources and
 files readable under HOME are the volunteer's responsibility. A filesystem sandbox is out of scope by design.
+
+Pane death (fixed after CI flakes under bun on ubuntu): tmux sets `pane_dead` when the pty closes, but `pane_dead_status`
+and `pane_dead_signal` only once it has reaped the child (`PANE_STATUSREADY`). A pane in between is reported as alive, so
+`dead` always comes with a status or a signal. And `kill-server` returns before the server is gone: a client that reaches
+the dying server gets "server exited unexpectedly", which means no jobs, and `ensureSession` retries until it can start a
+fresh server.

@@ -161,7 +161,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         return track(n, 'delivery', finishJob(ctx, dir));
       }
       const text = await paneTail(ctx, n);
-      return track(n, 'failure', failJob(ctx, dir, 'the agent', exitDetail(pane.exitStatus, text)));
+      return track(n, 'failure', failJob(ctx, dir, 'the agent', exitDetail(pane.exitStatus, pane.exitSignal, text)));
     }
     const request = requestOf(dir);
     if (agentMs(job, now) > request.timeoutMinutes * 60_000) {
@@ -253,8 +253,6 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   /** One tick. Never throws: every failure is logged and the next tick tries again. */
   async function tick(o: { poll?: boolean } = {}): Promise<void> {
-    const first = adopting;
-    adopting = false;
     try {
       let usage: Subscription[] = [];
       try {
@@ -263,6 +261,9 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         ctx.log(`usage read failed: ${err(e)}`);
       }
       const jobs = await ctx.tmux.listJobs();
+      // The first tick that sees tmux is the restart: windows missing then were lost while we were down.
+      const first = adopting;
+      adopting = false;
       const mine = held();
       for (const ws of mine) {
         if (inflight.has(ws.state.issue)) continue;

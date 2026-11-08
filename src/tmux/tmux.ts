@@ -33,9 +33,16 @@ export interface Job {
   windowName: string;
   /** PID of the pane's process (the agent, as `env` execs it). */
   pid: number;
+  /**
+   * The agent has exited and tmux has reaped it. tmux closes a pane's pty (`pane_dead`) before it reaps the
+   * child and records the status, so a pane that is `pane_dead` with neither status nor signal yet counts as
+   * alive: it is dead an instant later, with its real exit status.
+   */
   dead: boolean;
   /** Exit status once the pane is dead (null while alive or when killed by a signal). */
   exitStatus: number | null;
+  /** Signal number that killed it, once dead by a signal. */
+  exitSignal: number | null;
   /** The job's launcher dir, removed with its window if the launcher never ran. */
   launcher?: string;
 }
@@ -62,7 +69,7 @@ export interface StopOptions {
 
 const SEP = '\t';
 const LIST_FORMAT = ['#{@air_job}', '#{@air_nonce}', '#{window_id}', '#{pane_id}', '#{window_name}',
-  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}'].join(SEP);
+  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}', '#{pane_dead_signal}'].join(SEP);
 
 export function defaultRunner(socket: string): TmuxRunner {
   return (args) => new Promise((resolve, reject) => {
@@ -81,9 +88,15 @@ export function quoteTmux(word: string): string {
   return `'${word.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * No server (so no jobs). "server exited unexpectedly" is a client that connected to a server on its way out:
+ * `kill-server` returns before the server process is gone, and its panes are gone with it.
+ */
 function noServer(stderr: string): boolean {
-  return /no server running|error connecting to|can't find session|no such session/i.test(stderr);
+  return /no server running|error connecting to|can't find session|no such session|server exited unexpectedly/i.test(stderr);
 }
+
+const exiting = (stderr: string) => /server exited unexpectedly/i.test(stderr);
 
 /** The target (pane, window or server) went away under us. */
 function vanished(stderr: string): boolean {
@@ -113,17 +126,20 @@ export function parseJobs(out: string): Job[] {
 export function parsePanes(out: string): { jobs: Job[]; stale: Stale[] } {
   const jobs: Job[] = [], stale: Stale[] = [];
   for (const line of out.split('\n')) {
-    const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher] = line.split(SEP);
+    const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher, signal] = line.split(SEP);
     if (!job || !nonce || !/^\d+$/.test(job) || !windowId || !paneId) continue;
     const extra = launcher ? { launcher } : {};
     if (state !== 'running') {
       stale.push({ issue: Number(job), nonce, windowId, paneId, ...extra });
       continue;
     }
-    const isDead = dead === '1';
+    const code = status !== undefined && /^\d+$/.test(status) ? Number(status) : null;
+    const sig = signal !== undefined && /^\d+$/.test(signal) ? Number(signal) : null;
+    // Dead only once tmux has reaped it (see Job.dead): a closed pty alone is not an exit.
+    const isDead = dead === '1' && (code !== null || sig !== null);
     jobs.push({
       issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: Number(pid),
-      dead: isDead, exitStatus: isDead && status !== undefined && /^\d+$/.test(status) ? Number(status) : null, ...extra,
+      dead: isDead, exitStatus: isDead ? code : null, exitSignal: isDead ? sig : null, ...extra,
     });
   }
   return { jobs, stale };
@@ -171,7 +187,12 @@ export function createTmux(options: TmuxOptions = {}) {
       ? writeLauncher({ argv: opts.argv?.length ? opts.argv : [process.env.SHELL || '/bin/sh'], env: opts.env, cwd: opts.cwd })
       : undefined;
     if (launcher) args.push('--', ...launcher.argv);
-    const r = await run(args);
+    let r = await run(args);
+    // A server still shutting down took our connection: wait for it to go, then start a fresh one.
+    for (let i = 0; i < 20 && r.code !== 0 && exiting(r.stderr); i++) {
+      await sleep(50);
+      r = await run(args);
+    }
     if (r.code === 0) return true;
     launcher?.cleanup();
     if (/duplicate session/i.test(r.stderr)) return false; // lost a race with another ensureSession

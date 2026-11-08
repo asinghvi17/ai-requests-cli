@@ -244,8 +244,8 @@ export async function paneTail(ctx: ServeContext, n: number): Promise<string> {
   }
 }
 
-export function exitDetail(status: number | null, pane: string): string {
-  return `The agent exited ${status === null ? 'on a signal' : `with status ${status}`} without finishing.${pane.trim() ? `\n\nLast lines of its window:\n\n${fenced(pane)}` : ''}`;
+export function exitDetail(status: number | null, signal: number | null, pane: string): string {
+  return `The agent exited ${status !== null ? `with status ${status}` : `on signal ${signal ?? '?'}`} without finishing.${pane.trim() ? `\n\nLast lines of its window:\n\n${fenced(pane)}` : ''}`;
 }
 
 /** The job record for a matched request: the subscription's harness (a manual one funds its configured one). */

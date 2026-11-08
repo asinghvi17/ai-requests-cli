@@ -149,8 +149,10 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     comments = await gh.comments(n);
     holder = currentClaim(await markedComments(comments, trust));
   } catch (e) {
-    // We never learned whether we hold it: withdraw the claim rather than leave one nobody acts on.
-    await gh.deleteComment(mine.id).catch(() => {});
+    // We never learned whether we hold it: withdraw the claim rather than leave one nobody acts on. If the
+    // comment can't be deleted, a release marker for it ends the claim just the same.
+    await gh.deleteComment(mine.id).catch(() =>
+      gh.comment(n, `Withdrawn by ${code(host)}: it could not complete the claim.\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n`)).catch(() => {});
     await gh.unassign(n, viewer).catch(() => {});
     throw e;
   }
