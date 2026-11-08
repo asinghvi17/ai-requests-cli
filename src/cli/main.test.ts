@@ -29,7 +29,7 @@ test('--help lists every command; no args prints help to stderr and fails', asyn
 
 test('routes the full command set', () => {
   assert.deepEqual(Object.keys(COMMANDS).sort(), [
-    'attach', 'claim', 'lint', 'pause', 'release', 'resume', 'run', 'serve', 'setup', 'start', 'stop', 'submit', 'usage',
+    'attach', 'claim', 'lint', 'pause', 'release', 'resume', 'run', 'serve', 'setup', 'start', 'stop', 'submit', 'sweep', 'usage',
   ]);
 });
 
@@ -75,14 +75,6 @@ test('names shared with Object.prototype are unknown commands', async () => {
   }
 });
 
-test('unimplemented commands exit 2', async () => {
-  for (const argv of [['lint', 'x.md']]) {
-    const r = await call(...argv);
-    assert.equal(r.code, 2, argv.join(' '));
-    assert.match(r.err, /not implemented yet/);
-  }
-});
-
 test('usage errors exit 1 with the command usage', async () => {
   assert.equal((await call('frobnicate')).code, 1);
   const missing = await call('stop');
@@ -100,9 +92,9 @@ test('per-command --help', async () => {
 });
 
 test('runs as a script', () => {
-  const r = spawnSync(process.execPath, [new URL('./main.ts', import.meta.url).pathname, 'lint', 'x.md'], { encoding: 'utf8' });
-  assert.equal(r.status, 2);
-  assert.equal(r.stderr, 'air lint: not implemented yet\n');
+  const r = spawnSync(process.execPath, [new URL('./main.ts', import.meta.url).pathname, 'lint', '-'], { encoding: 'utf8', input: '---\nair: 0\n---\n' });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /^<stdin>:3: error: missing required field/);
 });
 
 test('claim, setup, release and the job commands validate ISSUE and --repo', async () => {

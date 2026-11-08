@@ -1,6 +1,7 @@
 // The server's own small state file, `<state dir>/serve.json`. Everything about a job lives in its
-// workspace's state.json; this only holds what is about the server: whether `air pause` is in effect.
-// Only the pause commands write it, so the server never races them.
+// workspace's state.json; this only holds what is about the server: whether `air pause` is in effect, and
+// when the daily sweep last ran. The pause commands write `paused`; the server writes only `lastSweepAt`,
+// once a day, re-reading the file just before it writes.
 import { randomBytes } from 'node:crypto';
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,6 +13,8 @@ export interface ServerState {
   /** `air pause`: take no new work; running jobs continue. */
   paused: boolean;
   pausedAt?: string;
+  /** When `air serve` last started its daily `air sweep` (spec §7). */
+  lastSweepAt?: string;
 }
 
 export function readServerState(dir: string): ServerState {

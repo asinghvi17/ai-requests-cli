@@ -1,6 +1,6 @@
 import { test, describe, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
@@ -64,7 +64,7 @@ describe('env', () => {
     assert.ok(!l.argv[1]!.endsWith(';'));
     const r = spawnSync(l.argv[0]!, l.argv.slice(1), { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', GH_TOKEN: 'leak' } });
     const out = r.stdout.split('\n');
-    assert.equal(out[0], ws);
+    assert.equal(out[0], realpathSync(ws)); // macOS: /var is /private/var
     assert.ok(out.includes(`FOO=b'ar;`));
     assert.ok(!r.stdout.includes('GH_TOKEN'));
     assert.ok(r.stdout.endsWith(weird.map(w => `<${w}>`).join('\n') + '\n'));

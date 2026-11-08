@@ -68,7 +68,8 @@ test('background children are reaped when the command exits', async () => {
 
 test('a log that cannot be opened throws without leaking the /dev/null fd', () => {
   const d = tmp();
-  const before = readdirSync('/proc/self/fd').length;
+  const fds = process.platform === 'linux' ? '/proc/self/fd' : '/dev/fd';
+  const before = readdirSync(fds).length;
   for (let i = 0; i < 5; i++) assert.throws(() => exec(['true'], { cwd: d, env: childEnv({}), log: join(d, 'no-such-dir', 'log') }), /ENOENT/);
-  assert.equal(readdirSync('/proc/self/fd').length, before);
+  assert.equal(readdirSync(fds).length, before);
 });

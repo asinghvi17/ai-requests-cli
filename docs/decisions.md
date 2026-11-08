@@ -169,6 +169,30 @@ Alternatives considered:
   adopts its issue's only tagged pane.
 - `air debug panes` (hidden) prints tmux's raw rows (with and without `-u`), the jobs air parses and the jobs it holds.
 
+## 2026-11-07: `air submit`, `air sweep`, `air lint` and CI
+
+- Context zips are written by a small writer on `node:zlib` (deflate, stored for empty files, no zip64:
+  assets are capped at 2 GiB anyway). Local headers are patched in place after streaming, so there are no
+  data descriptors. Only regular files go in; symlinks and special files are skipped and reported.
+- `.gitignore` is implemented in-process (nested files, negation, anchoring, `**`), not via `git ls-files`,
+  so a directory that isn't a repo works the same. Default skipped dirs: `DEFAULT_EXCLUDES` in
+  `src/submit/collect.ts`; `--exclude` adds, `--no-default-excludes` clears.
+- The secrets check reports a path and a reason, never the matched text. `--allow-file` takes a path or a
+  directory. `context.expires` is written only with `--expires`: without it spec §7 keeps the zip until 14
+  days after the issue closes. (A fixed default date counted from submission would leave a long-open
+  request's zip with no retention at all once it closed.)
+- The zip writer checks every entry name against spec §5 (relative, no `..`, `\`, drive letter or control
+  characters) and opens each file with `O_NOFOLLOW` after an `lstat`, so only regular files go in and
+  symlinks are never followed. A failed write removes the partial zip.
+- If filing the issue fails after the upload, submit deletes the zip: no issue would refer to it, so
+  `air sweep` would never collect it.
+- Sweep errs toward keeping: any error listing assets, issues or comments, or checking trust, aborts before
+  deleting anything; a body that no longer parses still holds any asset URL it contains (default expiry);
+  asset URLs compare with host/owner/repo case-folded. Only a failed delete is per-asset.
+- `air serve` runs `sweep()` at most once per 24 h (spec §7), in the background of the tick loop, never with
+  `--once`. The start time is recorded in `serve.json` (`lastSweepAt`) before the sweep runs, so a failing
+  sweep is retried the next day, not every tick; a failure is only logged.
+
 ## 2026-11-08: job exit status comes from air's launcher too; tmux 3.0 or newer
 
 - Ubuntu 24.04's tmux 3.4 (built with utempter) can leave an exited pane unreaped: `pane_dead` with no status, for good

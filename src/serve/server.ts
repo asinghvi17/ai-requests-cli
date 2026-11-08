@@ -16,7 +16,8 @@ import {
   agentMs, cancelJob, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, PAUSE_LIMIT_MS,
   requestOf, saveJob, startAgent, startOrDeliver, stopAgent, type Workspace,
 } from './jobs.ts';
-import { readServerState } from './state.ts';
+import { sweep } from '../sweep/sweep.ts';
+import { readServerState, updateServerState } from './state.ts';
 
 export interface ServerOptions {
   /** Wait for `air run` instead of starting agents. */
@@ -28,6 +29,8 @@ const HELD_PHASES = ['claimed', 'setting-up', 'ready'];
 export const ONCE_WAIT_MS = 60_000;
 export const ONCE_POLL_MS = 10_000;
 const STOPPING_LIMIT_MS = 5 * 60_000;
+/** `air serve` runs `air sweep` at most this often (spec §7: once a day). */
+export const SWEEP_INTERVAL_MS = 24 * 3600_000;
 
 /** Whether `sub` has run out: an all-model window (or the window scoped to `model`) at 100%. */
 export function exhausted(sub: Subscription | undefined, model: string): { resetsAt?: string } | undefined {
@@ -341,6 +344,32 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     }
   }
 
+  let sweeping: Promise<void> | undefined;
+  /**
+   * Starts the daily sweep in the background when the last one started a day or more ago (or never). The
+   * start time is saved first, so a failing sweep waits a day too; failures are only logged. Returns the
+   * running sweep, or undefined when none was due.
+   */
+  function sweepIfDue(): Promise<void> | undefined {
+    if (sweeping) return undefined;
+    const now = ctx.now();
+    const last = Date.parse(readServerState(ctx.stateDir).lastSweepAt ?? '');
+    if (Number.isFinite(last) && now.getTime() - last < SWEEP_INTERVAL_MS && last <= now.getTime()) return undefined;
+    try {
+      updateServerState(ctx.stateDir, { lastSweepAt: now.toISOString() });
+    } catch (e) {
+      ctx.log(`sweep: can't record the run, skipping it: ${err(e)}`);
+      return undefined;
+    }
+    ctx.log('sweep: deleting expired context and artifact assets');
+    const p = sweep({ repo, trust: ctx.trust, now, log: (line) => ctx.log(`sweep: ${line}`), ...(ctx.releases ? { releases: ctx.releases } : {}) })
+      .then((r) => ctx.log(`sweep: deleted ${r.deleted.length}, kept ${r.kept.length}${r.failed.length ? `, failed ${r.failed.length}` : ''}`))
+      .catch((e) => ctx.log(`sweep failed: ${err(e)}`))
+      .finally(() => { sweeping = undefined; });
+    sweeping = p;
+    return p;
+  }
+
   /** Resolves when nothing is in flight. */
   async function idle(): Promise<void> {
     while (inflight.size) await Promise.all([...inflight.values()]);
@@ -385,15 +414,19 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       await idle();
       return;
     }
+    // Housekeeping only for a long-running server: a `--once` run never sweeps.
+    sweepIfDue();
     while (!o.signal?.aborted) {
       await sleep(tickMs, undefined, { signal: o.signal }).catch(() => {});
       if (o.signal?.aborted) break;
       await tick();
+      sweepIfDue();
     }
     await idle();
+    await sweeping;
   }
 
-  return { tick, idle, run, busy, inflight };
+  return { tick, idle, run, busy, inflight, sweepIfDue };
 }
 
 export type Server = ReturnType<typeof createServer>;
