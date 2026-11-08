@@ -584,6 +584,59 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(argvLog(dir).length, 0, 'no agent was started');
   });
 
+  test('regression: one tick that cannot see a live window never pauses the job; two in a row do', async () => {
+    const w = world();
+    w.store.addIssue({ number: 44, body: body('hang') });
+    await running(w, 44);
+    let hide = false;
+    w.ctx.tmux = { ...tmuxClient, listJobs: async () => (await tmuxClient.listJobs()).filter((j) => !hide || j.issue !== 44) };
+    const tick = async () => {
+      await w.server.tick();
+      await w.server.idle();
+    };
+    hide = true;
+    await tick();
+    assert.equal(status(w, 44), 'running', w.logs.join('\n'));
+    assert.ok(w.logs.some((l) => /#44: its window \(pane \w+\) was not found; checking again next tick/.test(l)));
+    hide = false;
+    await tick(); // seen again: the miss is forgotten
+    hide = true;
+    await tick();
+    assert.equal(status(w, 44), 'running', 'misses must be consecutive');
+    await tick();
+    assert.equal(status(w, 44), 'paused');
+    assert.ok(w.logs.some((l) => /#44: its window was closed; paused/.test(l)));
+    assert.deepEqual(stateLabels(w, 44), ['air:paused']);
+  });
+
+  test('a running job with no recorded pane adopts its window; air debug panes shows both sides', async () => {
+    const w = world();
+    jobDeps.loadConfig = () => w.ctx.config;
+    jobDeps.context = () => w.ctx;
+    w.store.addIssue({ number: 45, body: body('hang') });
+    await running(w, 45);
+    const dir = job(w, 45)!.dir;
+    const pane = (await tmuxClient.listJobs()).find((j) => j.issue === 45)!;
+    const { paneNonce: _, ...rest } = readState(dir).job!;
+    updateState(dir, { job: rest }, new Date()); // as the locale bug left it: no nonce read back at start
+
+    let out = '';
+    assert.equal(await main(['debug', 'panes'], { out: (s) => { out += s; }, err: () => {} }), 0);
+    assert.match(out, /^tmux: tmux \d/m);
+    assert.match(out, new RegExp(`^  "45\\\\t${pane.nonce}\\\\t${pane.windowId}\\\\t`, 'm'));
+    assert.match(out, new RegExp(`^  #45 nonce ${pane.nonce} window ${pane.windowId} pane ${pane.paneId} pid \\d+ alive$`, 'm'));
+    assert.match(out, /^  #45 ready\/running paneNonce \(none\): NO MATCHING PANE/m);
+
+    await w.server.tick();
+    await w.server.idle();
+    assert.equal(status(w, 45), 'running');
+    assert.equal(readState(dir).job!.paneNonce, pane.nonce);
+    assert.ok(w.logs.some((l) => new RegExp(`#45: adopted its window ${pane.windowId}`).test(l)));
+    out = '';
+    await main(['debug', 'panes'], { out: (s) => { out += s; }, err: () => {} });
+    assert.match(out, new RegExp(`^  #45 ready/running paneNonce ${pane.nonce}: window ${pane.windowId}`, 'm'));
+  });
+
   test('--once polls again when the issue list is still empty, then exits', async () => {
     const w = world();
     // GitHub's list lags a request filed seconds ago: it shows up only after the first poll.

@@ -272,7 +272,9 @@ LABELS=$(gh issue view "$N" --repo "$REPO" --json labels --jq '[.labels[].name] 
 if [ "$RC" -eq 0 ] && [[ " $LABELS " == *" air:done "* ]]; then
   echo; echo "SMOKE OK: $URL has air:done. Close it with: bash $0 --cleanup"
 else
-  echo; echo "SMOKE FAILED (serve exit $RC, labels: $LABELS). Local files kept in $WORK. Close the issue with: bash $0 --cleanup"
+  say "air debug panes (what tmux reports and which jobs air sees)"
+  air debug panes || true
+  echo; echo "SMOKE FAILED (serve exit $RC, labels: $LABELS). Local files kept in $WORK. Close the issue with: bash $0 --cleanup $N"
   exit 1
 fi
 echo "Local files (config, workspace, logs): $WORK  (safe to delete)"

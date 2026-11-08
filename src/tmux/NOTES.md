@@ -25,3 +25,7 @@ and `pane_dead_signal` only once it has reaped the child (`PANE_STATUSREADY`). A
 `dead` always comes with a status or a signal. And `kill-server` returns before the server is gone: a client that reaches
 the dying server gets "server exited unexpectedly", which means no jobs, and `ensureSession` retries until it can start a
 fresh server.
+
+Locale (the live Mac smoke run): a tmux client with no `UTF-8` in LC_ALL/LC_CTYPE/LANG (and no TMUX) is not UTF-8, and
+tmux sanitises its command output: each tab in a `-F` format comes back as `_`. Every client call passes `-u`, and
+`parsePanes` throws on a row without separators instead of reading it as "no panes".

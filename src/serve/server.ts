@@ -73,6 +73,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   let adopting = true;
   /** Workspaces left `setting-up` by a setup that died (a restart, or a release that failed): to release. */
   const orphans = new Set<string>();
+  /**
+   * Running jobs whose window one tick could not find, and whether that tick was the restart. A single miss
+   * never decides a job's fate: only a second consecutive miss pauses (or, after a restart, resumes) it.
+   */
+  const missing = new Map<number, { restart: boolean; nonce: string | undefined; starts: number }>();
 
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -163,7 +168,17 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     if (job.status === 'paused') return watchPaused(dir, state, job, usage, now);
 
     // running
-    const pane = jobs.find((j) => j.issue === n && j.nonce === job.paneNonce);
+    let pane = jobs.find((j) => j.issue === n && j.nonce === job.paneNonce);
+    if (!pane && job.paneNonce === undefined) {
+      // A start that could not read its pane back recorded no nonce: adopt the issue's only tagged pane.
+      const ours = jobs.filter((j) => j.issue === n);
+      if (ours.length === 1) {
+        pane = ours[0]!;
+        saveJob(ctx, dir, { paneNonce: pane.nonce });
+        ctx.log(`#${n}: adopted its window ${pane.windowId} (no pane recorded at start)`);
+      }
+    }
+    if (pane) missing.delete(n);
     if (isDone(dir)) {
       if (pane && !pane.dead) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
       else if (pane) await ctx.tmux.stopJob(n, { graceMs: 0 });
@@ -172,13 +187,22 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     if (!pane) {
       // The tick's job list may predate a start that just finished (here or in `air run/start`): look again.
       const fresh = readState(dir).job;
-      if (fresh?.status !== 'running' || (await ctx.tmux.listJobs()).some((j) => j.issue === n && j.nonce === fresh.paneNonce)) return;
+      if (fresh?.status !== 'running') return;
+      if ((await ctx.tmux.listJobs()).some((j) => j.issue === n && j.nonce === fresh.paneNonce)) return void missing.delete(n);
       // An agent that exits right after creating AIR_DONE closes its window: that is a finish, not a pause.
       if (isDone(dir)) {
+        missing.delete(n);
         ctx.log(`#${n}: its window is gone and AIR_DONE is there; delivering`);
         return track(n, 'delivery', finishJob(ctx, dir));
       }
-      if (first) {
+      const miss = missing.get(n);
+      if (miss?.nonce !== job.paneNonce || miss?.starts !== job.starts) {
+        missing.set(n, { restart: first, nonce: job.paneNonce, starts: job.starts });
+        ctx.log(`#${n}: its window (pane ${job.paneNonce ?? 'not recorded'}) was not found; checking again next tick`);
+        return;
+      }
+      missing.delete(n);
+      if (miss!.restart || first) {
         // The window is gone (a reboot, or tmux died) while we were down: resume the agent.
         ctx.log(`#${n}: its window is gone after a restart; resuming`);
         saveJob(ctx, dir, { status: 'paused', runMs: job.runMs, startedAt: undefined, pausedAt: now.toISOString(), pauseReason: 'restart' });

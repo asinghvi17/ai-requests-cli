@@ -2,13 +2,17 @@
 // (requests repo, tmux, usage, log), and act on the job record in the workspace's state.json, so they work
 // whether or not a server is running.
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { loadConfig, type Config } from '../config.ts';
 import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
 import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent } from '../serve/jobs.ts';
 import { acquireServeLock, readServerState, updateServerState } from '../serve/state.ts';
 import { stateDir as usageStateDir } from '../usage/index.ts';
-import { activeWorkspace, readState } from '../workspace/state.ts';
+import { clientEnv } from '../tmux/env.ts';
+import { socketPath } from '../tmux/tmux.ts';
+import { activeWorkspace, allWorkspaces, readState } from '../workspace/state.ts';
 import type { Invocation } from './main.ts';
 import { UsageError } from './requests.ts';
 
@@ -143,5 +147,43 @@ export function resumeCommand(inv: Invocation): number {
   const stateDir = jobDeps.stateDir();
   updateServerState(stateDir, { paused: false, pausedAt: undefined });
   inv.io.out('air serve takes new work again\n');
+  return 0;
+}
+
+/**
+ * `air debug panes` (not in the help): what tmux reports and what air makes of it, to diagnose a job whose
+ * window air cannot see. Rows are JSON strings so tabs show as \\t (a `_` in their place is the locale bug).
+ */
+export async function debugCommand(inv: Invocation): Promise<number> {
+  if (inv.positionals[0] !== 'panes') throw new UsageError('the only debug topic is `panes`');
+  const ctx = contextFor(inv);
+  const out = (s: string) => inv.io.out(`${s}\n`);
+  const env = clientEnv();
+  const version = spawnSync('tmux', ['-V'], { env, encoding: 'utf8' });
+  out(`tmux: ${(version.stdout ?? '').trim() || `not runnable (${version.error?.message ?? version.stderr})`}`);
+  out(`socket: ${socketPath(ctx.tmux.socket)} (-L ${ctx.tmux.socket}), session ${ctx.tmux.session}`);
+  out(`client locale: LC_ALL=${JSON.stringify(process.env.LC_ALL ?? '')} LC_CTYPE=${JSON.stringify(process.env.LC_CTYPE ?? '')} LANG=${JSON.stringify(process.env.LANG ?? '')}`);
+  const raw = await ctx.tmux.listPanesRaw();
+  out(`format: ${JSON.stringify(raw.format)}`);
+  out(`list-panes -a, as air runs it (tmux -u): exit ${raw.code}${raw.stderr.trim() ? `, stderr ${JSON.stringify(raw.stderr.trim())}` : ''}`);
+  for (const line of raw.stdout.split('\n').filter(Boolean)) out(`  ${JSON.stringify(line)}`);
+  const plain = spawnSync('tmux', ['-L', ctx.tmux.socket, 'list-panes', '-a', '-F', raw.format], { env, encoding: 'utf8' });
+  out(`list-panes -a without -u (the old way): exit ${plain.status}`);
+  for (const line of (plain.stdout ?? '').split('\n').filter(Boolean)) out(`  ${JSON.stringify(line)}`);
+  let jobs: Awaited<ReturnType<ServeContext['tmux']['listJobs']>> = [];
+  try {
+    jobs = await ctx.tmux.listJobs();
+    out(`jobs air parses: ${jobs.length}`);
+    for (const j of jobs) out(`  #${j.issue} nonce ${j.nonce} window ${j.windowId} pane ${j.paneId} pid ${j.pid} ${j.dead ? `dead (status ${j.exitStatus ?? '-'}, signal ${j.exitSignal ?? '-'})` : 'alive'}`);
+  } catch (e) {
+    out(`jobs air parses: listJobs failed: ${(e as Error).message}`);
+  }
+  const held = allWorkspaces(ctx.root, ctx.gh.repo).filter((w) => w.state.job && !['done', 'failed', 'cancelled'].includes(w.state.job.status));
+  out(`jobs air holds (${ctx.root}): ${held.length}`);
+  for (const { dir, state } of held) {
+    const job = state.job!;
+    const found = jobs.find((j) => j.issue === state.issue && j.nonce === job.paneNonce);
+    out(`  #${state.issue} ${state.phase}/${job.status} paneNonce ${job.paneNonce ?? '(none)'}: ${found ? `window ${found.windowId}` : 'NO MATCHING PANE'}${existsSync(join(dir, 'AIR_DONE')) ? ', AIR_DONE present' : ''} (${dir})`);
+  }
   return 0;
 }

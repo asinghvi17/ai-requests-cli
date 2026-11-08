@@ -7,7 +7,7 @@ import { claimCommand } from './claim.ts';
 import { releaseCommand } from './release.ts';
 import { UsageError } from './requests.ts';
 import { setupCommand } from './setup.ts';
-import { attachCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
+import { attachCommand, debugCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
 export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
@@ -52,6 +52,11 @@ export const COMMANDS: Record<string, Command> = {
   lint: { usage: 'lint [FILE]', summary: "check a request's front matter", args: [], flags: {} },
 };
 
+/** Commands left out of the help: diagnostics for a human debugging their own machine. */
+export const HIDDEN: Record<string, Command> = {
+  debug: { usage: 'debug [--repo OWNER/NAME] panes', summary: "print tmux's raw pane list and the jobs air thinks it has", args: ['TOPIC'], flags: REPO, run: debugCommand },
+};
+
 export function helpText(): string {
   const width = Math.max(...Object.values(COMMANDS).map((c) => c.usage.length));
   const lines = Object.values(COMMANDS).map((c) => `  ${c.usage.padEnd(width)}  ${c.summary}`);
@@ -68,7 +73,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
     io.out(`${VERSION}\n`);
     return 0;
   }
-  const cmd = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
+  const cmd = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : Object.hasOwn(HIDDEN, name) ? HIDDEN[name] : undefined;
   if (!cmd) {
     io.err(`air: unknown command ${JSON.stringify(name)}\n${helpText()}`);
     return 1;

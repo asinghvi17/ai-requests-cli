@@ -93,6 +93,19 @@ describe('tmux (fake runner)', () => {
     assert.deepEqual([signalled!.dead, signalled!.exitStatus, signalled!.exitSignal], [true, null, 9]);
   });
 
+  test('regression: sanitised list-panes output (tabs as `_`) is an error, not "no jobs"', async () => {
+    assert.throws(() => parseJobs('42_abc_@1_%1_#42_11_0__running__\n'), /unparseable row .*is the tmux client UTF-8/);
+    const { run } = fake([[is('list-panes'), () => ok('__@0_%0_log_10_0____\n42_abc_@1_%1_#42_11_0__running__\n')]]);
+    await assert.rejects(createTmux({ run }).listJobs(), /unparseable row/);
+  });
+
+  test('a socket air cannot connect to for another reason is an error, not "no server"', async () => {
+    const { run } = fake([[is('list-panes'), () => fail('error connecting to /very/long/path/tmux-501/air (File name too long)')]]);
+    await assert.rejects(createTmux({ run }).listJobs(), /File name too long/);
+    const gone = fake([[is('list-panes'), () => fail('error connecting to /tmp/tmux-501/air (No such file or directory)')]]);
+    assert.deepEqual(await createTmux({ run: gone.run }).listJobs(), []);
+  });
+
   test('listJobs is empty without a server', async () => {
     const { run } = fake([[is('list-panes'), () => fail('no server running on /tmp/tmux-1/air')]]);
     assert.deepEqual(await createTmux({ run }).listJobs(), []);
