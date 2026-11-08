@@ -192,3 +192,19 @@ Alternatives considered:
 - `air serve` runs `sweep()` at most once per 24 h (spec §7), in the background of the tick loop, never with
   `--once`. The start time is recorded in `serve.json` (`lastSweepAt`) before the sweep runs, so a failing
   sweep is retried the next day, not every tick; a failure is only logged.
+
+## 2026-11-08: job exit status comes from air's launcher too; tmux 3.0 or newer
+
+- Ubuntu 24.04's tmux 3.4 (built with utempter) can leave an exited pane unreaped: `pane_dead` with no status, for good
+  (tmux issue 4559, fixed in 3.6). The job launcher now runs the agent as a child and records its exit status in a file
+  in its private dir. air uses tmux's status when it has one, else that file. Details in src/tmux/NOTES.md.
+- `air serve`, `air run` and `air start` refuse tmux older than 3.0 (pane user options). Checked on 3.0a to 3.8.
+
+## 2026-11-08: nothing of a job outlives its window
+
+- Review of PR #10: once the launcher ran the agent as a child, `kill-window` left the agent running (the hangup signals
+  only the session leader). A stop now TERMs, then KILLs, the job's process group before it kills the window, and the
+  launcher's reaper does the same when the launcher shell dies (a raw `kill-window`, a dying tmux server). Details in
+  src/tmux/NOTES.md.
+- `Job.pid` is the agent's pid (the launcher records it); `Job.panePid` is the launcher shell, the group leader.
+- An agent killed by signal N reports status 128 + N; failure comments say "killed by signal N (status 128 + N)".

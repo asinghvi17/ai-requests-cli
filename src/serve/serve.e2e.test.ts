@@ -624,7 +624,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(await main(['debug', 'panes'], { out: (s) => { out += s; }, err: () => {} }), 0);
     assert.match(out, /^tmux: tmux \d/m);
     assert.match(out, new RegExp(`^  "45\\\\t${pane.nonce}\\\\t${pane.windowId}\\\\t`, 'm'));
-    assert.match(out, new RegExp(`^  #45 nonce ${pane.nonce} window ${pane.windowId} pane ${pane.paneId} pid \\d+ alive$`, 'm'));
+    assert.match(out, new RegExp(`^  #45 nonce ${pane.nonce} window ${pane.windowId} pane ${pane.paneId} agent pid ${pane.pid} \\(group ${pane.panePid}\\) alive$`, 'm'));
     assert.match(out, /^  #45 ready\/running paneNonce \(none\): NO MATCHING PANE/m);
 
     await w.server.tick();
@@ -635,6 +635,19 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     out = '';
     await main(['debug', 'panes'], { out: (s) => { out += s; }, err: () => {} });
     assert.match(out, new RegExp(`^  #45 ready/running paneNonce ${pane.nonce}: window ${pane.windowId}`, 'm'));
+  });
+
+  test('air serve, run and start refuse a tmux older than 3.0', async () => {
+    const w = world();
+    jobDeps.loadConfig = () => w.ctx.config;
+    jobDeps.context = () => w.ctx;
+    w.ctx.tmux = createTmux({ socket, run: async (a) => (a[0] === '-V' ? { code: 0, stdout: 'tmux 2.9a\n', stderr: '' } : { code: 1, stdout: '', stderr: 'unexpected' }) });
+    for (const argv of [['serve', '--once'], ['run', '1'], ['start', '1']]) {
+      let err = '';
+      assert.equal(await main(argv, { out: () => {}, err: (s) => { err += s; } }), 1, argv.join(' '));
+      assert.match(err, /^air: tmux 2\.9a is too old: air needs tmux 3\.0 or newer/, argv.join(' '));
+    }
+    assert.deepEqual(w.store.log, [], 'nothing touched GitHub');
   });
 
   test('--once polls again when the issue list is still empty, then exits', async () => {

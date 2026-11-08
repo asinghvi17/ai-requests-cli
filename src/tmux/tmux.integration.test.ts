@@ -9,12 +9,35 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createTmux, defaultRunner, socketPath, TASK_FILE, TASK_INSTRUCTION } from './tmux.ts';
 import { clientEnv } from './env.ts';
+import { REAP_GRACE_SECONDS } from './launcher.ts';
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0;
 const socket = `air-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const raw = defaultRunner(socket);
 
+/** Process groups of jobs a test started: KILLed after each test, whatever happened, so none outlive the suite. */
+const groups = new Set<number>();
+/**
+ * Pids of `pgid`'s members that still run. Zombies don't count: tmux < 3.6 with utempter may never reap the dead
+ * launcher shell (the bug the launcher works around), and a zombie runs nothing.
+ */
+function running(pgid: number): number[] {
+  const ps = spawnSync('ps', ['-eo', 'pid=,pgid=,stat='], { encoding: 'utf8' });
+  return ps.stdout.split('\n').map((l) => l.trim().split(/\s+/)).filter(([, g, st]) => Number(g) === pgid && st && !st.startsWith('Z')).map(([p]) => Number(p));
+}
+function killGroups() {
+  for (const g of groups) {
+    try {
+      process.kill(-g, 'SIGKILL');
+    } catch {
+      // gone
+    }
+  }
+  groups.clear();
+}
+
 function killTestServer() {
+  killGroups();
   spawnSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' });
   rmSync(socketPath(socket), { force: true }); // tmux may be unable to unlink it in a sandbox
 }
@@ -45,6 +68,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
   });
   afterEach(async () => {
     for (const job of await t.listJobs()) await t.stopJob(job.issue, { graceMs: 0 });
+    killGroups();
   });
   after(() => {
     killTestServer();
@@ -188,9 +212,11 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     const job = (await t.listJobs()).find(j => j.issue === 7)!;
     assert.equal(job.exitStatus, 3);
     assert.equal(await t.isAlive(7), false);
-    // remain-on-exit's "Pane is dead" line sits on the screen's last row, below blank rows.
+    // remain-on-exit's "Pane is dead" line sits on the screen's last row, below blank rows. tmux draws it only
+    // once it has reaped the child, which tmux < 3.6 with utempter may never do (the status file covers that).
     assert.match((await t.capture(7, 200))!, /hello-from-job/);
-    assert.match((await t.capture(7, 1))!, /^Pane is dead \(status 3/);
+    const last = (await t.capture(7, 1))!;
+    assert.ok(/^Pane is dead \(status 3/.test(last) || last === 'hello-from-job', last);
     assert.deepEqual(await t.stopJob(7), { exitStatus: 3 });
     assert.deepEqual(await t.listJobs(), []);
     assert.equal(await t.capture(7), null);
@@ -214,6 +240,40 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.deepEqual(await t.stopJob(9, { graceMs: 300 }), { exitStatus: null });
     assert.ok(Date.now() - start >= 300);
     assert.deepEqual(await t.listJobs(), []);
+  });
+
+  // A job that ignores C-c, TERM and HUP: only KILL ends it. Its own pid goes to `pidfile`.
+  async function stubborn(issue: number) {
+    const pidfile = join(dir, `stubborn-${issue}`);
+    await t.startJob({ issue, cwd: dir, argv: ['/bin/sh', '-c', `trap '' INT TERM HUP; echo $$ > ${pidfile}.tmp; mv ${pidfile}.tmp ${pidfile}; while :; do sleep 0.1; done`] });
+    await until('job started', () => existsSync(pidfile));
+    const job = (await t.listJobs()).find((j) => j.issue === issue)!;
+    groups.add(job.panePid);
+    return { job, shell: Number(readFileSync(pidfile, 'utf8')) };
+  }
+
+  test('the job records the agent\'s pid; the pane\'s pid leads its process group', async () => {
+    const { job, shell } = await stubborn(31);
+    assert.equal(job.pid, shell, 'Job.pid is the agent, not the launcher shell');
+    assert.notEqual(job.panePid, job.pid);
+    const pgid = Number(spawnSync('ps', ['-o', 'pgid=', '-p', String(job.pid)], { encoding: 'utf8' }).stdout.trim());
+    assert.equal(pgid, job.panePid, "the agent runs in the launcher's process group");
+  });
+
+  test('regression: no process of a job survives stopJob, even one that ignores INT, TERM and HUP', async () => {
+    const { job, shell } = await stubborn(32);
+    await t.stopJob(32, { graceMs: 200 });
+    await until('the job group is gone', () => running(job.panePid).length === 0, 3000);
+    assert.ok(!running(job.panePid).includes(shell));
+    assert.deepEqual(await t.listJobs(), []);
+  });
+
+  test('regression: no process of a job survives a raw tmux kill-window (the launcher reaps its group)', async () => {
+    const { job, shell } = await stubborn(33);
+    assert.equal((await raw(['kill-window', '-t', job.windowId])).code, 0);
+    // The hangup only reaches the launcher shell; its reaper sends the group TERM, then KILL after REAP_GRACE_SECONDS.
+    await until('the job group is gone', () => running(job.panePid).length === 0, (REAP_GRACE_SECONDS + 4) * 1000);
+    assert.ok(!running(job.panePid).includes(shell));
   });
 
   test('attach targets the job window; switch-client moves a client to it', async () => {
