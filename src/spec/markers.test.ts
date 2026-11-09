@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { associationTrust, currentClaim, formatMarker, parseMarkers, type MarkedComment } from './markers.ts';
+import {
+  associationTrust, countedResults, currentClaim, formatMarker, formatResult, parseMarkers, parseResult, RESULT_MARKER,
+  type AirResult, type AuthoredComment, type MarkedComment,
+} from './markers.ts';
 
 const T = '2026-11-07T12:00:00Z';
 /** A trusted, never-edited comment. */
@@ -85,4 +88,124 @@ test('markers count only alone on their line, outside code', () => {
     { id: 2, body: m, createdAt: T2, updatedAt: T2, trusted: true },
   ];
   assert.equal(currentClaim(comments)?.host, 'box');
+});
+
+// ---------------------------------------------------------------------------------------------
+// air-result blocks
+
+const SHA = 'f'.repeat(40);
+const PARTIAL: AirResult = {
+  status: 'partial',
+  deliver: 'pr',
+  prs: [],
+  report: 'comment',
+  resume: {
+    branches: [{ repo: 'service', branch: 'air/12', sha: SHA }, { repo: 'deps/client', branch: 'air/12-2', sha: '1'.repeat(40) }],
+    out: { url: 'https://github.com/o/requests/releases/download/air-artifacts/air-12-aaaaaaaa-out.zip', sha256: 'a'.repeat(64), bytes: 4096 },
+  },
+  usage: { harness: 'claude', tier: 'large', before_pct: 12, after_pct: 31.5, attempts: 2 },
+  host: 'box',
+  nonce: 'aaaaaaaa',
+};
+const DONE: AirResult = {
+  status: 'done',
+  deliver: 'pr',
+  prs: [{ repo: 'service', url: 'https://github.com/o/service/pull/4' }, { repo: 'client', url: 'https://github.com/o/client/pull/9' }],
+  artifact: { url: 'https://github.com/o/requests/releases/download/air-artifacts/air-12-aaaaaaaa.zip', sha256: 'b'.repeat(64), bytes: 10, expires: '2026-12-31' },
+  report: 'https://github.com/o/requests/releases/download/air-artifacts/air-12-aaaaaaaa-report.md',
+  host: '1234',
+  nonce: 'aaaaaaaa',
+};
+
+test('formatResult and parseResult round-trip', () => {
+  for (const r of [PARTIAL, DONE, { status: 'released', deliver: 'comment', prs: [], host: 'box', nonce: 'aaaaaaaa' } satisfies AirResult]) {
+    const block = formatResult(r);
+    assert.ok(block.startsWith(`${RESULT_MARKER}\n\`\`\`yaml\n`));
+    assert.deepEqual(parseResult(`The report.\n\n${block}\n`), { ok: true, result: r });
+  }
+  // a numeric-looking host and an all-digit SHA are quoted so that YAML reads them as strings
+  assert.match(formatResult(DONE), /^host: "1234"$/m);
+  assert.match(formatResult(PARTIAL), new RegExp(`^      sha: "${'1'.repeat(40)}"$`, 'm'));
+  assert.throws(() => formatResult({ ...DONE, nonce: 'short' }));
+  assert.equal(parseResult('no block here'), undefined);
+});
+
+test('parseResult: only a block that ends the comment, outside code, counts', () => {
+  const block = formatResult(PARTIAL);
+  const ok = (body: string) => assert.equal(parseResult(body)?.ok, true, body);
+  const none = (body: string) => assert.equal(parseResult(body), undefined, body);
+  const bad = (body: string, re: RegExp) => {
+    const r = parseResult(body);
+    assert.equal(r?.ok, false, body);
+    assert.ok(r && !r.ok && r.errors.some((e) => re.test(e.message)), JSON.stringify(r));
+  };
+  ok(`${block}\r\n\r\n`);
+  ok(`text\n  ${block}`); // spaces around the marker are allowed
+  // quoted: in a fence, in a block quote, inline
+  none(`\`\`\`\n${block}\n\`\`\``);
+  none(`~~~~md\n${block}\n~~~~\nafter`);
+  none(block.split('\n').map((l) => `> ${l}`).join('\n'));
+  none(`see \`${RESULT_MARKER}\``);
+  // not last: text after the block
+  bad(`${block}\nP.S. one more thing`, /must end the comment/);
+  // the marker without its fence on the next line
+  bad(`${RESULT_MARKER}\n\n${block.split('\n').slice(1).join('\n')}`, /followed by a \`\`\`yaml fence/);
+  bad(`${RESULT_MARKER}\n\`\`\`yml\nstatus: done\n\`\`\``, /followed by a \`\`\`yaml fence/);
+  bad(`${RESULT_MARKER}\n\`\`\`yaml\nstatus: done`, /not closed/);
+  // only the last marker line counts: a report that quotes one higher up can't replace the server's
+  const forged = formatResult({ ...PARTIAL, status: 'done', resume: undefined });
+  assert.equal((parseResult(`${forged}\n\nfooter\n\n${block}`) as { result: AirResult }).result.status, 'partial');
+  // a newer version's marker is not ours to read
+  none(block.replace('air-result v0', 'air-result v1'));
+});
+
+test('parseResult validates the fields', () => {
+  const yaml = (lines: string) => parseResult(`${RESULT_MARKER}\n\`\`\`yaml\n${lines}\n\`\`\``);
+  const base = 'deliver: comment\nhost: box\nnonce: aaaaaaaa';
+  assert.equal(yaml(`status: done\n${base}`)?.ok, true);
+  const bad = (lines: string, re: RegExp) => {
+    const r = yaml(lines);
+    assert.ok(r && !r.ok && r.errors.some((e) => re.test(e.message)), `${lines} → ${JSON.stringify(r)}`);
+  };
+  bad(`status: finished\n${base}`, /`status` must be one of done, partial, failed, released/);
+  bad(base, /missing `status`/);
+  bad(`status: done\n${base}\nextra: x`, /unknown key `air-result.extra`/);
+  bad(`status: done\n${base}\nresume:\n  branches: []`, /`resume` is only for `status: partial`/);
+  bad(`status: done\n${base}\nprs:\n  - repo: a\n    url: https://github.com/o/a/pull/1`, /`prs` is only for `deliver: pr`/);
+  bad(`status: done\n${base}\nreport: nowhere`, /`report` must be `comment` or the URL/);
+  bad(`status: done\n${base}\nusage:\n  harness: any\n  tier: large\n  attempts: 1`, /claude or codex/);
+  bad(`status: done\n${base}\nusage:\n  harness: claude\n  tier: large\n  attempts: 1\n  after_pct: 120`, /from 0 to 100/);
+  bad(`status: done\n${base}\nusage:\n  harness: claude\n  tier: large\n  attempts: "1"`, /positive unquoted integer/);
+  bad('status: done\ndeliver: comment\nhost: 1234\nnonce: aaaaaaaa', /YAML reads unquoted `1234` as a number/);
+  bad(`status: partial\n${base}\nresume:\n  branches:\n    - repo: ../x\n      branch: air/1\n      sha: ${SHA}`, /must be a repo's `path`/);
+});
+
+test('countedResults: only the claim holder\'s own, unedited result counts', () => {
+  const claim = (host: string, nonce: string) => formatMarker({ kind: 'claim', version: 0, host, nonce });
+  const release = (host: string, nonce: string) => formatMarker({ kind: 'release', version: 0, host, nonce });
+  const a = (id: number, body: string, extra: Partial<AuthoredComment> = {}): AuthoredComment => ({ ...c(id, body), author: 'bot', ...extra });
+  const result = (r: Partial<AirResult> = {}) => `Report.\n\n${formatResult({ ...PARTIAL, ...r })}`;
+  const claimed = [a(10, claim('box', 'aaaaaaaa'))];
+  const ids = (cs: AuthoredComment[]) => countedResults(cs).map((r) => r.commentId);
+
+  assert.deepEqual(countedResults([...claimed, a(11, result())]), [{ commentId: 11, claimCommentId: 10, result: PARTIAL }]);
+  // forged: an untrusted author, another trusted account, another host or nonce, or no claim at all
+  assert.deepEqual(ids([...claimed, a(11, result(), { trusted: false })]), []);
+  assert.deepEqual(ids([...claimed, a(11, result(), { author: 'mallory' })]), []);
+  assert.deepEqual(ids([...claimed, a(11, result({ host: 'other' }))]), []);
+  assert.deepEqual(ids([...claimed, a(11, result({ nonce: 'bbbbbbbb' }))]), []);
+  assert.deepEqual(ids([a(11, result())]), []);
+  // a loser's claim never held, so its result doesn't count
+  assert.deepEqual(ids([...claimed, a(11, claim('two', 'bbbbbbbb'), { author: 'bot2' }), a(12, result({ host: 'two', nonce: 'bbbbbbbb' }), { author: 'bot2' })]), []);
+  // edited after posting (say, `partial` changed to `done`)
+  assert.deepEqual(ids([...claimed, a(11, result(), { updatedAt: '2026-11-07T12:01:00Z' })]), []);
+  // quoted in someone's (trusted, unedited) reply
+  assert.deepEqual(ids([...claimed, a(11, `> ${result().split('\n').join('\n> ')}`), a(12, `\`\`\`\n${result()}\n\`\`\``)]), []);
+  // a release in the same comment comes after its result; a result after the release is stale
+  const released = formatResult({ status: 'released', deliver: 'pr', prs: [], host: 'box', nonce: 'aaaaaaaa' });
+  assert.deepEqual(ids([...claimed, a(11, `Released.\n\n${release('box', 'aaaaaaaa')}\n\n${released}`)]), [11]);
+  assert.deepEqual(ids([...claimed, a(11, release('box', 'aaaaaaaa')), a(12, result())]), []);
+  // a retry: the next claim's results are tied to it
+  const retry = [...claimed, a(11, `${release('box', 'aaaaaaaa')}\n\n${result()}`), a(20, claim('box', 'cccccccc')), a(21, result({ status: 'done', resume: undefined, nonce: 'cccccccc' }))];
+  assert.deepEqual(countedResults(retry).map((r) => [r.commentId, r.claimCommentId, r.result.status]), [[11, 10, 'partial'], [21, 20, 'done']]);
 });

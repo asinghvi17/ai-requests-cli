@@ -51,7 +51,7 @@ const tmp = (p: string) => {
 function body(mode: string, fm: string[] = ['deliver: comment'], extra = ''): string {
   return `---\nair: 0\neffort: XS\n${fm.join('\n')}\n---\n\n## Task\n\nFAKE: ${mode}\n\n## Done when\n\n- it is done\n${extra}`;
 }
-const PR = ['deliver: pr', 'repo:', `  url: ${TARGET}`, '  ref: main'];
+const PR = ['deliver: pr', 'repos:', `  - url: ${TARGET}`, '    ref: main'];
 const CONTEXT = '\n## Context\n\nThe repo.\n';
 
 function weekly(usedPct: number, resetsAt = new Date(Date.now() + 3 * 86_400_000).toISOString()): Subscription {

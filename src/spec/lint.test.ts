@@ -35,10 +35,13 @@ function oneError(b: string, re: RegExp) {
 }
 
 const MIN = 'air: 0\neffort: S\ndeliver: comment';
+const CTX = '\n## Context\n\nThe repos.\n';
+/** A `repos` block with one entry per element, each given as its `key: value` lines. */
+const reposOf = (...entries: string[][]) => `repos:\n${entries.map(([first, ...rest]) => [`  - ${first}`, ...rest.map((l) => `    ${l}`)].join('\n')).join('\n')}`;
 
 test('every example in spec/examples lints clean', () => {
   const files = readdirSync(new URL('spec/examples/', root)).filter((f) => f.endsWith('.md'));
-  assert.equal(files.length, 4);
+  assert.equal(files.length, 6);
   for (const f of files) {
     const r = lint(read(`spec/examples/${f}`));
     assert.deepEqual(r.errors, [], f);
@@ -54,9 +57,10 @@ test('examples parse to the expected requests', () => {
     effort: 'M',
     harness: ['claude', 'codex'],
     model: 'medium',
+    repos: [{ url: 'https://github.com/acme-analytics/TimeSeriesKit.jl.git', ref: 'main', path: 'TimeSeriesKit.jl' }],
     repo: { url: 'https://github.com/acme-analytics/TimeSeriesKit.jl.git', ref: 'main' },
-    setup: ["julia --project=. -e 'using Pkg; Pkg.instantiate()'"],
-    check: "julia --project=. -e 'using TimeSeriesKit'",
+    setup: ["julia --project=repo/TimeSeriesKit.jl -e 'using Pkg; Pkg.instantiate()'"],
+    check: "julia --project=repo/TimeSeriesKit.jl -e 'using TimeSeriesKit'",
     deliver: 'pr',
     deadline: '2026-11-20',
     timeoutMinutes: 180,
@@ -66,7 +70,14 @@ test('examples parse to the expected requests', () => {
   assert.equal(research.timeoutMinutes, 90);
   assert.equal(lint(read('spec/examples/data-cleanup.md')).request!.check, '.venv/bin/python -c "import pandas, pyarrow"');
   assert.equal(lint(read('spec/examples/data-cleanup.md')).request!.context!.expires, '2026-12-31');
-  assert.equal(lint(read('spec/examples/code-review.md')).request!.repo!.ref, 'feature/proration-v2');
+  const review = lint(read('spec/examples/multi-repo-review.md')).request!;
+  assert.deepEqual(review.repos.map((r) => [r.path, r.pr ?? r.ref]), [['service', 212], ['client', 87], ['service-main', 'main']]);
+  assert.equal(review.repo, undefined);
+  const change = lint(read('spec/examples/multi-repo-change.md')).request!;
+  assert.equal(change.deliver, 'pr');
+  assert.deepEqual(change.repos.map((r) => [r.path, r.deliver ?? 'pr']), [['service', 'pr'], ['client', 'pr'], ['api-guidelines', 'none']]);
+  const question = lint(read('spec/examples/zip-question.md')).request!;
+  assert.deepEqual([question.repos, question.deliver, question.context?.bytes], [[], 'comment', 3207114]);
 });
 
 test('template is identical in both places and only fails on the unfilled sections', () => {
@@ -84,7 +95,7 @@ test('template is identical in both places and only fails on the unfilled sectio
 test('minimal request gets defaults', () => {
   const r = lint(body(MIN));
   assert.equal(r.ok, true);
-  assert.deepEqual(r.request, { air: 0, effort: 'S', harness: ['any'], model: 'medium', setup: [], deliver: 'comment', timeoutMinutes: 240 });
+  assert.deepEqual(r.request, { air: 0, effort: 'S', harness: ['any'], model: 'medium', repos: [], setup: [], deliver: 'comment', timeoutMinutes: 240 });
   assert.equal(r.sections.Task?.text, 'Do the thing.');
   assert.equal(r.sections['Done when']?.line, 11);
 });
@@ -127,8 +138,8 @@ test('bad effort', () => {
   oneError(body('air: 0\neffort: [S]\ndeliver: comment'), /single value/);
 });
 
-test('deliver: pr without repo', () => {
-  const e = oneError(body('air: 0\neffort: S\ndeliver: pr'), /`deliver: pr` requires `repo`/);
+test('deliver: pr without repos', () => {
+  const e = oneError(body('air: 0\neffort: S\ndeliver: pr'), /`deliver: pr` requires `repos`/);
   assert.equal(e.code, 'missing');
   oneError(body('air: 0\neffort: S\ndeliver: email'), /`deliver` must be one of comment, pr, artifact/);
 });
@@ -137,7 +148,9 @@ test('unknown keys are errors, with suggestions', () => {
   const e = oneError(body(MIN + '\ntimout: 2h'), /unknown key `timout` \(did you mean `timeout`\?\)/);
   assert.equal(e.code, 'unknown-key');
   assert.equal(e.line, 5);
-  oneError(body(MIN + '\nrepo:\n  url: https://x.test/r.git\n  ref: main\n  branch: dev'), /unknown key `repo.branch`/);
+  oneError(body(MIN + '\nrepos:\n  - url: https://x.test/r.git\n    ref: main\n    branch: dev', SECTIONS + CTX), /unknown key `repos\[0\].branch`/);
+  // the old single `repo` gets a pointer to its replacement
+  oneError(body(MIN + '\nrepo:\n  url: https://x.test/r.git\n  ref: main', SECTIONS + CTX), /`repo` was replaced by `repos`, a list/);
   oneError(body(MIN + '\npriority: high'), /^unknown key `priority`$/);
 });
 
@@ -170,8 +183,8 @@ test('context validation', () => {
 });
 
 test('repo validation and the Context section requirement', () => {
-  const withRepo = (ref: string) => `${MIN}\nrepo:\n  url: https://github.com/o/r.git\n  ref: ${ref}`;
-  oneError(body(withRepo('main')), /missing `## Context` section \(required when `context` or `repo` is set\)/);
+  const withRepo = (ref: string) => `${MIN}\n${reposOf(['url: https://github.com/o/r.git', `ref: ${ref}`])}`;
+  oneError(body(withRepo('main')), /missing `## Context` section \(required when `context` or `repos` is set\)/);
   const ctx = SECTIONS + '\n## Context\n\nThe repo.\n';
   assert.equal(lint(body(withRepo('feature/x-1'), ctx)).ok, true);
   assert.equal(lint(body(withRepo('0123abc'), ctx)).ok, true);
@@ -180,6 +193,7 @@ test('repo validation and the Context section requirement', () => {
   oneError(body(withRepo('main'), SECTIONS + '\n## Context\n\n<!-- todo -->\n'), /`## Context` is empty/);
   // an empty Context section is fine when nothing requires it
   assert.equal(lint(body(MIN, SECTIONS + '\n## Context\n')).ok, true);
+  assert.equal(lint(body(`${MIN}\nrepos: []`, SECTIONS + '\n## Context\n')).ok, true);
 });
 
 test('harness, model, setup, check, deadline, timeout', () => {
@@ -229,7 +243,12 @@ test('YAML subset errors carry line numbers', () => {
     ['air: 0\neffort: S\ndeliver: comment\ncheck: "unterminated', /unterminated double-quoted/, 5],
     ['air: 0\neffort: S\ndeliver: comment\nsetup: [a, b', /missing `\]`/, 5],
     ['air: 0\neffort: S\ndeliver: comment\nsetup:', /`setup` has no value/, 5],
-    ['air: 0\neffort: S\ndeliver: comment\nrepo:\n  url: https://x.test/r\n    ref: main', /one level/, 7],
+    ['air: 0\neffort: S\ndeliver: comment\ncontext:\n  url: https://x.test/r\n    ref: main', /unexpected indentation/, 7],
+    ['air: 0\neffort: S\ndeliver: comment\nrepos:\n  - url: https://x.test/r\n      ref: main', /unexpected indentation/, 7],
+    ['air: 0\neffort: S\ndeliver: comment\nrepos:\n  - url: https://x.test/r\n   ref: main', /unexpected indentation/, 7],
+    ['air: 0\neffort: S\ndeliver: comment\nsetup:\n  - a\n   - b', /not aligned/, 7],
+    ['air: 0\neffort: S\ndeliver: comment\nsetup:\n  - - a', /nested collections/, 6],
+    ['air: 0\neffort: S\ndeliver: comment\nsetup:\n  - a\n- b', /list item without a key/, 7],
     ['air: 0\neffort: S\ndeliver: comment\n  indented: x', /unexpected indentation/, 5],
     ['air: 0\neffort: S\ndeliver: comment\njust some words', /expected `key: value`/, 5],
     ['air: 0\neffort: S\ndeliver: comment\ncheck: "bad \\q escape"', /unsupported escape/, 5],
@@ -273,11 +292,11 @@ test('free text cannot change parsed fields', () => {
 });
 
 test('unquoted YAML bools, nulls and numbers are rejected in string fields', () => {
-  const ctx = SECTIONS + '\n## Context\n\nThe repo.\n';
-  const repo = (ref: string) => `${MIN}\nrepo:\n  url: https://github.com/o/r.git\n  ref: ${ref}`;
-  const e = oneError(body(repo('1.10'), ctx), /`repo.ref`: YAML reads unquoted `1.10` as a number; quote it: "1.10"/);
+  const ctx = SECTIONS + CTX;
+  const repo = (ref: string) => `${MIN}\n${reposOf(['url: https://github.com/o/r.git', `ref: ${ref}`])}`;
+  const e = oneError(body(repo('1.10'), ctx), /`repos\[0\].ref`: YAML reads unquoted `1.10` as a number; quote it: "1.10"/);
   assert.equal(e.line, 7);
-  assert.equal(lint(body(repo('"1.10"'), ctx)).request!.repo!.ref, '1.10');
+  assert.equal(lint(body(repo('"1.10"'), ctx)).request!.repos[0]!.ref, '1.10');
   oneError(body(`${MIN}\ncheck: 100`), /`check`: YAML reads unquoted `100` as a number/);
   oneError(body(`${MIN}\nsetup: [true]`), /`setup`: YAML reads unquoted `true` as a boolean/);
   oneError(body(`${MIN}\nsetup:\n  - ~`), /as a null/);
@@ -306,8 +325,7 @@ test('comments need whitespace before #', () => {
 });
 
 test('URLs are limited to a conservative character set', () => {
-  const ctx = SECTIONS + '\n## Context\n\nThe repo.\n';
-  const repo = (url: string) => body(`${MIN}\nrepo:\n  url: ${url}\n  ref: main`, ctx);
+  const repo = (url: string) => body(`${MIN}\n${reposOf([`url: ${url}`, 'ref: main', 'path: r'])}`, SECTIONS + CTX);
   assert.equal(lint(repo('https://github.com/o/r.git')).ok, true);
   assert.equal(lint(repo('https://ghe.example.com:8443/team/repo-1.git')).ok, true);
   for (const bad of [
@@ -322,7 +340,7 @@ test('URLs are limited to a conservative character set', () => {
     'http://github.com/o/r.git',
     'ext::sh -c id',
   ]) {
-    assert.ok(lint(repo(bad)).errors.some((e) => /`repo.url` must be an https:\/\/ URL/.test(e.message)), bad);
+    assert.ok(lint(repo(bad)).errors.some((e) => /`repos\[0\].url` must be an https:\/\/ URL/.test(e.message)), bad);
   }
 });
 
@@ -377,7 +395,7 @@ test('flow lists accept one trailing comma', () => {
 });
 
 test('deliver: pr against a commit SHA warns', () => {
-  const pr = (ref: string) => body(`air: 0\neffort: S\ndeliver: pr\nrepo:\n  url: https://github.com/o/r.git\n  ref: ${ref}`, SECTIONS + '\n## Context\n\nThe repo.\n');
+  const pr = (ref: string) => body(`air: 0\neffort: S\ndeliver: pr\n${reposOf(['url: https://github.com/o/r.git', `ref: ${ref}`])}`, SECTIONS + CTX);
   const r = lint(pr('0123456789abcdef0123456789abcdef01234567'));
   assert.equal(r.ok, true);
   assert.equal(r.warnings.length, 1);
@@ -387,6 +405,104 @@ test('deliver: pr against a commit SHA warns', () => {
   assert.deepEqual(lint(pr('main')).warnings, []);
   assert.deepEqual(lint(pr('deadbeef')).warnings, []); // could be a branch name
   // not a problem for other deliveries
-  const review = body(`${MIN}\nrepo:\n  url: https://github.com/o/r.git\n  ref: ${'b'.repeat(40)}`, SECTIONS + '\n## Context\n\nThe repo.\n');
+  const review = body(`${MIN}\n${reposOf(['url: https://github.com/o/r.git', `ref: ${'b'.repeat(40)}`])}`, SECTIONS + CTX);
   assert.deepEqual(lint(review).warnings, []);
+});
+
+test('repos: entries, `ref` or `pr`, paths and `deliver: none`', () => {
+  const ok = (fm: string, deliver = 'comment') => {
+    const r = lint(body(`air: 0\neffort: S\ndeliver: ${deliver}\n${fm}`, SECTIONS + CTX));
+    assert.deepEqual(r.errors, [], fm);
+    return r.request!;
+  };
+  const two = ok(reposOf(['url: https://github.com/o/a.git', 'pr: 12'], ['url: https://github.com/o/b', 'ref: v1.2', 'path: deps/b', 'deliver: none']));
+  assert.deepEqual(two.repos, [
+    { url: 'https://github.com/o/a.git', pr: 12, path: 'a' },
+    { url: 'https://github.com/o/b', ref: 'v1.2', path: 'deps/b', deliver: 'none' },
+  ]);
+  assert.equal(two.repo, undefined); // the single-repo adapter covers one `ref` entry only
+  // the dash may sit at the key's own indent, and keys may come in any order
+  assert.deepEqual(ok('repos:\n- ref: main\n  url: https://github.com/o/a.git').repos, [{ url: 'https://github.com/o/a.git', ref: 'main', path: 'a' }]);
+
+  const bad = (fm: string, re: RegExp, deliver = 'comment') => oneError(body(`air: 0\neffort: S\ndeliver: ${deliver}\n${fm}`, SECTIONS + CTX), re);
+  const A = 'url: https://github.com/o/a.git';
+  bad(reposOf([A]), /`repos\[0\]` needs `ref` \(a branch, tag or commit\) or `pr`/);
+  bad(reposOf([A, 'ref: main', 'pr: 3']), /`repos\[0\]` has both `ref` and `pr`; use one/);
+  bad(reposOf([A, 'pr: "3"']), /`repos\[0\].pr` must be a pull request number, unquoted/);
+  bad(reposOf([A, 'pr: 0']), /`repos\[0\].pr` must be a pull request number/);
+  bad(reposOf([A, 'pr: abc']), /`repos\[0\].pr` must be a pull request number/);
+  bad(reposOf(['ref: main']), /`repos\[0\]` is missing `url`/);
+  bad(reposOf([A, 'ref: main', 'deliver: pr']), /`repos\[0\].deliver` can only be `none`/);
+  bad('repos: https://github.com/o/a.git', /`repos` must be a list/);
+  bad('repos:\n  url: https://github.com/o/a.git\n  ref: main', /`repos` must be a list/);
+  bad('repos:\n  - https://github.com/o/a.git', /`repos\[0\]` must be a map/);
+  for (const p of ['/abs', '../up', 'a/../b', '.hidden', 'a//b', 'a/', '-rf', 'a b', '"a\\\\b"', '.']) {
+    bad(reposOf([A, 'ref: main', `path: ${p}`]), /`repos\[0\].path` must be a relative folder/);
+  }
+  bad(reposOf(['url: https://git.example.test', 'ref: main']), /no folder name can be made from .*; set `path`/);
+  // paths are unique (case-insensitively, for macOS) and don't nest
+  bad(reposOf([A, 'ref: main'], ['url: https://github.com/p/a', 'ref: main']), /`repos\[1\]` checks out into `repo\/a`, like `repos\[0\]`/);
+  bad(reposOf([A, 'ref: main', 'path: X'], [A, 'ref: dev', 'path: x']), /like `repos\[0\]`/);
+  bad(reposOf([A, 'ref: main', 'path: x'], [A, 'ref: dev', 'path: x/y']), /inside each other/);
+  // the same repo twice at different refs is fine with distinct paths
+  assert.equal(ok(reposOf([A, 'ref: main', 'path: before'], [A, 'pr: 9', 'path: after'])).repos.length, 2);
+});
+
+test('deliver: pr needs a repo it can deliver to', () => {
+  const pr = (...entries: string[][]) => body(`air: 0\neffort: S\ndeliver: pr\n${reposOf(...entries)}`, SECTIONS + CTX);
+  const A = 'url: https://github.com/o/a.git';
+  const B = 'url: https://github.com/o/b.git';
+  assert.equal(lint(pr([A, 'ref: main'], [B, 'pr: 4', 'deliver: none'])).ok, true);
+  oneError(pr([A, 'ref: main', 'deliver: none']), /every entry in `repos` has `deliver: none`/);
+  oneError(pr([A, 'pr: 4']), /`repos\[0\]` uses `pr`, and `deliver: pr` can't open a pull request against another one/);
+  // an empty list is no repos at all
+  oneError(body('air: 0\neffort: S\ndeliver: pr\nrepos: []', SECTIONS + CTX), /`deliver: pr` requires `repos`/);
+  // the commit-SHA warning is per repo, at that repo's `ref` line, and skips read-only ones
+  const r = lint(pr([A, 'ref: main'], [B, `ref: ${'c'.repeat(40)}`], ['url: https://github.com/o/c.git', `ref: ${'d'.repeat(40)}`, 'deliver: none']));
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.warnings.map((w) => [w.line, w.message]), [[9, '`deliver: pr` needs `repos[1].ref` to be a branch to open the PR against, but it looks like a commit SHA']]);
+});
+
+test('resume: checkpoint branches and the out/ zip', () => {
+  const SHA = 'e'.repeat(40);
+  const zip = ['  out:', '    url: https://github.com/o/requests/releases/download/air-artifacts/air-7-abcdefgh-out.zip', `    sha256: ${'a'.repeat(64)}`, '    bytes: 1200'];
+  const fm = (...resume: string[]) => body([
+    'air: 0', 'effort: M', 'deliver: pr',
+    reposOf(['url: https://github.com/o/a.git', 'ref: main'], ['url: https://github.com/o/b.git', 'ref: main', 'deliver: none']),
+    'resume:', ...resume,
+  ].join('\n'), SECTIONS + CTX);
+  const r = lint(fm(...zip, '  branches:', '    - repo: a', '      branch: air/7', `      sha: "${SHA}"`));
+  assert.deepEqual(r.errors, []);
+  assert.deepEqual(r.request!.resume, {
+    branches: [{ repo: 'a', branch: 'air/7', sha: SHA }],
+    out: { url: 'https://github.com/o/requests/releases/download/air-artifacts/air-7-abcdefgh-out.zip', sha256: 'a'.repeat(64), bytes: 1200 },
+  });
+  // a list at its key's indent, inside a nested map
+  assert.deepEqual(lint(fm('  branches:', '  - repo: a', '    branch: air/7', `    sha: ${SHA}`)).request!.resume, { branches: [{ repo: 'a', branch: 'air/7', sha: SHA }] });
+  assert.deepEqual(lint(fm(...zip)).request!.resume!.branches, []);
+
+  oneError(fm('  branches: []'.replace('[]', '')), /`branches` has no value/);
+  oneError(body(`${MIN}\nresume: yes`), /`resume` must be a map/);
+  oneError(fm(...zip, '  from: x'), /unknown key `resume.from`/);
+  const branch = (repo: string, b = 'air/7', sha = SHA) => fm('  branches:', `    - repo: ${repo}`, `      branch: ${b}`, `      sha: ${sha}`);
+  oneError(branch('c'), /`resume.branches\[0\].repo` must be the `path` of an entry in `repos`; none checks out into `repo\/c`/);
+  oneError(branch('b'), /which has `deliver: none`: read-only repos have no checkpoint branch/);
+  oneError(branch('a', 'air/7', 'abc123'), /`resume.branches\[0\].sha` must be a full commit SHA/);
+  oneError(branch('a', '-x'), /`resume.branches\[0\].branch` is not a valid branch name/);
+  oneError(branch('a', 'air/7', '1'.repeat(40)), /YAML reads unquoted `1{40}` as a number/);
+  oneError(fm('  branches:', '    - repo: a', '      branch: air/7', `      sha: ${SHA}`, '    - repo: a', '      branch: air/7-2', `      sha: ${SHA}`), /lists `a` twice/);
+  oneError(fm(...zip.slice(0, 3)), /`resume.out` is missing `bytes`/);
+  oneError(fm(...zip, '    expires: 2026-12-31'), /unknown key `resume.out.expires`/);
+});
+
+test('singleRepoLimitation: what the pre-`repos` serve code can run', async () => {
+  const { singleRepoLimitation } = await import('./frontmatter.ts');
+  const req = (fm: string) => lint(body(`${MIN}\n${fm}`, SECTIONS + CTX)).request!;
+  const A = 'url: https://github.com/o/a.git';
+  assert.equal(singleRepoLimitation(req('repos: []')), undefined);
+  const one = req(reposOf([A, 'ref: dev', 'path: x']));
+  assert.equal(singleRepoLimitation(one), undefined);
+  assert.deepEqual(one.repo, { url: 'https://github.com/o/a.git', ref: 'dev' });
+  assert.match(singleRepoLimitation(req(reposOf([A, 'pr: 3'])))!, /pull request/);
+  assert.match(singleRepoLimitation(req(reposOf([A, 'ref: a', 'path: a'], [A, 'ref: b', 'path: b'])))!, /more than one repo/);
 });

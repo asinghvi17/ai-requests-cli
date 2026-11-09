@@ -208,3 +208,50 @@ Alternatives considered:
   src/tmux/NOTES.md.
 - `Job.pid` is the agent's pid (the launcher records it); `Job.panePid` is the launcher shell, the group leader.
 - An agent killed by signal N reports status 128 + N; failure comments say "killed by signal N (status 128 + N)".
+
+## 2026-11-09: v0 amended: `repos`, `air-result`, partial results, requester commands (`air` stays 0)
+
+Approved by Anshul; spec/v0.md amended in place because v0 is unreleased.
+
+- `repo:` (required `ref`) became an optional list, `repos:`. Each entry has `url`, exactly one of `ref` and
+  `pr: N` (`refs/pull/N/head`), an optional `path` under `repo/` (default: the repo's name) and an optional
+  `deliver: none` (read-only, never pushed, no permission check). Paths are relative `/`-separated segments
+  that start with a letter, digit or `_`. They are unique case-insensitively, because macOS file systems
+  ignore case, and they don't nest. `deliver: pr` needs an entry without `deliver: none`, and every such
+  entry must use `ref`, since it becomes a PR base: a `pr:` entry can only be read-only. The old `repo` key
+  gets an error that points to `repos`.
+- Refs and PRs are resolved to SHAs before the claim comment is posted; the comment lists them, and every
+  checkout of the claim uses them. An unresolvable entry is handled like a lint failure: no claim, and one
+  comment per body version.
+- Setup runs in the workspace root, not in `repo/`, since there may be several repos or none.
+- `deliver: pr` opens one PR per repo with commits. Each PR body links the issue: `Closes` with one PR,
+  `Part of` with several, so that merging the first doesn't close the issue. After all are open, each body
+  gets a list of its siblings. No repo with commits is `failed`.
+- The YAML subset now allows block lists of maps (`- key: value`, further keys aligned under the first)
+  and maps nested inside maps, since `repos` and `resume` need them. The parser is now a small recursive
+  one. Flow lists still hold scalars only. Integer fields: `air`, `context.bytes`, `repos[].pr`,
+  `resume.out.bytes`. List positions in messages are 0-based (`repos[1].ref`).
+- Every final comment ends with one `air-result` block: the `<!-- air-result v0 -->` line, then a fenced
+  `yaml` block in the §3 subset. Only the last such line outside code counts, and its fence must end the
+  comment, so a report that quotes a result earlier can't replace the server's. It counts only if the
+  comment counts for markers (trusted, unedited), its `host` and `nonce` name the claim that held the issue
+  when it was posted, and the same account posted that claim. `air-artifact` is folded into `air-result`
+  (`artifact:`). Servers no longer write it, but sweep still reads a counted `air-artifact` block as an asset
+  reference, so assets from servers built before this change still expire. `resume.out` takes `sha256` and
+  `bytes` like `context`: the next server downloads and extracts it, so it gets the same integrity checks.
+  The parser is in `src/spec/markers.ts` (`parseResult`, `countedResults`, `formatResult`).
+- Cut-off rules (§11): a 5-hour window pauses and resumes. A weekly or monthly window waits if it resets
+  within 24 h, else it checkpoints as `partial` and releases. An exit without AIR_DONE resumes the session
+  once, then becomes `partial`. Using more than 2× the effort share becomes `partial`. A timeout is
+  `partial` if there is a checkpoint, else `failed`. Context limits are not a cut-off. The 48 h pause release
+  skips quota pauses waiting on a reset ≤ 24 h away. New label `air:partial`. Checkpoint branches are pushed
+  only for `deliver: pr` (the only delivery whose write access was checked); for the other deliveries the
+  checkpoint is `out/` alone. Uncommitted changes are not checkpointed: AIR_TASK.md asks for WIP commits
+  and an up-to-date `out/PROGRESS.md` instead, so the server never commits for the agent.
+- A request can carry `resume:` (set by `air retry`). Its branches name repos by `path`, and the delivery
+  branch of a resumed run is the checkpoint branch when the push is a fast-forward.
+- Requester commands specified (not implemented yet): `air status`, `air wait` (0 done, 3 partial, 1
+  failed/released or unreadable, 2 usage), `air fetch`, `air retry [--effort L]`.
+- Transitional: until setup, serve and delivery read `repos`, the parser also sets `Request.repo` for a
+  single `ref` entry. `air claim` quietly refuses (`not-yet-supported`) requests that code can't run:
+  several repos, a `pr:` entry, or `resume`. That code still clones into `repo/` and runs setup there.

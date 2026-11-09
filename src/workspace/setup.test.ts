@@ -156,7 +156,7 @@ test('the context zip is verified and extracted; a bad one fails before setup ru
 
 const PR_URL = 'https://github.com/o/target.git';
 const prBody = (setupCmd: string) => body([
-  'repo:', `  url: ${PR_URL}`, '  ref: main', 'deliver: pr', `setup: [${q(setupCmd)}]`,
+  'repos:', `  - url: ${PR_URL}`, '    ref: main', 'deliver: pr', `setup: [${q(setupCmd)}]`,
 ], SECTIONS + CONTEXT);
 
 test('deliver: pr checks the author can write to the target before running anything', async () => {
