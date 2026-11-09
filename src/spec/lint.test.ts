@@ -58,7 +58,6 @@ test('examples parse to the expected requests', () => {
     harness: ['claude', 'codex'],
     model: 'medium',
     repos: [{ url: 'https://github.com/acme-analytics/TimeSeriesKit.jl.git', ref: 'main', path: 'TimeSeriesKit.jl' }],
-    repo: { url: 'https://github.com/acme-analytics/TimeSeriesKit.jl.git', ref: 'main' },
     setup: ["julia --project=repo/TimeSeriesKit.jl -e 'using Pkg; Pkg.instantiate()'"],
     check: "julia --project=repo/TimeSeriesKit.jl -e 'using TimeSeriesKit'",
     deliver: 'pr',
@@ -72,7 +71,6 @@ test('examples parse to the expected requests', () => {
   assert.equal(lint(read('spec/examples/data-cleanup.md')).request!.context!.expires, '2026-12-31');
   const review = lint(read('spec/examples/multi-repo-review.md')).request!;
   assert.deepEqual(review.repos.map((r) => [r.path, r.pr ?? r.ref]), [['service', 212], ['client', 87], ['service-main', 'main']]);
-  assert.equal(review.repo, undefined);
   const change = lint(read('spec/examples/multi-repo-change.md')).request!;
   assert.equal(change.deliver, 'pr');
   assert.deepEqual(change.repos.map((r) => [r.path, r.deliver ?? 'pr']), [['service', 'pr'], ['client', 'pr'], ['api-guidelines', 'none']]);
@@ -149,8 +147,6 @@ test('unknown keys are errors, with suggestions', () => {
   assert.equal(e.code, 'unknown-key');
   assert.equal(e.line, 5);
   oneError(body(MIN + '\nrepos:\n  - url: https://x.test/r.git\n    ref: main\n    branch: dev', SECTIONS + CTX), /unknown key `repos\[0\].branch`/);
-  // the old single `repo` gets a pointer to its replacement
-  oneError(body(MIN + '\nrepo:\n  url: https://x.test/r.git\n  ref: main', SECTIONS + CTX), /`repo` was replaced by `repos`, a list/);
   oneError(body(MIN + '\npriority: high'), /^unknown key `priority`$/);
 });
 
@@ -420,7 +416,6 @@ test('repos: entries, `ref` or `pr`, paths and `deliver: none`', () => {
     { url: 'https://github.com/o/a.git', pr: 12, path: 'a' },
     { url: 'https://github.com/o/b', ref: 'v1.2', path: 'deps/b', deliver: 'none' },
   ]);
-  assert.equal(two.repo, undefined); // the single-repo adapter covers one `ref` entry only
   // the dash may sit at the key's own indent, and keys may come in any order
   assert.deepEqual(ok('repos:\n- ref: main\n  url: https://github.com/o/a.git').repos, [{ url: 'https://github.com/o/a.git', ref: 'main', path: 'a' }]);
 
@@ -495,14 +490,13 @@ test('resume: checkpoint branches and the out/ zip', () => {
   oneError(fm(...zip, '    expires: 2026-12-31'), /unknown key `resume.out.expires`/);
 });
 
-test('singleRepoLimitation: what the pre-`repos` serve code can run', async () => {
+test('singleRepoLimitation: what setup and serve can run today', async () => {
   const { singleRepoLimitation } = await import('./frontmatter.ts');
   const req = (fm: string) => lint(body(`${MIN}\n${fm}`, SECTIONS + CTX)).request!;
   const A = 'url: https://github.com/o/a.git';
   assert.equal(singleRepoLimitation(req('repos: []')), undefined);
   const one = req(reposOf([A, 'ref: dev', 'path: x']));
   assert.equal(singleRepoLimitation(one), undefined);
-  assert.deepEqual(one.repo, { url: 'https://github.com/o/a.git', ref: 'dev' });
   assert.match(singleRepoLimitation(req(reposOf([A, 'pr: 3'])))!, /pull request/);
   assert.match(singleRepoLimitation(req(reposOf([A, 'ref: a', 'path: a'], [A, 'ref: b', 'path: b'])))!, /more than one repo/);
 });

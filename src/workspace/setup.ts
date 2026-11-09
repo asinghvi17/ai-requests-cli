@@ -92,11 +92,13 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
   note(`setup of ${gh.repo}#${n} on ${host}, workspace ${dir}`);
 
   let step = 'setup';
+  // `air claim` only takes requests with at most one repo, checked out at a `ref`.
+  const repo = request.repos[0];
   try {
     // §6: before running anything for a PR, the issue author must be able to write to the target repo.
     if (request.deliver === 'pr') {
       step = 'the push permission check';
-      const target = githubRepo(request.repo!.url, opts.ghHost ?? ((opts.env ?? process.env).GH_HOST || 'github.com'));
+      const target = githubRepo(repo!.url, opts.ghHost ?? ((opts.env ?? process.env).GH_HOST || 'github.com'));
       if ('error' in target) throw new StepError(target.error);
       let role;
       try {
@@ -124,19 +126,19 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
       }
     }
 
-    if (request.repo) {
+    if (repo) {
       step = 'the git clone';
-      note(`git clone ${request.repo.url} at ${request.repo.ref}`);
+      note(`git clone ${repo.url} at ${repo.ref}`);
       try {
         await cloneAt({
-          url: request.repo.url, ref: request.repo.ref, dest: join(dir, 'repo'), cwd: dir, log, env: opts.env ?? process.env, timeoutMs,
+          url: repo.url, ref: repo.ref!, dest: join(dir, 'repo'), cwd: dir, log, env: opts.env ?? process.env, timeoutMs,
         });
       } catch (e) {
         throw new StepError(e instanceof Error ? e.message : String(e));
       }
     }
 
-    const cwd = request.repo ? join(dir, 'repo') : dir;
+    const cwd = repo ? join(dir, 'repo') : dir;
     const env = childEnv(airEnv(dir), opts.env ?? process.env);
     const commands = [...request.setup.map((c, i) => ({ c, name: `setup command ${i + 1}` })), ...(request.check === undefined ? [] : [{ c: request.check, name: 'check' }])];
     for (const { c, name } of commands) {

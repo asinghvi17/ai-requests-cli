@@ -25,16 +25,14 @@ export const MAX_TIMEOUT_MINUTES = 24 * 60;
 /** GitHub's release-asset size limit; context zips can't be larger than this. */
 export const MAX_CONTEXT_BYTES = 2 * 1024 ** 3;
 
-export interface ContextZip {
+/** A zip on a release of the requests repo: `context`, `resume.out`, a result's `artifact`. */
+export interface Asset {
   url: string;
   sha256: string;
   bytes: number;
   /** YYYY-MM-DD after which `air sweep` may delete the zip. Absent: 14 days after the issue closes. */
   expires?: string;
 }
-
-/** A zip on a release of the requests repo: a context zip, an artifact, a checkpoint's `out/`. */
-export type Asset = ContextZip;
 
 /** One entry of `repos`. Exactly one of `ref` and `pr` is set. */
 export interface RepoEntry {
@@ -57,25 +55,15 @@ export interface Resume {
   out?: Asset;
 }
 
-/** The single repo of a request, in the shape code written before `repos` expects. */
-export interface RepoRef {
-  url: string;
-  ref: string;
-}
 
 export interface Request {
   air: number;
   effort: Effort;
   harness: Harness[];
   model: ModelTier;
-  context?: ContextZip;
+  context?: Asset;
   /** In order. Empty: no `repo/` directory. */
   repos: RepoEntry[];
-  /**
-   * Transitional, for the serve/setup/delivery code that predates `repos`: set exactly when `repos`
-   * holds one entry and it uses `ref`. `servableBySingleRepoCode` says whether that code can serve a request.
-   */
-  repo?: RepoRef;
   resume?: Resume;
   setup: string[];
   check?: string;
@@ -463,8 +451,7 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   };
 
   for (const e of entries.values()) {
-    if (e.key === 'repo') err(e.keyLine, 'unknown-key', '`repo` was replaced by `repos`, a list: write `repos:`, then `  - url: ...` and `    ref: ...` under it');
-    else if (!(FIELDS as readonly string[]).includes(e.key)) {
+    if (!(FIELDS as readonly string[]).includes(e.key)) {
       const near = closest(e.key, FIELDS);
       err(e.keyLine, 'unknown-key', `unknown key \`${e.key}\`${near ? ` (did you mean \`${near}\`?)` : ''}`);
     }
@@ -542,7 +529,7 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   }
 
   // context
-  let context: ContextZip | undefined;
+  let context: Asset | undefined;
   const contextE = get('context');
   if (contextE) context = checkAsset(contextE.value, 'context', contextE.keyLine, err, { expires: true });
 
@@ -656,7 +643,6 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   if (air === undefined || !effort || !deliver || errors.length > 0) return undefined;
   const req: Request = { air, effort, harness, model, repos, setup, deliver, timeoutMinutes };
   if (context) req.context = context;
-  if (repos.length === 1 && repos[0]!.ref !== undefined) req.repo = { url: repos[0]!.url, ref: repos[0]!.ref };
   if (resume) req.resume = resume;
   if (check !== undefined) req.check = check;
   if (deadline !== undefined) req.deadline = deadline;
@@ -664,9 +650,8 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
 }
 
 /**
- * Why the serve, setup and delivery code that predates `repos` (one repo, cloned into `repo/`, through
- * `Request.repo`) can't serve a request yet, or undefined if it can. Transitional: goes away once that
- * code reads `repos`.
+ * Why setup, serve and delivery can't run a request yet, or undefined if they can: they handle at most
+ * one repo, checked out at a `ref` into `repo/`, and no `resume`. Temporary, until they implement the rest.
  */
 export function singleRepoLimitation(r: Request): string | undefined {
   if (r.repos.length > 1) return 'it lists more than one repo';

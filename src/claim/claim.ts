@@ -133,7 +133,7 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     return refuse('invalid', `#${n} is not a valid request:\n${result.errors.map((e) => `  line ${e.line}: ${e.message}`).join('\n')}`);
   }
   const request = result.request;
-  // Transitional: setup, serve and delivery still handle one repo, checked out at a `ref`.
+  // Setup, serve and delivery handle at most one repo, at a `ref`, so far.
   const limit = singleRepoLimitation(request);
   if (limit) return refuse('not-yet-supported', `#${n} is valid, but this air can't serve it yet: ${limit}`);
   if (request.deadline !== undefined && now().getTime() > deadlineTime(request.deadline)) {

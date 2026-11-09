@@ -35,6 +35,6 @@
   holder check. Uploaded assets are recorded in `job.delivery.asset`, so a retry reuses them.
 - Failure paths are retryable states: `delivering` (up to 5 attempts, then `air:failed`), `failing` (until the
   release posts), and orphaned `setting-up` workspaces (until released). Labels are repaired from the job state
-  each tick. Report text is defused: marker-like lines (after any whitespace) and `air-artifact` fences, and an
-  open code fence is closed before the footer or the asset block.
+  each tick. Report text is defused: marker-like lines (after any whitespace), including `air-result` lines,
+  and an open code fence is closed before the footer and the result block.
 - Not here: `air sweep` (daily, per spec §7) belongs to the sweep work; the loop has no hook for it yet.

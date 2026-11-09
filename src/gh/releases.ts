@@ -13,7 +13,7 @@ export const ARTIFACTS_TAG = 'air-artifacts';
 export interface Asset {
   id: number;
   name: string;
-  /** `browser_download_url`: what `context.url` and `air-artifact` blocks point at. */
+  /** `browser_download_url`: what `context.url` and `air-result` blocks point at. */
   url: string;
   size: number;
 }

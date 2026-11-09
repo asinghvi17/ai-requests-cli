@@ -16,7 +16,7 @@ import type { Config } from '../config.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { createGh } from '../gh/gh.ts';
 import { requestsRepo } from '../gh/issues.ts';
-import { currentClaim, formatMarker } from '../spec/markers.ts';
+import { currentClaim, formatMarker, parseResult } from '../spec/markers.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
 import type { Subscription } from '../usage/types.ts';
 import { insteadOf, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
@@ -173,7 +173,10 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const nonce = job(w, 2)!.state.nonce;
     const asset = w.fg.releases.find((r) => r.tag === 'air-artifacts')!.assets.find((a) => a.name === `air-2-${nonce}-report.md`)!;
     assert.equal(asset.data.toString(), 'x'.repeat(70000));
-    assert.match(final, new RegExp(`\`\`\`air-artifact\\nurl: https://github.com/o/requests/releases/download/air-artifacts/air-2-${nonce}-report.md\\nsha256: ${createHash('sha256').update(asset.data).digest('hex')}\\nbytes: 70000\\n\`\`\``));
+    assert.deepEqual(parseResult(final), {
+      ok: true,
+      result: { status: 'done', deliver: 'comment', prs: [], report: `https://github.com/o/requests/releases/download/air-artifacts/air-2-${nonce}-report.md`, host: job(w, 2)!.state.host, nonce },
+    });
   });
 
   test('pr: pushes the next free air/<N> branch and opens the PR; no commits fails', async () => {
@@ -189,6 +192,8 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
       { repo: 'o/target', title: 'air: Change it (#3)', head: 'air/3-2', base: 'main', body: 'Closes o/requests#3\n\nAdds CHANGE.\n' },
     ]);
     assert.match(comments(w, 3).at(-1)!, /^Opened https:\/\/github.com\/o\/target\/pull\/100 from branch `air\/3-2`\./);
+    const result = parseResult(comments(w, 3).at(-1)!);
+    assert.deepEqual(result?.ok && result.result.prs, [{ repo: 'target', url: 'https://github.com/o/target/pull/100' }]);
     assert.deepEqual(stateLabels(w, 3), ['air:done']);
     assert.deepEqual(stateLabels(w, 4), ['air:failed']);
     assert.match(comments(w, 4).at(-1)!, /No changes were produced/);
@@ -243,7 +248,10 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const asset = w.fg.releases[0]!.assets.find((a) => a.name === `air-5-${nonce}.zip`)!;
     assert.equal(asset.contentType, 'application/zip');
     const final = comments(w, 5).at(-1)!;
-    assert.match(final, new RegExp(`url: https://github.com/o/requests/releases/download/air-artifacts/air-5-${nonce}.zip\\nsha256: ${createHash('sha256').update(asset.data).digest('hex')}\\nbytes: ${asset.data.length}\\n`));
+    const result = parseResult(final);
+    assert.deepEqual(result?.ok && result.result.artifact, {
+      url: `https://github.com/o/requests/releases/download/air-artifacts/air-5-${nonce}.zip`, sha256: createHash('sha256').update(asset.data).digest('hex'), bytes: asset.data.length,
+    });
     const d = tmp('air-serve-unzip-');
     const zip = join(d, 'a.zip');
     writeFileSync(zip, asset.data);
@@ -344,8 +352,9 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(w.fg.calls.filter((c) => c.includes(`assets?name=air-27-${nonce}.zip`)).length, 1, 'uploaded once');
     assert.equal(w.fg.calls.filter((c) => /releases\/assets\/\d+ --method DELETE/.test(c)).length, 0, 'never deleted');
     const asset = job(w, 27)!.state.job!.delivery!.asset!;
-    assert.match(comments(w, 27).at(-1)!, new RegExp(`url: ${asset.url.replace(/[.]/g, '\\.')}\nsha256: ${asset.sha256}\nbytes: ${asset.bytes}\n\`\`\``));
-    assert.doesNotMatch(comments(w, 27).at(-1)!, /^expires:/m, 'no expires: the spec default (14 days after close) applies');
+    // no expires: the spec default (14 days after close) applies
+    const result = parseResult(comments(w, 27).at(-1)!);
+    assert.deepEqual(result?.ok && result.result.artifact, { url: asset.url, sha256: asset.sha256, bytes: asset.bytes });
   });
 
   test('air stop / air start: pause keeps the claim; start resumes, or starts fresh when resume fails', async () => {
