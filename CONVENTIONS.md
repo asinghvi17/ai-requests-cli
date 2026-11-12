@@ -23,6 +23,7 @@
 | `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery |
 | `src/submit/` | `air submit`: file collection (`.gitignore`), secrets check, zip writer |
 | `src/sweep/` | `air sweep`: expired release assets |
+| `src/requester/` | `air status`, `wait`, `fetch` and `retry`: a request's state and results, seen from the requester's side |
 | `docs/decisions.md` | decision log: append, newest last |
 | `src/config.ts`, `src/toml.ts` | config loading and the TOML-subset parser |
 | `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed) |

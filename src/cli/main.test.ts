@@ -23,13 +23,14 @@ test('--help lists every command; no args prints help to stderr and fails', asyn
   assert.equal(help.code, 0);
   for (const name of Object.keys(COMMANDS)) assert.match(help.out, new RegExp(`^  ${name}\\b`, 'm'));
   const none = await call();
-  assert.equal(none.code, 1);
+  assert.equal(none.code, 2);
   assert.equal(none.err, help.out);
 });
 
 test('routes the full command set', () => {
   assert.deepEqual(Object.keys(COMMANDS).sort(), [
-    'attach', 'claim', 'lint', 'pause', 'release', 'resume', 'run', 'serve', 'setup', 'start', 'stop', 'submit', 'sweep', 'usage',
+    'attach', 'claim', 'fetch', 'lint', 'pause', 'release', 'resume', 'retry', 'run', 'serve', 'setup', 'start', 'status', 'stop', 'submit',
+    'sweep', 'usage', 'wait',
   ]);
 });
 
@@ -45,7 +46,7 @@ test('every command routes through main(): stub exits 2, --help exits 0', async 
     assert.equal(help.out, `usage: air ${cmd.usage}\n  ${cmd.summary}\n`);
     const short = await call(name, '-h');
     assert.equal(short.out, help.out, name);
-    if (cmd.args.length) assert.equal((await call(name)).code, 1, `${name} without ${cmd.args.join(' ')}`);
+    if (cmd.args.length) assert.equal((await call(name)).code, 2, `${name} without ${cmd.args.join(' ')}`);
   }
 });
 
@@ -70,18 +71,18 @@ test('global -h, help and -v', async () => {
 test('names shared with Object.prototype are unknown commands', async () => {
   for (const name of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf']) {
     const r = await call(name);
-    assert.equal(r.code, 1, name);
+    assert.equal(r.code, 2, name);
     assert.match(r.err, new RegExp(`^air: unknown command "${name}"`), name);
   }
 });
 
-test('usage errors exit 1 with the command usage', async () => {
-  assert.equal((await call('frobnicate')).code, 1);
+test('usage errors exit 2 with the command usage', async () => {
+  assert.equal((await call('frobnicate')).code, 2);
   const missing = await call('stop');
-  assert.equal(missing.code, 1);
+  assert.equal(missing.code, 2);
   assert.match(missing.err, /missing ISSUE\nusage: air stop \[--repo OWNER\/NAME\] ISSUE/);
   const bad = await call('serve', '--auto');
-  assert.equal(bad.code, 1);
+  assert.equal(bad.code, 2);
   assert.match(bad.err, /unknown flag --auto/);
 });
 
@@ -97,13 +98,13 @@ test('runs as a script', () => {
   assert.match(r.stderr, /^<stdin>:3: error: missing required field/);
 });
 
-test('claim, setup, release and the job commands validate ISSUE and --repo', async () => {
-  for (const name of ['claim', 'setup', 'release', 'run', 'stop', 'start']) {
+test('commands on one issue validate ISSUE and --repo', async () => {
+  for (const name of ['claim', 'setup', 'release', 'run', 'stop', 'start', 'status', 'wait', 'fetch', 'retry']) {
     const bad = await call(name, 'abc');
-    assert.equal(bad.code, 1, name);
+    assert.equal(bad.code, 2, name);
     assert.match(bad.err, new RegExp(`^air ${name}: ISSUE must be an issue number`), name);
     const badRepo = await call(name, '--repo', 'nope', '3');
-    assert.equal(badRepo.code, 1, name);
+    assert.equal(badRepo.code, 2, name);
     assert.match(badRepo.err, /--repo must be OWNER\/NAME/, name);
   }
 });

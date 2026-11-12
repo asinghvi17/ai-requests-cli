@@ -43,6 +43,23 @@ pass `--allow-file PATH` for each. The zip goes on the requests repo's `air-cont
 the issue is open or being worked on, then 14 days after it closes, or until `--expires YYYY-MM-DD` if you
 give one. `air sweep` (which `air serve` runs daily) deletes expired zips.
 
+Then follow it:
+
+```sh
+air status 12             # state label, holder, latest result (--json for scripts)
+air wait 12 --timeout 4h  # block until there's a result; exit 0 done, 3 partial, 1 failed/released, 4 timeout
+air fetch 12              # report, PR branches, artifact and checkpoint into ./air-12/
+air retry 12              # offer it again after a cancel, failure or partial result (--effort L to raise it)
+```
+
+`air fetch` lays the result out like the volunteer's workspace: `REPORT.md`, `repo/<path>/` for each pull
+request's branch (or, for a partial result, each checkpoint branch), `artifact/` for an artifact zip and
+`out/` for a checkpoint's files. Zips are checked against their size and SHA-256 and extracted with the same
+zip-slip and size checks a server uses. `air retry` is the only way to offer a request again: it refuses
+while a server holds the request, points a partial result's checkpoint into the body's `resume` so the
+next server continues from it, then removes every `air:*` label (`air:cancel` too). To stop a running
+request, add the `air:cancel` label.
+
 ## Volunteer quickstart
 
 `~/.config/air/config.toml`:
