@@ -5,7 +5,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBareRepo, insteadOf, type BareRepo } from './git-fixture.ts';
-import { checkoutCheckpoint, checkRef, cloneAt, GitError } from './git.ts';
+import type { RepoEntry } from '../spec/frontmatter.ts';
+import { checkoutCheckpoint, checkRef, cloneAt, GitError, resolveRepo, type ResolveOptions } from './git.ts';
 
 let dir: string;
 let repo: BareRepo;
@@ -16,33 +17,57 @@ before(() => {
 after(() => rmSync(dir, { recursive: true, force: true }));
 
 let n = 0;
-async function clone(ref: string, extra: Partial<Parameters<typeof cloneAt>[0]> = {}) {
+async function clone(sha: string, extra: Partial<Parameters<typeof cloneAt>[0]> = {}) {
   const dest = join(dir, `c${n++}`);
-  await cloneAt({ url: repo.bare, ref, dest, cwd: dir, log: join(dir, 'log'), allowAnyUrl: true, ...extra });
+  await cloneAt({ url: repo.bare, sha, dest, cwd: dir, log: join(dir, 'log'), allowAnyUrl: true, ...extra });
   const head = execFileSync('git', ['-C', dest, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const branch = execFileSync('git', ['-C', dest, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
   return { dest, head, branch };
 }
 
-test('clones at a branch, a tag, a commit and an unreferenced commit', async () => {
-  assert.deepEqual((({ head, branch }) => ({ head, branch }))(await clone('main')), { head: repo.main, branch: 'main' });
-  const feature = await clone('feature');
-  assert.deepEqual([feature.head, feature.branch], [repo.first, 'feature']);
-  assert.equal(readFileSync(join(feature.dest, 'README'), 'utf8'), 'one\n');
-  assert.deepEqual([(await clone('v1')).head, (await clone('v1')).branch], [repo.first, 'HEAD']);
-  assert.equal((await clone(repo.first)).head, repo.first);
+const resolve = (e: Partial<RepoEntry>, o: ResolveOptions = {}) => resolveRepo({ url: repo.bare, path: 'r', ...e }, { allowAnyUrl: true, ...o });
+
+test('resolves a branch, a tag, a pull request and a commit to a full SHA', async () => {
+  assert.deepEqual(await resolve({ ref: 'main' }), { sha: repo.main });
+  assert.deepEqual(await resolve({ ref: 'feature' }), { sha: repo.first });
+  assert.deepEqual(await resolve({ ref: 'v1' }), { sha: repo.first });
+  assert.deepEqual(await resolve({ ref: 'v2' }), { sha: repo.main }, 'an annotated tag resolves to its commit');
+  assert.deepEqual(await resolve({ pr: 5 }), { sha: repo.dangling });
+  assert.deepEqual(await resolve({ ref: repo.first.slice(0, 9) }), { sha: repo.first });
+  assert.deepEqual(await resolve({ ref: repo.main }), { sha: repo.main });
+  assert.deepEqual(await resolve({ ref: repo.dangling }), { sha: repo.dangling }, 'a full SHA no ref reaches is fetched by name');
+});
+
+test('an entry that names nothing, or a non-branch where a branch is needed, does not resolve', async () => {
+  assert.match((await resolve({ ref: 'nope' }) as { error: string }).error, /`nope` is not a branch, tag or commit of/);
+  assert.match((await resolve({ ref: 'abcdef1' }) as { error: string }).error, /`abcdef1` is not a branch, tag or commit/);
+  assert.match((await resolve({ ref: 'f'.repeat(40) }) as { error: string }).error, /is not a branch, tag or commit/);
+  assert.match((await resolve({ pr: 6 }) as { error: string }).error, /pull request #6 of .* was not found/);
+  assert.match((await resolve({ ref: 'v1' }, { branch: true }) as { error: string }).error, /`v1` is not a branch of .*`deliver: pr`/);
+  assert.deepEqual(await resolve({ ref: 'main' }, { branch: true }), { sha: repo.main });
+  assert.match((await resolve({ ref: 'main', url: join(dir, 'missing.git') }) as { error: string }).error, /git ls-remote .* failed/);
+  assert.match((await resolveRepo({ url: 'ext::sh -c touch% /tmp/pwned', ref: 'main', path: 'r' }) as { error: string }).error, /refusing repo url/);
+  assert.match((await resolve({ ref: 'a..b' }) as { error: string }).error, /refusing ref/);
+});
+
+test('clones at a commit, fetching one no branch or tag reaches', async () => {
+  assert.deepEqual((({ head, branch }) => ({ head, branch }))(await clone(repo.main)), { head: repo.main, branch: 'HEAD' });
+  const first = await clone(repo.first);
+  assert.equal(first.head, repo.first);
+  assert.equal(readFileSync(join(first.dest, 'README'), 'utf8'), 'one\n');
   assert.equal((await clone(repo.dangling)).head, repo.dangling);
 });
 
 test('https URLs go through git (rewritten here to the local repo)', async () => {
   const url = 'https://github.com/o/target.git';
-  const r = await clone('main', { url, allowAnyUrl: false, env: insteadOf(repo.bare, url) });
+  const r = await clone(repo.main, { url, allowAnyUrl: false, env: insteadOf(repo.bare, url) });
   assert.equal(r.head, repo.main);
+  assert.deepEqual(await resolveRepo({ url, ref: 'main', path: 'target' }, { env: insteadOf(repo.bare, url) }), { sha: repo.main });
 });
 
-test('a missing ref or repo is a GitError', async () => {
-  await assert.rejects(clone('nope'), (e: unknown) => e instanceof GitError && /could not find ref "nope"/.test(e.message));
-  await assert.rejects(clone('main', { url: join(dir, 'missing.git') }), /git clone exited 128/);
+test('a missing commit or repo is a GitError', async () => {
+  await assert.rejects(clone('f'.repeat(40)), (e: unknown) => e instanceof GitError && /could not fetch commit f{40}/.test(e.message));
+  await assert.rejects(clone(repo.main, { url: join(dir, 'missing.git') }), /git clone exited 128/);
 });
 
 test('option-like and revision-syntax refs are refused before git runs', async () => {
@@ -51,13 +76,13 @@ test('option-like and revision-syntax refs are refused before git runs', async (
   }
   for (const ref of ['main', 'feature/x-1', 'v1.10', 'release-2026.11', '0123456789abcdef0123456789abcdef01234567']) checkRef(ref);
   const dest = join(dir, 'never');
-  await assert.rejects(cloneAt({ url: repo.bare, ref: '--orphan', dest, cwd: dir, log: join(dir, 'log'), allowAnyUrl: true }), GitError);
+  await assert.rejects(cloneAt({ url: repo.bare, sha: '--orphan', dest, cwd: dir, log: join(dir, 'log'), allowAnyUrl: true }), /not a full SHA/);
   assert.ok(!existsSync(dest));
-  await assert.rejects(cloneAt({ url: 'ext::sh -c touch% /tmp/pwned', ref: 'main', dest, cwd: dir, log: join(dir, 'log') }), /refusing repo.url/);
+  await assert.rejects(cloneAt({ url: 'ext::sh -c touch% /tmp/pwned', sha: repo.main, dest, cwd: dir, log: join(dir, 'log') }), /refusing repo url/);
 });
 
 test('a checkpoint commit is fetched by SHA and checked out on its branch', async () => {
-  const c = await clone('main');
+  const c = await clone(repo.main);
   await checkoutCheckpoint({ dir: c.dest, sha: repo.dangling, branch: 'air/12', log: join(dir, 'log') });
   assert.equal(execFileSync('git', ['-C', c.dest, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), repo.dangling);
   assert.equal(execFileSync('git', ['-C', c.dest, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim(), 'air/12');

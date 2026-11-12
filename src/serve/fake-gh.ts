@@ -81,6 +81,12 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
         f.pulls.push(pr);
         return ok({ number, html_url: pr.url });
       }
+      if ((m = /^repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(path)) && method === 'PATCH') {
+        const pr = f.pulls.find((p) => p.repo === m![1] && p.number === Number(m![2]));
+        if (!pr) return fail(404, 'Not Found');
+        pr.body = (body as { body: string }).body;
+        return ok({ number: pr.number, html_url: pr.url });
+      }
       if ((m = /^repos\/([^/]+\/[^/]+)\/pulls\?state=open&head=([^&]+)$/.exec(path)) && method === 'GET') {
         const [, branch] = decodeURIComponent(m[2]!).split(':');
         return ok(f.pulls.filter((p) => p.repo === m![1] && p.head === branch).map((p) => ({ number: p.number, html_url: p.url })));

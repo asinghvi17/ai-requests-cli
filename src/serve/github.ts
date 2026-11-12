@@ -29,6 +29,8 @@ export interface ServeGitHub {
   createPull(repo: string, pr: { title: string; head: string; base: string; body: string }): Promise<string>;
   /** The URL of the open PR on `repo` from its branch `head`, if any. */
   findPull(repo: string, head: string): Promise<string | undefined>;
+  /** Replaces the body of pull request `number` on `repo`. */
+  updatePull(repo: string, number: number, body: string): Promise<void>;
 }
 
 type RawUser = { login?: string } | null;
@@ -93,6 +95,10 @@ export function serveGitHub(repo: string, gh: Gh): ServeGitHub {
       const owner = target.split('/')[0]!;
       const list = await gh.api<{ html_url: string }[]>(`repos/${target}/pulls?state=open&head=${encodeURIComponent(`${owner}:${head}`)}`);
       return list[0]?.html_url;
+    },
+    async updatePull(target, number, body) {
+      checkRepo(target);
+      await gh.api(`repos/${target}/pulls/${number}`, { method: 'PATCH', body: { body } });
     },
   };
 }

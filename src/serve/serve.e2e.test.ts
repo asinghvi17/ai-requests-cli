@@ -20,7 +20,7 @@ import { requestsRepo } from '../gh/issues.ts';
 import { currentClaim, formatMarker, parseResult } from '../spec/markers.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
 import type { Subscription } from '../usage/types.ts';
-import { insteadOf, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
+import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
 import { allWorkspaces, readState, updateState } from '../workspace/state.ts';
 import { claim } from '../claim/claim.ts';
 import { extractZip } from '../workspace/zip.ts';
@@ -35,6 +35,8 @@ const hasTmux = spawnSync('tmux', ['-V']).status === 0;
 const socket = `air-serve-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
 const FAKE_AGENT = fileURLToPath(new URL('./fixtures/fake-agent.ts', import.meta.url));
 const TARGET = 'https://github.com/o/target';
+const SERVICE = 'https://github.com/o/service';
+const GUIDE = 'https://github.com/o/guide';
 
 function killTmux() {
   spawnSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' });
@@ -70,11 +72,13 @@ interface World {
   root: string;
 }
 
-let bare: BareRepo;
+let bare: BareRepo, service: BareRepo, guide: BareRepo;
 const tmuxClient = createTmux({ socket });
 
 function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
   const store = fakeGitHub();
+  // This server's account can push to the repos requests deliver to; each test grants the requester's access.
+  for (const r of ['o/target', 'o/service', 'o/guide']) store.setPermission(r, 'bot', 'write');
   const fg = fakeGh(store);
   const gh = createGh(fg.run, { timeoutMs: o.timeoutMs ?? 5000 });
   const repo = requestsRepo('o/requests', gh);
@@ -89,7 +93,7 @@ function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
   };
   const ctx: ServeContext = {
     gh: repo, api: serveGitHub('o/requests', gh), tmux: tmuxClient, config, root, host: 'box', ghHost: 'github.com',
-    env: insteadOf(bare.bare, TARGET), stateDir: tmp('air-serve-state-'), trust: createTrust(repo),
+    env: insteadOfAll([[bare.bare, TARGET], [service.bare, SERVICE], [guide.bare, GUIDE]]), stateDir: tmp('air-serve-state-'), trust: createTrust(repo),
     usage: async () => structuredClone(subs), agentEnv: () => ({}), log: (s) => logs.push(s),
     now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, claimWaitMs: 0,
     download: releaseDownload(gh, 'github.com'),
@@ -134,6 +138,11 @@ const resultOf = (w: World, n: number, which: (c: string) => boolean = () => tru
   const { host: _h, nonce: _n, prs, ...rest } = r.result;
   return prs.length ? { ...rest, prs } : rest;
 };
+/** The `prs` of #n's last `air-result`. */
+const prsOf = (w: World, n: number) => {
+  const r = parseResult(comments(w, n).at(-1) ?? '');
+  return r?.ok ? r.result.prs : undefined;
+};
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 async function unzip(data: Buffer): Promise<string> {
   const d = tmp('air-serve-unzip-');
@@ -146,6 +155,8 @@ const holder = async (w: World, n: number) => currentClaim(await markedComments(
 describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' }, () => {
   before(() => {
     bare = makeBareRepo(tmp('air-serve-git-'));
+    service = makeBareRepo(tmp('air-serve-service-'));
+    guide = makeBareRepo(tmp('air-serve-guide-'));
   });
   afterEach(async () => {
     for (const j of await tmuxClient.listJobs()) await tmuxClient.stopJob(j.issue, { graceMs: 0 });
@@ -208,9 +219,9 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const head = execFileSync('git', ['--git-dir', bare.bare, 'rev-parse', 'refs/heads/air/3-2'], { encoding: 'utf8' }).trim();
     assert.equal(execFileSync('git', ['--git-dir', bare.bare, 'log', '-1', '--format=%s', head], { encoding: 'utf8' }).trim(), 'the change');
     assert.deepEqual(w.fg.pulls.map(({ repo, title, head: h, base, body: b }) => ({ repo, title, head: h, base, body: b })), [
-      { repo: 'o/target', title: 'air: Change it (#3)', head: 'air/3-2', base: 'main', body: 'Closes o/requests#3\n\nAdds CHANGE.\n' },
+      { repo: 'o/target', title: 'air: Change it (#3)', head: 'air/3-2', base: 'main', body: 'Part of o/requests#3\n\nAdds CHANGE.\n' },
     ]);
-    assert.match(comments(w, 3).at(-1)!, /^Opened https:\/\/github.com\/o\/target\/pull\/100 from branch `air\/3-2`\./);
+    assert.match(comments(w, 3).at(-1)!, /^Opened a pull request:\n\n- `target`: https:\/\/github.com\/o\/target\/pull\/100 from branch `air\/3-2`\n\n/);
     const result = parseResult(comments(w, 3).at(-1)!);
     assert.deepEqual(result?.ok && result.result.prs, [{ repo: 'target', url: 'https://github.com/o/target/pull/100' }]);
     assert.deepEqual(stateLabels(w, 3), ['air:done']);
@@ -232,7 +243,110 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(spawnSync('git', ['--git-dir', elsewhere, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/20']).status, 1, 'nothing pushed elsewhere');
     assert.equal(spawnSync('git', ['--git-dir', bare.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/20']).status, 0);
     assert.equal(w.fg.pulls.filter((p) => p.head === 'air/20').length, 1);
-    assert.match(comments(w, 20).at(-1)!, /^Opened https:\/\/github.com\/o\/target\/pull\/\d+ from branch `air\/20`/);
+    assert.match(comments(w, 20).at(-1)!, /^Opened a pull request:\n\n- `target`: https:\/\/github.com\/o\/target\/pull\/\d+ from branch `air\/20`/);
+  });
+
+  test('two repos, one delivered and one read-only: one PR; the read-only repo is never pushed', async () => {
+    const w = world();
+    w.store.setPermission('o/service', 'alice', 'write');
+    const fm = ['deliver: pr', 'repos:', `  - url: ${SERVICE}`, '    ref: main', `  - url: ${GUIDE}`, '    pr: 5', '    path: docs/guide', '    deliver: none'];
+    w.store.addIssue({ number: 60, title: 'Two repos', body: body('pr', fm, CONTEXT) });
+    await until(w, 'delivered', () => status(w, 60) === 'done');
+    const ws = job(w, 60)!;
+    assert.deepEqual(ws.state.repos, [{ path: 'service', sha: service.main }, { path: 'docs/guide', sha: guide.dangling }]);
+    assert.match(comments(w, 60)[0]!, new RegExp(`- \`service\`: \`${service.main}\`\n- \`docs/guide\`: \`${guide.dangling}\``));
+    // The agent committed in both checkouts; only the delivered one is pushed.
+    const log = (dir: string) => execFileSync('git', ['-C', dir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim();
+    assert.equal(log(join(ws.dir, 'repo', 'docs', 'guide')), 'the change');
+    assert.equal(spawnSync('git', ['--git-dir', guide.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/60']).status, 1, 'read-only repo untouched');
+    assert.equal(execFileSync('git', ['--git-dir', service.bare, 'log', '--format=%s', 'main..air/60'], { encoding: 'utf8' }), 'the change\n');
+    assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#60)')).map(({ repo, head: h, base, body: b }) => ({ repo, head: h, base, body: b })), [
+      { repo: 'o/service', head: 'air/60', base: 'main', body: 'Part of o/requests#60\n\nAdds CHANGE.\n' },
+    ]);
+    const url = w.fg.pulls.find((p) => p.head === 'air/60')!.url;
+    assert.match(comments(w, 60).at(-1)!, new RegExp(`^Opened a pull request:\n\n- \`service\`: ${url} from branch \`air/60\`\n\n<sub>`));
+    assert.deepEqual(prsOf(w, 60), [{ repo: 'service', url }]);
+    assert.ok(!w.store.log.some((l) => l.startsWith('permission o/guide')), 'no permission check for a read-only repo');
+  });
+
+  test('two delivered repos: a PR each, linked to the issue and to each other; an unchanged repo gets none', async () => {
+    const w = world();
+    for (const r of ['o/service', 'o/target']) w.store.setPermission(r, 'alice', 'write');
+    const fm = ['deliver: pr', 'repos:', `  - url: ${SERVICE}`, '    ref: main', `  - url: ${TARGET}`, '    ref: feature', '    path: libs/target'];
+    w.store.addIssue({ number: 61, title: 'Both', body: body('pr', fm, CONTEXT) });
+    w.store.addIssue({ number: 62, title: 'One', body: body('pr service', fm, CONTEXT) });
+    await until(w, 'delivered', () => status(w, 61) === 'done' && status(w, 62) === 'done');
+    const pulls = (n: number) => w.fg.pulls.filter((p) => p.title.endsWith(`(#${n})`));
+    const [a, b] = pulls(61);
+    assert.deepEqual([a!.repo, a!.base, b!.repo, b!.base], ['o/service', 'main', 'o/target', 'feature']);
+    assert.equal(a!.body, `Part of o/requests#61\n\nAdds CHANGE.\n\n\nThe other pull requests for this request:\n\n- ${b!.url}\n`);
+    assert.equal(b!.body, `Part of o/requests#61\n\nAdds CHANGE.\n\n\nThe other pull requests for this request:\n\n- ${a!.url}\n`);
+    assert.equal(execFileSync('git', ['--git-dir', bare.bare, 'log', '--format=%s', 'feature..air/61'], { encoding: 'utf8' }), 'the change\n');
+    assert.match(comments(w, 61).at(-1)!, new RegExp(`^Opened 2 pull requests:\n\n- \`service\`: ${a!.url} from branch \`air/61\`\n- \`libs/target\`: ${b!.url} from branch \`air/61\`\n\n<sub>`));
+    assert.deepEqual(prsOf(w, 61), [{ repo: 'service', url: a!.url }, { repo: 'libs/target', url: b!.url }]);
+
+    assert.deepEqual(pulls(62).map((p) => [p.repo, p.body]), [['o/service', 'Part of o/requests#62\n\nAdds CHANGE.\n']]);
+    assert.match(comments(w, 62).at(-1)!, /No pull request for:\n\n- `libs\/target`: no commits beyond `[0-9a-f]{12}`\. Uncommitted changes are not delivered\./);
+    assert.deepEqual(prsOf(w, 62)?.map((p) => p.repo), ['service']);
+  });
+
+  test('two delivered repos: a checkpoint pushes a branch per repo, and the resumed request continues both', async () => {
+    const w = world();
+    for (const r of ['o/service', 'o/target']) w.store.setPermission(r, 'alice', 'write');
+    const fm = ['deliver: pr', 'repos:', `  - url: ${SERVICE}`, '    ref: main', `  - url: ${TARGET}`, '    ref: main', `  - url: ${GUIDE}`, '    ref: main', '    deliver: none'];
+    w.store.addIssue({ number: 63, title: 'Long', body: body('quit 3', fm, CONTEXT) });
+    await until(w, 'partial', () => status(w, 63) === 'partial');
+    const r = resultOf(w, 63)!;
+    const sha = (b: BareRepo, ref: string) => execFileSync('git', ['--git-dir', b.bare, 'rev-parse', ref], { encoding: 'utf8' }).trim();
+    assert.deepEqual(r.resume!.branches, [
+      { repo: 'service', branch: 'air/63', sha: sha(service, 'air/63') },
+      { repo: 'target', branch: 'air/63', sha: sha(bare, 'air/63') },
+    ]);
+    assert.equal(spawnSync('git', ['--git-dir', guide.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/63']).status, 1, 'read-only repo untouched');
+    assert.equal(w.fg.pulls.filter((p) => p.title.endsWith('(#63)')).length, 0);
+
+    const issue = w.store.issues.get(63)!;
+    issue.body = body('pr', [...fm, 'resume:', '  branches:', ...r.resume!.branches.flatMap((b) => [`    - repo: ${b.repo}`, `      branch: ${b.branch}`, `      sha: "${b.sha}"`]),
+      '  out:', `    url: ${r.resume!.out!.url}`, `    sha256: ${r.resume!.out!.sha256}`, `    bytes: ${r.resume!.out!.bytes}`], CONTEXT);
+    issue.labels = issue.labels.filter((l) => !l.startsWith('air:'));
+    await until(w, 'delivered', () => status(w, 63) === 'done');
+    for (const [b, repo] of [[service, 'o/service'], [bare, 'o/target']] as const) {
+      assert.equal(execFileSync('git', ['--git-dir', b.bare, 'log', '--format=%s', 'main..air/63-2'], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n', repo);
+    }
+    assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#63)')).map((p) => [p.repo, p.head]), [['o/service', 'air/63-2'], ['o/target', 'air/63-2']]);
+    assert.equal(readFileSync(join(job(w, 63)!.dir, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
+  });
+
+  test('zero repos: no repo/, setup runs in the workspace, and an artifact is delivered', async () => {
+    const w = world();
+    w.store.addIssue({ number: 64, body: body('artifact', ['deliver: artifact', 'setup: ["pwd > where.txt"]']) });
+    await until(w, 'delivered', () => status(w, 64) === 'done');
+    const ws = job(w, 64)!;
+    assert.deepEqual(ws.state.repos, []);
+    assert.equal(existsSync(join(ws.dir, 'repo')), false);
+    assert.equal(readFileSync(join(ws.dir, 'where.txt'), 'utf8').trim().replace(/^\/private/, ''), ws.dir);
+    const task = readFileSync(join(ws.dir, 'AIR_TASK.md'), 'utf8');
+    assert.doesNotMatch(task, /repo\//);
+    assert.match(task, /If you are stopped early, air keeps only `out\/`/);
+    assert.doesNotMatch(comments(w, 64)[0]!, /Repos/);
+    assert.equal(resultOf(w, 64)?.status, 'done');
+    assert.equal(resultOf(w, 64)?.deliver, 'artifact');
+  });
+
+  test('a request the author may not deliver to is not claimed; granting access lets the next tick claim it', async () => {
+    const w = world();
+    w.store.setPermission('o/service', 'alice', 'read');
+    w.store.addIssue({ number: 65, body: body('pr', ['deliver: pr', 'repos:', `  - url: ${SERVICE}`, '    ref: main'], CONTEXT) });
+    for (let i = 0; i < 3; i++) {
+      await w.server.tick();
+      await w.server.idle();
+    }
+    assert.equal(job(w, 65), undefined);
+    assert.equal(comments(w, 65).length, 1);
+    assert.match(comments(w, 65)[0]!, /@alice has read access to o\/service/);
+    assert.equal(w.logs.filter((l) => /^#65: not claimed/.test(l)).length, 1, w.logs.join('\n'));
+    w.store.setPermission('o/service', 'alice', 'write');
+    await until(w, 'delivered', () => status(w, 65) === 'done');
   });
 
   test('a delivery that keeps failing fails the request after a few attempts', async () => {

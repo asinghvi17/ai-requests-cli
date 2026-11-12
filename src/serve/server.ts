@@ -85,6 +85,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   const skip = new Map<number, string>();
   /** Last "no fit" reason logged per issue, so an unchanged one isn't logged every tick. */
   const noFit = new Map<number, string>();
+  /** Issue -> why its last claim was refused, for refusals checked again every tick (logged once per reason). */
+  const refused = new Map<number, string>();
   let adopting = true;
   /** Workspaces left `setting-up` by a setup that died (a restart, or a release that failed): to release. */
   const orphans = new Set<string>();
@@ -340,16 +342,24 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       }
       noFit.delete(n);
       ctx.log(`#${n}: fits ${choice.reason}; claiming`);
-      const r = await claim({ gh: ctx.gh, issue: n, root: ctx.root, host: ctx.host, trust: ctx.trust, now: ctx.now, ...(ctx.claimWaitMs !== undefined ? { waitMs: ctx.claimWaitMs } : {}) });
+      const r = await claim({
+        gh: ctx.gh, issue: n, root: ctx.root, host: ctx.host, trust: ctx.trust, now: ctx.now, ghHost: ctx.ghHost, env: ctx.env,
+        ...(ctx.claimWaitMs !== undefined ? { waitMs: ctx.claimWaitMs } : {}),
+      });
       if (r.status === 'lost') {
         ctx.log(`#${n}: lost the claim to ${r.holder}`);
         continue;
       }
       if (r.status === 'refused') {
-        ctx.log(`#${n}: not claimed: ${r.message.split('\n')[0]}`);
-        if (r.reason !== 'held') skip.set(n, hash);
+        // A repo that can't be resolved or pushed to may be fixed without editing the body (access granted, a
+        // branch pushed): those are checked again every tick, and logged when the reason changes.
+        const again = r.reason === 'held' || r.reason === 'repos' || r.reason === 'cannot-push';
+        if (!again || refused.get(n) !== r.message) ctx.log(`#${n}: not claimed: ${r.message.split('\n')[0]}`);
+        if (again) refused.set(n, r.message);
+        else skip.set(n, hash);
         continue;
       }
+      refused.delete(n);
       updateState(r.dir, { job: jobFromChoice(ctx, choice) }, ctx.now());
       ctx.log(`#${n}: claimed (nonce ${r.state.nonce}) for ${choice.subscription.name}/${choice.model}`);
       track(n, 'setup', prepare(r.dir));

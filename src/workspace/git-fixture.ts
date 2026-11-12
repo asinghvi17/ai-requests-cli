@@ -1,4 +1,5 @@
-// A local bare repo for clone tests: `main` (2 commits), `feature`, tag `v1`, and a commit no ref reaches.
+// A local bare repo for clone tests: `main` (2 commits), `feature`, tags `v1` (lightweight, on the first commit)
+// and `v2` (annotated, on main), a commit no branch or tag reaches, and `refs/pull/5/head` pointing at it.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,12 +21,14 @@ export function makeBareRepo(dir: string): BareRepo {
   writeFileSync(join(work, 'README'), 'two\n');
   git('commit', '-q', '-am', 'two');
   const main = git('rev-parse', 'HEAD');
+  git('tag', '-a', '-m', 'v2', 'v2');
   git('checkout', '-q', '-b', 'tmp');
   writeFileSync(join(work, 'README'), 'dangling\n');
   git('commit', '-q', '-am', 'dangling');
   const dangling = git('rev-parse', 'HEAD');
   const bare = join(dir, 'bare.git');
   git('clone', '-q', '--bare', '--no-local', work, bare);
+  execFileSync('git', ['--git-dir', bare, 'update-ref', 'refs/pull/5/head', dangling], { env });
   execFileSync('git', ['--git-dir', bare, 'branch', '-D', 'tmp'], { env });
   execFileSync('git', ['--git-dir', bare, 'config', 'uploadpack.allowAnySHA1InWant', 'true'], { env });
   return { bare, main, first, dangling };
@@ -33,5 +36,15 @@ export function makeBareRepo(dir: string): BareRepo {
 
 /** Environment that makes git fetch `url` from `bare` instead (via GIT_CONFIG_* insteadOf). */
 export function insteadOf(bare: string, url: string, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...base, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: `url.${bare}.insteadOf`, GIT_CONFIG_VALUE_0: url };
+  return insteadOfAll([[bare, url]], base);
+}
+
+/** `insteadOf` for several repos: each `[bare, url]` pair makes git fetch `url` from `bare`. */
+export function insteadOfAll(pairs: [bare: string, url: string][], base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, GIT_CONFIG_COUNT: String(pairs.length) };
+  pairs.forEach(([bare, url], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = `url.${bare}.insteadOf`;
+    env[`GIT_CONFIG_VALUE_${i}`] = url;
+  });
+  return env;
 }
