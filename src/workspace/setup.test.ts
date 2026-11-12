@@ -74,6 +74,8 @@ test('runs setup and check in the workspace with a clean env and writes AIR_TASK
   assert.match(env, new RegExp(`^AIR_OUT=${dir}/out$`, 'm'));
   assert.doesNotMatch(env, /GH_TOKEN|GITHUB_TOKEN|AWS_|SSH_AUTH_SOCK|secret/);
   const task = readFileSync(join(dir, 'AIR_TASK.md'), 'utf8');
+  assert.match(task, /Keep `out\/PROGRESS\.md` up to date as you work: what is done, what is next, and the decisions you made\./);
+  assert.doesNotMatch(task, /Continuing earlier work/);
   assert.match(task, /^# A request \(o\/requests#7\)/);
   assert.match(task, /## Task\n\nDo the thing\./);
   assert.match(task, /out\/REPORT\.md/);

@@ -11,8 +11,17 @@
   instead of keeping its own list, so a restarted server and the `air run/stop/start` commands all see the same
   thing. `<state dir>/serve.json` only holds the `air pause` flag; `serve.lock` keeps one server per state dir.
 - Done: an interactive agent doesn't exit when it finishes, so AIR_TASK.md asks it to create `AIR_DONE` in the
-  workspace. The server then interrupts it (C-c, grace, close window) and delivers. A pane that exits 0 also
-  delivers; a non-zero exit fails with the last lines of the window.
+  workspace. The server then interrupts it (C-c, grace, close window) and delivers. Only `AIR_DONE` delivers.
+- Stopping early (spec §11), all in `watch`: a pane that exits without `AIR_DONE` (any status) is resumed once
+  (`pauseReason: exit`, `exitResumes`), with an instruction to read `out/PROGRESS.md` and the git log; a second
+  exit stops it early. So do a quota window resetting more than 24 h away, a quota pause past `QUOTA_WAIT_MS`
+  (24 h; not before an hour after the reset it waited on), more than twice `expectedCost` used of the primary
+  window (`overEffort`, only with comparable readings) and `timeout`. `partialJob` sets `checkpointing`, closes
+  the window, pushes `air/<N>[-k]` for `deliver: pr` (`pushWork`, shared with PR delivery) and uploads `out/` as
+  `air-<N>-<nonce>-out.zip`, then posts the `partial` release with `resume`. A timeout whose checkpoint keeps
+  nothing fails instead. Quota pauses are never released by the 48 h rule.
+- Every final comment (done, failed, partial, released) ends with an `air-result` block; `usage` is in it once
+  the agent started (`usageReport`). Release comments get theirs from `release()` in src/claim.
 - Sessions: Claude Code starts with `--session-id <uuid>` chosen by air, so resume is `--resume <uuid>`. Codex's
   id is read from its rollout file (`$CODEX_HOME/sessions/**/rollout-*.jsonl`, `session_meta.cwd` = workspace)
   when stopping. A resume that dies within `resumeCheckMs` falls back to a fresh start told to read `out/` and
@@ -21,8 +30,11 @@
   job whose window is gone at startup is resumed; one whose window disappears while the server runs was closed
   by the volunteer and becomes an operator pause. A setup cut off by a restart is released as failed.
 - Quota stop: a running job whose subscription has an all-model window (or the window scoped to its model) at
-  100 % is stopped with `pauseReason: quota` and `resumeAfter` = the reset; after that time a fresh reading that
-  isn't exhausted and a claim that still holds restart it.
+  100 % is stopped with `pauseReason: quota` and `resumeAfter` = the reset (if that is within 24 h); after that
+  time a fresh reading that isn't exhausted and a claim that still holds restart it.
+- Resume intake is in setup (src/workspace/setup.ts): `resume.branches` are fetched by SHA and checked out on
+  their branch in `repo/`, and `resume.out` is downloaded and checked like a context zip into `out/`. Release
+  assets are downloaded through gh (`releaseDownload`), so private requests repos work.
 - gh: `createGh` bounds every call (default 2 min, uploads 30 min) with an AbortSignal; `spawnGh` runs gh in its
   own process group and kills the group on timeout. Tests drive the real gh argv layer through `fake-gh.ts`.
 - PR delivery never runs git with credentials inside `repo/`: the agent controlled its config and hooks. air

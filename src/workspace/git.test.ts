@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBareRepo, insteadOf, type BareRepo } from './git-fixture.ts';
-import { checkRef, cloneAt, GitError } from './git.ts';
+import { checkoutCheckpoint, checkRef, cloneAt, GitError } from './git.ts';
 
 let dir: string;
 let repo: BareRepo;
@@ -54,4 +54,14 @@ test('option-like and revision-syntax refs are refused before git runs', async (
   await assert.rejects(cloneAt({ url: repo.bare, ref: '--orphan', dest, cwd: dir, log: join(dir, 'log'), allowAnyUrl: true }), GitError);
   assert.ok(!existsSync(dest));
   await assert.rejects(cloneAt({ url: 'ext::sh -c touch% /tmp/pwned', ref: 'main', dest, cwd: dir, log: join(dir, 'log') }), /refusing repo.url/);
+});
+
+test('a checkpoint commit is fetched by SHA and checked out on its branch', async () => {
+  const c = await clone('main');
+  await checkoutCheckpoint({ dir: c.dest, sha: repo.dangling, branch: 'air/12', log: join(dir, 'log') });
+  assert.equal(execFileSync('git', ['-C', c.dest, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(), repo.dangling);
+  assert.equal(execFileSync('git', ['-C', c.dest, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim(), 'air/12');
+  await assert.rejects(checkoutCheckpoint({ dir: c.dest, sha: 'f'.repeat(40), branch: 'air/12', log: join(dir, 'log') }), /could not fetch checkpoint commit f{40}/);
+  await assert.rejects(checkoutCheckpoint({ dir: c.dest, sha: 'HEAD', branch: 'air/12', log: join(dir, 'log') }), /refusing checkpoint sha/);
+  await assert.rejects(checkoutCheckpoint({ dir: c.dest, sha: repo.main, branch: '-f', log: join(dir, 'log') }), GitError);
 });

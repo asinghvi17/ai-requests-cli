@@ -244,3 +244,31 @@ Alternatives considered:
   usage), `air fetch`, `air retry [--effort L]`. `air retry` is the one way to offer a request again.
 - Setup, serve and delivery so far handle one repo with `ref`, cloned into `repo/` with setup run there, and
   no `resume`; `air claim` refuses other requests (`not-yet-supported`) until they implement the rest.
+
+## 2026-11-12: cut-offs, partial results and resume intake in `air serve` (spec §11)
+
+- Only `AIR_DONE` delivers. An agent that exits without it, whatever its status, is resumed once (its own
+  session, told to read `out/PROGRESS.md` and the git log; a session that can't be resumed gets a fresh start
+  with the same instruction), and a second exit becomes `partial`. Before, exit 0 was delivered as done and
+  any other exit failed.
+- Quota: a window resetting within 24 h pauses as before; further away (or a quota pause still not over 24 h
+  after it began, and at least an hour after the reset it waited on) becomes `partial`. Quota pauses are never
+  released by the 48 h pause rule, since this bound is tighter. The spec now says so (§8, §11 rule 2).
+- Effort cap: more than 2 × the job's matched cost (`expectedCost`, in points of the subscription's primary
+  window) used since the first start becomes `partial`; readings that aren't comparable (stale, unknown, a
+  window that reset) never trigger it. A `timeout` becomes `partial` when the checkpoint keeps anything, else
+  `failed`.
+- A checkpoint pushes `air/<N>[-k]` for `deliver: pr` with the same code as PR delivery (read the agent's commits
+  into a clean bare repo, push from there) and uploads `out/` as `air-<N>-<nonce>-out.zip`. The final comment
+  says why the job stopped and what was kept, then the release and a `partial` result with `report: comment`,
+  `usage` and `resume`. `air:partial` is a state label, so no server claims the issue until `air retry`.
+- Every final comment now ends with an `air-result`: `release()` writes it (status `failed`, `released` or
+  `partial`; `deliver` from the claimed body), and done deliveries add `usage`. Failure comments point to
+  `air retry` instead of removing `air:failed` by hand.
+- `resume:` requests are served (single-repo layout still): setup fetches each checkpoint SHA from the repo's url
+  onto its branch and extracts `resume.out` into `out/` with the context-zip checks, before `setup` runs.
+  AIR_TASK.md asks every agent to keep `out/PROGRESS.md` current and to commit WIP often, and tells a resumed
+  one it is continuing earlier work.
+- Release assets on the requests repo's host are downloaded through gh (`gh api repos/O/R/releases/assets/ID`
+  with `Accept: application/octet-stream`, stdout streamed to the file and cut off past `bytes`), so a private
+  requests repo works; other URLs are fetched without credentials. air never sees the token.

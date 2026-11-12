@@ -1,6 +1,7 @@
 // A job's lifecycle after setup (spec/v0.md §8 labels): start the agent in tmux, stop and resume it, notice
-// it finished, deliver, fail, cancel. State lives in the workspace's state.json (`job`), so the server, a
-// restarted server and the `air run/stop/start` commands all act on the same record.
+// it finished, deliver, stop it early with a checkpoint (§11), fail, cancel. State lives in the workspace's
+// state.json (`job`), so the server, a restarted server and the `air run/stop/start` commands all act on the
+// same record.
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,18 +12,23 @@ import { markedComments } from '../claim/trust.ts';
 import { choose, primaryWindow, recordActual, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
 import type { Request } from '../spec/frontmatter.ts';
 import { lint } from '../spec/lint.ts';
-import { currentClaim } from '../spec/markers.ts';
+import { currentClaim, type ResultUsage } from '../spec/markers.ts';
 import type { Subscription } from '../usage/types.ts';
 import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../workspace/task.ts';
 import { readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
-import { agentArgv, findCodexSession, type Harness, restartInstruction, RESUME_INSTRUCTION } from './agent.ts';
+import { agentArgv, exitResumeInstruction, findCodexSession, type Harness, restartInstruction, RESUME_INSTRUCTION } from './agent.ts';
 import { matchConfig, type ServeContext } from './context.ts';
-import { deliver } from './deliver.ts';
+import { checkpoint, deliver } from './deliver.ts';
 
-/** A job paused this long is given back. */
+/** A job paused this long is given back (not a quota pause: see QUOTA_WAIT_MS). */
 export const PAUSE_LIMIT_MS = 48 * 3600_000;
+/**
+ * A job waits this long for its subscription to recover (spec §11 rules 1, 2): a window that resets
+ * further away stops the job early, and so does a quota pause that hasn't ended this long after it began.
+ */
+export const QUOTA_WAIT_MS = 24 * 3600_000;
 
 export { DONE_FILE };
 
@@ -119,7 +125,8 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   let sessionId = resume;
   let argv: string[];
   if (resume !== undefined) {
-    argv = agentArgv({ harness: job.harness, agent, model: job.model, resume, instruction: RESUME_INSTRUCTION });
+    const instruction = job.pauseReason === 'exit' ? exitResumeInstruction(request.repos.length > 0) : RESUME_INSTRUCTION;
+    argv = agentArgv({ harness: job.harness, agent, model: job.model, resume, instruction });
   } else {
     sessionId = job.harness === 'claude' ? randomUUID() : undefined;
     argv = agentArgv({
@@ -194,16 +201,20 @@ export async function stopAgent(ctx: ServeContext, dir: string, reason: PauseRea
   return true;
 }
 
-/** Usage before and after, and agent time: the calibration footer of the final comment. */
-export async function usageFooter(ctx: ServeContext, state: State, request: Request): Promise<string> {
+/**
+ * Usage before and after, and agent time: the calibration footer of the final comment, and the `usage` of
+ * its `air-result` block (§10), which is there once the agent has started.
+ */
+export async function usageReport(ctx: ServeContext, state: State, request: Request): Promise<{ footer: string; usage?: ResultUsage }> {
   const job = jobOf(state);
   const minutes = Math.round(agentMs(job, ctx.now()) / 60_000);
   const lines = [`<sub>air on ${code(state.host)}: subscription ${code(job.subscription)}, ${job.harness} ${code(job.model)}, agent time ${minutes} min.`];
   const after = await reading(ctx, job.subscription, true);
+  const b = job.usageBefore ? primaryWindow(job.usageBefore)?.usedPct : undefined;
+  const a = after && !after.stale ? primaryWindow(after)?.usedPct : undefined;
   let rec: ActualRecord | undefined;
   if (job.usageBefore && after) {
     rec = recordActual(`${state.repo}#${state.issue}`, request.effort as Effort, job.usageBefore, after, matchConfig(ctx.config));
-    const b = primaryWindow(job.usageBefore)?.usedPct, a = primaryWindow(after)?.usedPct;
     const fmt = (x: number | null | undefined) => (typeof x === 'number' ? `${Math.round(x * 10) / 10}%` : '?');
     lines.push(rec.delta === null
       ? `Usage: ${fmt(b)} before, ${fmt(a)} after (not comparable). Effort ${request.effort} expects ${rec.expected}%.`
@@ -211,7 +222,26 @@ export async function usageFooter(ctx: ServeContext, state: State, request: Requ
   }
   lines[lines.length - 1] += '</sub>';
   if (rec) lines.push(`<!-- air-usage ${JSON.stringify(rec)} -->`);
-  return lines.join('\n');
+  const footer = lines.join('\n');
+  if (job.starts === 0) return { footer };
+  const pct = (x: number | null | undefined) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(100, Math.max(0, Math.round(x * 10) / 10)) : undefined);
+  const [before_pct, after_pct] = [pct(b), pct(a)];
+  return {
+    footer,
+    usage: {
+      harness: job.harness, tier: request.model, ...(before_pct !== undefined ? { before_pct } : {}), ...(after_pct !== undefined ? { after_pct } : {}), attempts: job.starts,
+    },
+  };
+}
+
+/** `usageReport` for a workspace whose request or usage may be unreadable: never throws. */
+async function safeUsage(ctx: ServeContext, dir: string): Promise<{ footer: string; usage?: ResultUsage }> {
+  try {
+    const state = readState(dir);
+    return state.job ? await usageReport(ctx, state, requestOf(dir)) : { footer: '' };
+  } catch {
+    return { footer: '' };
+  }
 }
 
 /**
@@ -225,13 +255,11 @@ export async function failJob(ctx: ServeContext, dir: string, step: string, deta
     state = readState(dir);
   }
   if ((await ctx.tmux.listJobs()).some((j) => j.issue === state.issue)) await ctx.tmux.stopJob(state.issue, { graceMs: 0 });
-  let footer = '';
-  try {
-    footer = state.job ? `\n\n${await usageFooter(ctx, state, requestOf(dir))}` : '';
-  } catch {
-    // no footer
-  }
-  const r = await release({ gh: ctx.gh, issue: state.issue, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce, failure: { step, detail: `${detail}${footer}` } });
+  const { footer, usage } = await safeUsage(ctx, dir);
+  const r = await release({
+    gh: ctx.gh, issue: state.issue, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
+    failure: { step, detail: footer ? `${detail}\n\n${footer}` : detail }, result: usage ? { usage } : {},
+  });
   if (state.job) saveJob(ctx, dir, { status: 'failed' });
   if (r.status !== 'released') updateState(dir, { phase: 'lost', failure: step }, ctx.now());
   ctx.log(`#${state.issue}: failed at ${step}${r.status === 'released' ? '' : ` (release refused: ${r.message})`}`);
@@ -250,8 +278,8 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
   let result;
   try {
     await ensureHeld(ctx, dir); // never push, upload or comment for an issue we no longer hold
-    const footer = await usageFooter(ctx, state, request);
-    result = await deliver(ctx, dir, state, request, footer);
+    const { footer, usage } = await usageReport(ctx, state, request);
+    result = await deliver(ctx, dir, state, request, footer, usage);
     if (result.ok) {
       if (!state.job!.delivery?.commented) {
         await ctx.gh.comment(n, result.comment);
@@ -276,13 +304,62 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
   ctx.log(`#${n}: delivered (${request.deliver})`);
 }
 
+/**
+ * Stops a job early (spec §11): closes the agent's window, makes a checkpoint, and posts the final comment
+ * (why it stopped, what the checkpoint keeps, usage) with a release and a `partial` result, labelling the
+ * issue `air:partial`. A timeout whose checkpoint keeps nothing fails instead (rule 5). The job is
+ * `checkpointing` until the comment is posted, so a failing push, upload or comment is retried next tick;
+ * after MAX_DELIVERY_ATTEMPTS the request fails.
+ */
+export async function partialJob(ctx: ServeContext, dir: string, reason?: { why: string; timeout?: boolean }): Promise<void> {
+  const state0 = readState(dir);
+  const n = state0.issue;
+  const job0 = jobOf(state0);
+  if (job0.status !== 'checkpointing') {
+    saveJob(ctx, dir, { status: 'checkpointing', partial: reason ?? { why: 'it was stopped early.' }, runMs: agentMs(job0, ctx.now()), startedAt: undefined });
+  }
+  const why = readState(dir).job!.partial!;
+  if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
+  let cp;
+  const request = requestOf(dir);
+  try {
+    await ensureHeld(ctx, dir); // never push, upload or comment for an issue we no longer hold
+    cp = await checkpoint(ctx, dir, readState(dir), request);
+  } catch (e) {
+    if (e instanceof ClaimLost) return;
+    const attempts = (readState(dir).job!.deliveryAttempts ?? 0) + 1;
+    saveJob(ctx, dir, { lastError: (e as Error).message, deliveryAttempts: attempts });
+    if (attempts < MAX_DELIVERY_ATTEMPTS) {
+      ctx.log(`#${n}: checkpoint failed (attempt ${attempts}), will retry: ${(e as Error).message}`);
+      return;
+    }
+    return failJob(ctx, dir, 'the checkpoint', `The job stopped early because ${why.why} Its checkpoint failed ${attempts} times. The last error was:\n\n${fenced((e as Error).message)}`);
+  }
+  if (!cp.resume && why.timeout) return failJob(ctx, dir, 'the timeout', `The job stopped early because ${why.why}\n\n${cp.text}`);
+  const state = readState(dir);
+  const { footer, usage } = await usageReport(ctx, state, request);
+  const r = await release({
+    gh: ctx.gh, issue: n, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
+    message: `air on ${code(state.host)} stopped this request early because ${why.why}\n\n${cp.text}\n\n${footer}`,
+    result: { status: 'partial', report: 'comment', ...(usage ? { usage } : {}), ...(cp.resume ? { resume: cp.resume } : {}) },
+  });
+  if (r.status !== 'released') {
+    updateState(dir, { phase: 'lost' }, ctx.now());
+    ctx.log(`#${n}: stopped early, but the release was refused: ${r.message}`);
+    return;
+  }
+  saveJob(ctx, dir, { status: 'partial', lastError: undefined });
+  ctx.log(`#${n}: stopped early (partial): ${why.why}`);
+}
+
 /** The requester cancelled (`air:cancel`) or closed the issue: stop, comment, release. */
 export async function cancelJob(ctx: ServeContext, dir: string, why: string): Promise<void> {
   const state = readState(dir);
   if ((await ctx.tmux.listJobs()).some((j) => j.issue === state.issue)) await ctx.tmux.stopJob(state.issue, { graceMs: ctx.stopGraceMs });
+  const { usage } = await safeUsage(ctx, dir);
   await release({
     gh: ctx.gh, issue: state.issue, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
-    message: `${code(state.host)} stopped work on this request because ${why}, and released it.`,
+    message: `${code(state.host)} stopped work on this request because ${why}, and released it.`, result: usage ? { usage } : {},
   });
   if (state.job) saveJob(ctx, dir, { status: 'cancelled', startedAt: undefined });
   ctx.log(`#${state.issue}: cancelled (${why})`);
@@ -291,9 +368,11 @@ export async function cancelJob(ctx: ServeContext, dir: string, why: string): Pr
 /** Releases a job that stayed paused past PAUSE_LIMIT_MS. */
 export async function expirePause(ctx: ServeContext, dir: string): Promise<void> {
   const state = readState(dir);
+  const { usage } = await safeUsage(ctx, dir);
   await release({
     gh: ctx.gh, issue: state.issue, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
     message: `${code(state.host)} paused this request ${Math.round(PAUSE_LIMIT_MS / 3600_000)} hours ago without resuming it, so it is releasing it for another server.`,
+    result: usage ? { usage } : {},
   });
   saveJob(ctx, dir, { status: 'cancelled' });
   ctx.log(`#${state.issue}: released after a long pause`);

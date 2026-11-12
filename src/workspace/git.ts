@@ -57,3 +57,29 @@ export async function cloneAt(opts: CloneOptions): Promise<void> {
   const detached = await run(['checkout', '--quiet', '--detach', 'FETCH_HEAD', '--'], opts.dest);
   if (detached.code !== 0) throw new GitError(`git checkout ${describe(detached)}`);
 }
+
+export interface CheckpointOptions {
+  /** The clone (its `origin` is the repo's url). */
+  dir: string;
+  /** Full commit SHA the checkpoint pushed. */
+  sha: string;
+  /** The local branch to put it on. */
+  branch: string;
+  log: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+}
+
+/** Fetches checkpoint commit `sha` from `origin` and checks it out on local branch `branch` (spec §5 Resume). */
+export async function checkoutCheckpoint(opts: CheckpointOptions): Promise<void> {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(opts.sha)) throw new GitError(`refusing checkpoint sha ${JSON.stringify(opts.sha)}`);
+  checkRef(opts.branch);
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(opts.env ?? process.env)) if (v !== undefined) env[k] = v;
+  env.GIT_TERMINAL_PROMPT = '0';
+  const run = async (args: string[]) => exec(['git', ...args], { cwd: opts.dir, env, log: opts.log, timeoutMs: opts.timeoutMs ?? SETUP_TIMEOUT_MS });
+  const fetch = await run(['fetch', '--quiet', '--no-tags', 'origin', opts.sha]);
+  if (fetch.code !== 0) throw new GitError(`git could not fetch checkpoint commit ${opts.sha} (fetch ${describe(fetch)})`);
+  const co = await run(['checkout', '--quiet', '-B', opts.branch, opts.sha, '--']);
+  if (co.code !== 0) throw new GitError(`git could not check out checkpoint ${opts.sha} as ${opts.branch} (${describe(co)})`);
+}

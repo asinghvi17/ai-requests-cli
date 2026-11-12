@@ -1,8 +1,9 @@
 // Workspace setup for a claimed request (spec/v0.md §5, §6 `pr`): permission check, context zip, clone,
 // `setup` commands and `check`, then AIR_TASK.md. Any failure sets `air:failed`, comments the failing
 // step with the tail of setup.log, and releases the claim, all before an agent starts.
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createGh } from '../gh/gh.ts';
 import type { RequestsRepo } from '../gh/issues.ts';
 import { CANCEL_LABEL, defaultHost, release } from '../claim/claim.ts';
 import { code, fenced, tail } from '../claim/text.ts';
@@ -10,10 +11,10 @@ import { createTrust, markedComments, type Trust } from '../claim/trust.ts';
 import { lint } from '../spec/lint.ts';
 import type { Request } from '../spec/frontmatter.ts';
 import { currentClaim } from '../spec/markers.ts';
-import { fetchContext, type Download } from './context.ts';
+import { fetchContext, releaseDownload, type Download } from './context.ts';
 import { childEnv } from './env.ts';
 import { exec, SETUP_TIMEOUT_MS, type ExecResult } from './exec.ts';
-import { cloneAt } from './git.ts';
+import { checkoutCheckpoint, cloneAt } from './git.ts';
 import { airEnv } from './launch.ts';
 import { activeWorkspace, LOG_FILE, REQUEST_FILE, TASK_FILE, updateState, type State } from './state.ts';
 import { taskPrompt } from './task.ts';
@@ -25,6 +26,7 @@ export interface SetupOptions {
   host?: string;
   /** The requests repo's GitHub host; a `deliver: pr` repo must be on it. */
   ghHost?: string;
+  /** How zips are downloaded; default: release assets on `ghHost` through gh (`releaseDownload`). */
   download?: Download;
   /** Server environment the setup env's allowlist and git's env are taken from. */
   env?: NodeJS.ProcessEnv;
@@ -62,6 +64,8 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
   const now = opts.now ?? (() => new Date());
   const trust = opts.trust ?? createTrust(gh);
   const timeoutMs = opts.timeoutMs ?? SETUP_TIMEOUT_MS;
+  const ghHost = opts.ghHost ?? ((opts.env ?? process.env).GH_HOST || 'github.com');
+  const download = opts.download ?? releaseDownload(createGh(), ghHost);
 
   const ws = activeWorkspace(opts.root, gh.repo, n);
   if (!ws) return { status: 'refused', message: `no claim of ${gh.repo}#${n} on this machine: run \`air claim ${n}\` first` };
@@ -98,7 +102,7 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
     // §6: before running anything for a PR, the issue author must be able to write to the target repo.
     if (request.deliver === 'pr') {
       step = 'the push permission check';
-      const target = githubRepo(repo!.url, opts.ghHost ?? ((opts.env ?? process.env).GH_HOST || 'github.com'));
+      const target = githubRepo(repo!.url, ghHost);
       if ('error' in target) throw new StepError(target.error);
       let role;
       try {
@@ -117,7 +121,7 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
       note(`downloading context ${request.context.url} (${request.context.bytes} bytes)`);
       const zip = join(dir, '.context.zip');
       try {
-        const written = await fetchContext(request.context, zip, join(dir, 'context'), opts.download);
+        const written = await fetchContext(request.context, zip, join(dir, 'context'), download);
         note(`context: extracted ${written} bytes`);
       } catch (e) {
         throw new StepError(e instanceof Error ? e.message : String(e));
@@ -135,6 +139,33 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
         });
       } catch (e) {
         throw new StepError(e instanceof Error ? e.message : String(e));
+      }
+    }
+
+    // §5 Resume: the checkpoint's branches and out/ replace the fresh checkout and the empty out/.
+    for (const b of request.resume?.branches ?? []) {
+      step = 'the checkpoint checkout';
+      note(`checking out checkpoint ${b.sha} as ${b.branch} in repo/`);
+      try {
+        await checkoutCheckpoint({ dir: join(dir, 'repo'), sha: b.sha, branch: b.branch, log, env: opts.env ?? process.env, timeoutMs });
+      } catch (e) {
+        throw new StepError(e instanceof Error ? e.message : String(e));
+      }
+    }
+    if (request.resume?.out) {
+      step = 'the checkpoint download';
+      note(`downloading checkpoint out/ ${request.resume.out.url} (${request.resume.out.bytes} bytes)`);
+      const zip = join(dir, '.resume-out.zip');
+      const out = join(dir, 'out');
+      rmSync(out, { recursive: true, force: true }); // still empty: nothing has run yet
+      try {
+        const written = await fetchContext(request.resume.out, zip, out, download, 'checkpoint zip (`resume.out`)');
+        note(`checkpoint out/: extracted ${written} bytes`);
+      } catch (e) {
+        throw new StepError(e instanceof Error ? e.message : String(e));
+      } finally {
+        rmSync(zip, { force: true });
+        mkdirSync(out, { recursive: true });
       }
     }
 

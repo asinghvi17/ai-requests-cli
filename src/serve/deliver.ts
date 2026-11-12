@@ -1,12 +1,13 @@
 // Delivery (spec/v0.md §6) once the agent has finished: a comment with its report, a pull request from its
 // commits, or a zip of out/ as a release asset. Each returns the issue comment to post, or why it failed.
+// A job stopped early gets a checkpoint instead (§11): its branch pushed, its out/ zipped to an asset.
 // Steps already done (pushed branch, opened PR, uploaded asset) are recorded, so a retry skips them.
 import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { code } from '../claim/text.ts';
-import type { Asset, Request } from '../spec/frontmatter.ts';
-import { formatResult, type AirResult } from '../spec/markers.ts';
+import type { Asset, Request, Resume } from '../spec/frontmatter.ts';
+import { formatResult, type AirResult, type ResultUsage } from '../spec/markers.ts';
 import { sha256File } from '../workspace/context.ts';
 import { githubRepo } from '../workspace/setup.ts';
 import { readState, updateState, type JobRecord, type State, type UploadedAsset } from '../workspace/state.ts';
@@ -50,8 +51,8 @@ const closeFence = (text: string) => {
 };
 
 /** The `air-result` block (spec/v0.md §10) that ends a `done` delivery comment. */
-export function doneResult(state: State, deliver: Request['deliver'], r: Partial<AirResult> = {}): string {
-  return formatResult({ status: 'done', deliver, prs: [], host: state.host, nonce: state.nonce, ...r });
+export function doneResult(state: State, deliver: Request['deliver'], usage: ResultUsage | undefined, r: Partial<AirResult> = {}): string {
+  return formatResult({ status: 'done', deliver, prs: [], ...(usage ? { usage } : {}), host: state.host, nonce: state.nonce, ...r });
 }
 
 const assetOf = (a: Asset): Asset => ({ url: a.url, sha256: a.sha256, bytes: a.bytes, ...(a.expires ? { expires: a.expires } : {}) });
@@ -114,6 +115,8 @@ function record(dir: string, job: JobRecord, patch: NonNullable<JobRecord['deliv
  * then expires 14 days after the issue closes.
  */
 async function uploadOnce(ctx: ServeContext, dir: string, name: string, file: () => string, contentType: string, files?: number): Promise<UploadedAsset> {
+  // (One asset per claim: a job is either delivered or checkpointed, and only an over-long report or an
+  // artifact is uploaded on delivery.)
   const job = readState(dir).job!;
   const done = job.delivery?.asset;
   if (done?.name === name) return done;
@@ -125,7 +128,7 @@ async function uploadOnce(ctx: ServeContext, dir: string, name: string, file: ()
   return asset;
 }
 
-async function deliverComment(ctx: ServeContext, dir: string, state: State, footer: string): Promise<Delivered> {
+async function deliverComment(ctx: ServeContext, dir: string, state: State, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
   const report = readReport(dir);
   if (report === undefined) return { ok: false, step: 'delivery', detail: `The agent finished without writing its report to \`out/${REPORT_FILE}\`.` };
   const comment = await reportComment(report, footer, async () => {
@@ -136,17 +139,18 @@ async function deliverComment(ctx: ServeContext, dir: string, state: State, foot
     } finally {
       rmSync(tmp, { force: true });
     }
-  }, (where) => doneResult(state, 'comment', { report: where }));
+  }, (where) => doneResult(state, 'comment', usage, { report: where }));
   return { ok: true, comment };
 }
 
-async function deliverArtifact(ctx: ServeContext, dir: string, state: State, footer: string): Promise<Delivered> {
-  const name = `air-${state.issue}-${state.nonce}.zip`;
+/**
+ * Zips the regular files of `out/` and uploads the zip once as asset `name`. Resolves to the asset, or to
+ * why there is none: `out/` missing, unzippable, or without a regular file.
+ */
+async function uploadOut(ctx: ServeContext, dir: string, name: string): Promise<UploadedAsset | { none: string }> {
+  const done = readState(dir).job?.delivery?.asset;
+  if (done?.name === name) return done;
   const zip = join(dir, `.${name}`);
-  const block = (a: UploadedAsset) =>
-    ({ ok: true as const, comment: `The result is a zip of ${a.files} file${a.files === 1 ? '' : 's'} from \`out/\`: ${a.url}\n\n${footer}\n\n${doneResult(state, 'artifact', { artifact: assetOf(a) })}` });
-  const done = state.job?.delivery?.asset;
-  if (done?.name === name) return block(done);
   rmSync(zip, { force: true });
   try {
     const out = join(dir, 'out');
@@ -156,98 +160,159 @@ async function deliverArtifact(ctx: ServeContext, dir: string, state: State, foo
     } catch {
       // missing
     }
-    if (!isDir) return { ok: false, step: 'delivery', detail: '`out/` is missing or not a directory, so there is no artifact to deliver.' };
+    if (!isDir) return { none: '`out/` is missing or not a directory' };
     let summary;
     try {
       summary = zipDir(out, zip);
     } catch (e) {
-      return { ok: false, step: 'delivery', detail: `\`out/\` could not be zipped: ${(e as Error).message}` };
+      return { none: `\`out/\` could not be zipped: ${(e as Error).message}` };
     }
-    if (summary.files === 0) return { ok: false, step: 'delivery', detail: 'The agent left no regular file in `out/`, so there is no artifact to deliver.' };
-    return block(await uploadOnce(ctx, dir, name, () => zip, 'application/zip', summary.files));
+    if (summary.files === 0) return { none: 'the agent left no regular file in `out/`' };
+    return await uploadOnce(ctx, dir, name, () => zip, 'application/zip', summary.files);
   } finally {
     rmSync(zip, { force: true });
   }
 }
 
+const files = (n: number | undefined) => `${n} file${n === 1 ? '' : 's'}`;
+
+async function deliverArtifact(ctx: ServeContext, dir: string, state: State, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
+  const a = await uploadOut(ctx, dir, `air-${state.issue}-${state.nonce}.zip`);
+  if ('none' in a) return { ok: false, step: 'delivery', detail: `There is no artifact to deliver: ${a.none}.` };
+  return { ok: true, comment: `The result is a zip of ${files(a.files)} from \`out/\`: ${a.url}\n\n${footer}\n\n${doneResult(state, 'artifact', usage, { artifact: assetOf(a) })}` };
+}
+
 /** Options that keep a repo's own config from running anything (hooks, fsmonitor) while air reads it. */
 const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
 
-async function deliverPr(ctx: ServeContext, dir: string, state: State, request: Request, footer: string): Promise<Delivered> {
+type Pushed = { ok: true; branch: string; sha: string } | { ok: false; detail: string; noBase?: true };
+
+/**
+ * Pushes the agent's work in `repo/` to the first free `air/<N>[-k]` branch of the repo's url (§6), or says
+ * why there is nothing to push: no commits beyond `ref`, or `ref` isn't a branch. The chosen branch and the
+ * pushed commit are recorded, so a retry pushes the same branch. Transient failures throw.
+ */
+async function pushWork(ctx: ServeContext, dir: string, state: State, request: Request): Promise<Pushed> {
   const repoDir = join(dir, 'repo');
   const url = request.repos[0]!.url;
   const base = request.repos[0]!.ref!;
-  const fail = (detail: string): Delivered => ({ ok: false, step: 'delivery', detail });
-  let job = state.job!;
-  const target = githubRepo(url, ctx.ghHost);
-  if ('error' in target) return fail(target.error);
+  let job = readState(dir).job!;
+  if (job.delivery?.branch && job.delivery.sha) return { ok: true, branch: job.delivery.branch, sha: job.delivery.sha };
+  // The agent controlled repo/ (its config, hooks, remotes): air only reads commits from it, without
+  // credentials, into a fresh bare repo, and talks to repo.url (the URL the permission check covered)
+  // from there with the volunteer's credentials.
+  const clean = join(dir, '.air-push.git');
+  rmSync(clean, { recursive: true, force: true });
+  const init = await git(['init', '--quiet', '--bare', clean], dir, ctx.env);
+  if (init.code !== 0) throw new Error(`git init failed: ${init.stderr.trim()}`);
+  const g = (args: string[]) => git([...SAFE, ...args], clean, ctx.env);
 
-  if (!job.delivery?.prUrl) {
-    // The agent controlled repo/ (its config, hooks, remotes): air only reads commits from it, without
-    // credentials, into a fresh bare repo, and talks to repo.url (the URL the permission check covered)
-    // from there with the volunteer's credentials.
-    const clean = join(dir, '.air-push.git');
-    rmSync(clean, { recursive: true, force: true });
-    const init = await git(['init', '--quiet', '--bare', clean], dir, ctx.env);
-    if (init.code !== 0) throw new Error(`git init failed: ${init.stderr.trim()}`);
-    const g = (args: string[]) => git([...SAFE, ...args], clean, ctx.env);
+  const ls = await g(['ls-remote', '--heads', '--', url]);
+  if (ls.code !== 0) throw new Error(`git ls-remote failed: ${ls.stderr.trim()}`);
+  const heads = new Map(ls.stdout.split('\n').filter(Boolean).map((l) => {
+    const [sha, ref] = l.split('\t');
+    return [ref!.replace(/^refs\/heads\//, ''), sha!] as const;
+  }));
+  if (!heads.has(base)) return { ok: false, noBase: true, detail: `\`repo.ref\` (${code(base)}) is not a branch of ${url}, so there is nothing to open a pull request against.` };
+  const fetchBase = await g(['fetch', '--quiet', '--no-tags', '--', url, `+refs/heads/${base}:refs/air/base`]);
+  if (fetchBase.code !== 0) throw new Error(`git fetch of ${base} failed: ${fetchBase.stderr.trim()}`);
 
-    const ls = await g(['ls-remote', '--heads', '--', url]);
-    if (ls.code !== 0) throw new Error(`git ls-remote failed: ${ls.stderr.trim()}`);
-    const heads = new Map(ls.stdout.split('\n').filter(Boolean).map((l) => {
-      const [sha, ref] = l.split('\t');
-      return [ref!.replace(/^refs\/heads\//, ''), sha!] as const;
-    }));
-    if (!heads.has(base)) return fail(`\`repo.ref\` (${code(base)}) is not a branch of ${url}, so there is nothing to open a pull request against.`);
-    const fetchBase = await g(['fetch', '--quiet', '--no-tags', '--', url, `+refs/heads/${base}:refs/air/base`]);
-    if (fetchBase.code !== 0) throw new Error(`git fetch of ${base} failed: ${fetchBase.stderr.trim()}`);
+  // The agent's commits: HEAD and its local branches, fetched without running anything of the agent's.
+  const fetchWork = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head', '+refs/heads/*:refs/air/work/*']);
+  if (fetchWork.code !== 0) {
+    const onlyHead = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head']);
+    if (onlyHead.code !== 0) return { ok: false, detail: `\`repo/\` has no commits air can read (${fetchWork.stderr.trim()}).` };
+  }
+  const ahead = async (rev: string) => Number((await g(['rev-list', '--count', `refs/air/base..${rev}`])).stdout.trim()) || 0;
+  let head: string | undefined;
+  if (await ahead('refs/air/head') > 0) head = (await g(['rev-parse', 'refs/air/head'])).stdout.trim();
+  else {
+    const refs = (await g(['for-each-ref', '--sort=-committerdate', '--format=%(objectname)', 'refs/air/work'])).stdout.split('\n').filter(Boolean);
+    for (const sha of refs) if (await ahead(sha) > 0) { head = sha; break; }
+  }
+  if (!head || !/^[0-9a-f]{40,64}$/.test(head)) {
+    return { ok: false, detail: `the agent made no commits beyond ${code(base)}. Uncommitted changes are not delivered.` };
+  }
+  let branch = job.delivery?.branch;
+  if (!branch) {
+    branch = `air/${state.issue}`;
+    for (let k = 2; heads.has(branch); k++) branch = `air/${state.issue}-${k}`;
+    // Recorded before the push, so a retry after a crash pushes the same branch rather than the next one.
+    job = record(dir, job, { branch }, ctx.now());
+  }
+  const push = await g(['push', '--quiet', '--porcelain', '--force', '--', url, `${head}:refs/heads/${branch}`]);
+  if (push.code !== 0) throw new Error(`git push of ${branch} failed: ${push.stderr.trim() || push.stdout.trim()}`);
+  rmSync(clean, { recursive: true, force: true });
+  record(dir, job, { sha: head }, ctx.now());
+  return { ok: true, branch, sha: head };
+}
 
-    // The agent's commits: HEAD and its local branches, fetched without running anything of the agent's.
-    const fetchWork = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head', '+refs/heads/*:refs/air/work/*']);
-    if (fetchWork.code !== 0) {
-      const onlyHead = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head']);
-      if (onlyHead.code !== 0) return fail(`No changes were produced: \`repo/\` has no commits air can read (${fetchWork.stderr.trim()}).`);
-    }
-    const ahead = async (rev: string) => Number((await g(['rev-list', '--count', `refs/air/base..${rev}`])).stdout.trim()) || 0;
-    let head: string | undefined;
-    if (await ahead('refs/air/head') > 0) head = (await g(['rev-parse', 'refs/air/head'])).stdout.trim();
-    else {
-      const refs = (await g(['for-each-ref', '--sort=-committerdate', '--format=%(objectname)', 'refs/air/work'])).stdout.split('\n').filter(Boolean);
-      for (const sha of refs) if (await ahead(sha) > 0) { head = sha; break; }
-    }
-    if (!head || !/^[0-9a-f]{40,64}$/.test(head)) {
-      return fail(`No changes were produced: the agent made no commits beyond ${code(base)}. Uncommitted changes are not delivered.`);
-    }
-    let branch = job.delivery?.branch;
-    if (!branch) {
-      branch = `air/${state.issue}`;
-      for (let k = 2; heads.has(branch); k++) branch = `air/${state.issue}-${k}`;
-      // Recorded before the push, so a retry after a crash pushes the same branch rather than the next one.
-      job = record(dir, job, { branch }, ctx.now());
-    }
-    const push = await g(['push', '--quiet', '--porcelain', '--force', '--', url, `${head}:refs/heads/${branch}`]);
-    if (push.code !== 0) throw new Error(`git push of ${branch} failed: ${push.stderr.trim() || push.stdout.trim()}`);
-    rmSync(clean, { recursive: true, force: true });
+async function deliverPr(ctx: ServeContext, dir: string, state: State, request: Request, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
+  const base = request.repos[0]!.ref!;
+  const target = githubRepo(request.repos[0]!.url, ctx.ghHost);
+  if ('error' in target) return { ok: false, step: 'delivery', detail: target.error };
+
+  if (!readState(dir).job!.delivery?.prUrl) {
+    const pushed = await pushWork(ctx, dir, state, request);
+    if (!pushed.ok) return { ok: false, step: 'delivery', detail: pushed.noBase ? pushed.detail : `No changes were produced: ${pushed.detail}` };
     const summary = readReport(dir) ?? '(The agent left no summary.)';
-    const pr = { title: `air: ${state.title} (#${state.issue})`, head: branch, base, body: `Closes ${ctx.gh.repo}#${state.issue}\n\n${defuseMarkers(summary.trim())}\n` };
+    const pr = { title: `air: ${state.title} (#${state.issue})`, head: pushed.branch, base, body: `Closes ${ctx.gh.repo}#${state.issue}\n\n${defuseMarkers(summary.trim())}\n` };
     let prUrl: string;
     try {
       prUrl = await ctx.api.createPull(target.repo, pr);
     } catch (e) {
       // A PR from an earlier attempt whose response was lost: use it.
-      const existing = await ctx.api.findPull(target.repo, branch).catch(() => undefined);
+      const existing = await ctx.api.findPull(target.repo, pushed.branch).catch(() => undefined);
       if (!existing) throw e;
       prUrl = existing;
     }
-    job = record(dir, job, { prUrl }, ctx.now());
+    record(dir, readState(dir).job!, { prUrl }, ctx.now());
   }
-  const prs = [{ repo: request.repos[0]!.path, url: job.delivery!.prUrl! }];
-  return { ok: true, comment: `Opened ${job.delivery!.prUrl} from branch \`${job.delivery!.branch}\`.\n\n${footer}\n\n${doneResult(state, 'pr', { prs })}` };
+  const d = readState(dir).job!.delivery!;
+  const prs = [{ repo: request.repos[0]!.path, url: d.prUrl! }];
+  return { ok: true, comment: `Opened ${d.prUrl} from branch \`${d.branch}\`.\n\n${footer}\n\n${doneResult(state, 'pr', usage, { prs })}` };
 }
 
-export async function deliver(ctx: ServeContext, dir: string, state: State, request: Request, footer: string): Promise<Delivered> {
-  if (request.deliver === 'comment') return deliverComment(ctx, dir, state, footer);
-  if (request.deliver === 'artifact') return deliverArtifact(ctx, dir, state, footer);
+/** A checkpoint (§11): what it keeps, as `resume` (undefined when it keeps nothing), and a description. */
+export interface Checkpoint {
+  resume?: Resume;
+  text: string;
+}
+
+/**
+ * Makes the checkpoint of a job stopped early (spec §11): with `deliver: pr`, the agent's commits pushed as
+ * `air/<N>[-k]` (no pull request); and `out/`, if it holds a regular file, zipped and uploaded as
+ * `air-<N>-<nonce>-out.zip`. Uncommitted changes are left out.
+ */
+export async function checkpoint(ctx: ServeContext, dir: string, state: State, request: Request): Promise<Checkpoint> {
+  const lines: string[] = [];
+  const resume: Resume = { branches: [] };
+  const repo = request.repos[0];
+  if (request.deliver === 'pr' && repo && existsSync(join(dir, 'repo'))) {
+    const pushed = await pushWork(ctx, dir, state, request);
+    if (pushed.ok) {
+      resume.branches.push({ repo: repo.path, branch: pushed.branch, sha: pushed.sha });
+      lines.push(`- \`${repo.path}\`: the agent's commits, pushed to branch \`${pushed.branch}\` of ${repo.url} (\`${pushed.sha.slice(0, 12)}\`). Uncommitted changes are not kept.`);
+    } else {
+      lines.push(`- \`${repo.path}\`: nothing pushed: ${pushed.detail}`);
+    }
+  }
+  const out = await uploadOut(ctx, dir, `air-${state.issue}-${state.nonce}-out.zip`);
+  if ('none' in out) lines.push(`- \`out/\`: nothing kept: ${out.none}.`);
+  else {
+    resume.out = assetOf(out);
+    lines.push(`- \`out/\`: ${files(out.files)}, zipped: ${out.url}`);
+  }
+  const kept = resume.branches.length > 0 || resume.out !== undefined;
+  return {
+    ...(kept ? { resume } : {}),
+    text: `${kept ? 'The checkpoint keeps the work so far' : 'There is no checkpoint: nothing of the work so far could be kept'}:\n\n${lines.join('\n')}`,
+  };
+}
+
+export async function deliver(ctx: ServeContext, dir: string, state: State, request: Request, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
+  if (request.deliver === 'comment') return deliverComment(ctx, dir, state, footer, usage);
+  if (request.deliver === 'artifact') return deliverArtifact(ctx, dir, state, footer, usage);
   if (!existsSync(join(dir, 'repo'))) return { ok: false, step: 'delivery', detail: 'The workspace has no `repo/` checkout.' };
-  return deliverPr(ctx, dir, state, request, footer);
+  return deliverPr(ctx, dir, state, request, footer, usage);
 }

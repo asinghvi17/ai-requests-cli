@@ -31,7 +31,7 @@ test('agent argv: Claude Code with a chosen session id, resume, and Codex', () =
   const codex = { command: ['codex'], args: [] };
   assert.deepEqual(agentArgv({ harness: 'codex', agent: codex, model: 'gpt-5', instruction: 'go' }), ['codex', '--model', 'gpt-5', 'go']);
   assert.deepEqual(agentArgv({ harness: 'codex', agent: codex, model: 'gpt-5', resume: 's-9', instruction: 'go on' }), ['codex', 'resume', 's-9', 'go on']);
-  assert.match(restartInstruction(true), /^Read AIR_TASK\.md .*out\/ and at the git log in repo\//);
+  assert.match(restartInstruction(true), /^Read AIR_TASK\.md .*read out\/PROGRESS\.md and the git log in repo\//);
   assert.doesNotMatch(restartInstruction(false), /git log/);
 });
 

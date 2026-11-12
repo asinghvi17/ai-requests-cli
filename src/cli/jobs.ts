@@ -12,7 +12,7 @@ import { acquireServeLock, readServerState, updateServerState } from '../serve/s
 import { stateDir as usageStateDir } from '../usage/index.ts';
 import { clientEnv } from '../tmux/env.ts';
 import { socketPath } from '../tmux/tmux.ts';
-import { activeWorkspace, allWorkspaces, readState } from '../workspace/state.ts';
+import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
 import type { Invocation } from './main.ts';
 import { UsageError } from './requests.ts';
 
@@ -192,7 +192,7 @@ export async function debugCommand(inv: Invocation): Promise<number> {
   } catch (e) {
     out(`jobs air parses: listJobs failed: ${(e as Error).message}`);
   }
-  const held = allWorkspaces(ctx.root, ctx.gh.repo).filter((w) => w.state.job && !['done', 'failed', 'cancelled'].includes(w.state.job.status));
+  const held = allWorkspaces(ctx.root, ctx.gh.repo).filter((w) => w.state.job && !ENDED.includes(w.state.job.status));
   out(`jobs air holds (${ctx.root}): ${held.length}`);
   for (const { dir, state } of held) {
     const job = state.job!;
