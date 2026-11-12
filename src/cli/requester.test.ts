@@ -1,8 +1,9 @@
 // `air status`, `air wait`, `air fetch` and `air retry` through the router: flags, output and exit codes.
 import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../config.ts';
@@ -10,7 +11,9 @@ import type { FakeGitHub } from '../gh/fake.ts';
 import { lint } from '../spec/lint.ts';
 import { formatResult, type AirResult } from '../spec/markers.ts';
 import { buildZip } from '../workspace/zip-fixture.ts';
-import { requestIssue, result } from '../requester/fixture.ts';
+import { insteadOf, makeBareRepo } from '../workspace/git-fixture.ts';
+import { yamlScalar } from '../spec/frontmatter.ts';
+import { requestBody, requestIssue, result } from '../requester/fixture.ts';
 import { fetchDeps } from './fetch.ts';
 import { main } from './main.ts';
 import { deps } from './requests.ts';
@@ -124,4 +127,43 @@ test('air retry edits the body and labels; --effort is checked; refusals exit 1'
   assert.match(bad.err, /--effort must be one of XS, S, M, L, XL/);
   gh = requestIssue({ labels: ['air:running'] });
   assert.deepEqual(await call('retry', '1'), { code: 1, out: '', err: 'air retry: #1 is held by box; add `air:cancel` and wait for its release first\n' });
+});
+
+test('air fetch: hostile repo paths never leave DIR', async () => {
+  const bare = makeBareRepo(tmp());
+  const SERVICE = 'https://github.com/acme/service.git';
+  fetchDeps.env = insteadOf(bare.bare, SERVICE);
+  fetchDeps.ghHost = 'github.com';
+  const body = (path: string) => requestBody().replace('    ref: main\n', `    ref: main\n    path: ${yamlScalar(path)}\n`);
+  const partial = (repo: string) => result({ status: 'partial', resume: { branches: [{ repo, branch: 'air/1', sha: bare.first }] } });
+  /** Runs `air fetch` into a fresh DIR inside an empty parent; returns what the parent holds afterwards. */
+  const fetchInto = async () => {
+    const parent = tmp();
+    const r = await call('fetch', '1', join(parent, 'd'));
+    return { ...r, parentPath: parent, parent: readdirSync(parent), dir: existsSync(join(parent, 'd')) ? readdirSync(join(parent, 'd')).sort() : [] };
+  };
+  for (const hostile of ['..', '../x', '/abs', 'a/../../b', '']) {
+    // In a result's `prs` or checkpoint `resume.branches`, the block doesn't parse, so nothing counts.
+    for (const r of [result({ prs: [{ repo: hostile, url: 'https://github.com/acme/service/pull/7' }] }), partial(hostile)]) {
+      gh = requestIssue();
+      gh.post(1, 'srv', 'OWNER', `Report.\n\n${formatResult(r)}\n`);
+      const got = await fetchInto();
+      assert.equal(got.code, 1, hostile);
+      assert.equal(got.err, 'air fetch: #1 has no result yet\n', hostile);
+      assert.deepEqual(got.parent, [], hostile);
+    }
+    // In the body's `repos[].path`, the body fails lint, so no checkpoint branch is cloned.
+    gh = requestIssue({ body: body(hostile), results: [{ result: partial('service'), release: true }] });
+    const got = await fetchInto();
+    assert.equal(got.code, 1, hostile);
+    assert.match(got.err, /body no longer passes lint/, hostile);
+    assert.deepEqual(got.parent, ['d'], hostile);
+    assert.deepEqual(got.dir, ['REPORT.md'], hostile);
+  }
+  // `out` is a valid path: it goes to repo/out, never over the checkpoint's out/.
+  gh = requestIssue({ body: body('out'), results: [{ result: partial('out'), release: true }] });
+  const got = await fetchInto();
+  assert.equal(got.code, 0, got.err);
+  assert.deepEqual(got.dir, ['REPORT.md', 'repo']);
+  assert.equal(execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: join(got.parentPath, 'd', 'repo', 'out'), encoding: 'utf8' }).trim(), 'air/1');
 });
