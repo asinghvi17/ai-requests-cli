@@ -198,7 +198,7 @@ async function deliverPr(ctx: ServeContext, dir: string, state: State, request: 
       const [sha, ref] = l.split('\t');
       return [ref!.replace(/^refs\/heads\//, ''), sha!] as const;
     }));
-    if (!heads.has(base)) return fail(`\`repo.ref\` (${code(base)}) is not a branch of ${url}, so there is nothing to open a pull request against.`);
+    if (!heads.has(base)) return fail(`\`repos[0].ref\` (${code(base)}) is not a branch of ${url}, so there is nothing to open a pull request against.`);
     const fetchBase = await g(['fetch', '--quiet', '--no-tags', '--', url, `+refs/heads/${base}:refs/air/base`]);
     if (fetchBase.code !== 0) throw new Error(`git fetch of ${base} failed: ${fetchBase.stderr.trim()}`);
 

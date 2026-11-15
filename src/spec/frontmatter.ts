@@ -732,7 +732,7 @@ export function checkResume(v: Value, name: string, line: number, err: Report, r
       branches.push({ repo: repo.value, branch: branch.value, sha: sha.value });
     });
   }
-  if (!outE && !branchesE) fail(line, 'missing', `\`${name}\` needs \`branches\`, \`out\` or both`);
+  if (!outE && !(branchesE?.value.kind === 'list' && branchesE.value.items.length > 0)) fail(line, 'missing', `\`${name}\` needs a \`branches\` entry, \`out\` or both`);
   if (bad) return undefined;
   return out ? { branches, out } : { branches };
 }

@@ -169,8 +169,18 @@ export interface ResultUsage {
   attempts: number;
 }
 
-/** The marker line and the fenced block for `r`; servers end their final comment with it. */
+/**
+ * The marker line and the fenced block for `r`; servers end their final comment with it. Throws unless the
+ * block reads back as a valid result, so a server can only write results `parseResult` accepts.
+ */
 export function formatResult(r: AirResult): string {
+  const text = blockOf(r);
+  const back = parseResult(text);
+  if (!back?.ok) throw new Error(`invalid result: ${back?.errors.map((e) => e.message).join('; ')}`);
+  return text;
+}
+
+function blockOf(r: AirResult): string {
   if (!HOST_RE.test(r.host)) throw new Error(`invalid host for result: ${r.host}`);
   if (!NONCE_RE.test(r.nonce)) throw new Error(`invalid nonce for result: ${r.nonce}`);
   const q = yamlScalar;
@@ -263,12 +273,22 @@ export function parseResult(body: string): ParsedResult | undefined {
       const [repo, url] = [m?.get('repo'), m?.get('url')];
       if (repo && !isSafePath(repo.value)) err(repo.line, 'value', `\`prs[${i}].repo\` must be a repo's \`path\``);
       if (url && !isSafeUrl(url.value)) err(url.line, 'value', URL_MESSAGE(`prs[${i}].url`));
-      if (repo && url) prs.push({ repo: repo.value, url: url.value });
+      if (repo && prs.some((p) => p.repo === repo.value)) err(repo.line, 'value', `\`prs\` lists \`${repo.value}\` twice`);
+      else if (repo && url) prs.push({ repo: repo.value, url: url.value });
     });
-    if (deliver !== undefined && deliver !== 'pr' && prs.length) err(prsE.keyLine, 'value', '`prs` is only for `deliver: pr`');
   }
   const artifactE = top?.get('artifact');
   const artifact = artifactE && checkAsset(artifactE.value, 'artifact', artifactE.keyLine, err, { expires: true });
+  // §10: a `done` result carries what was delivered, and only that.
+  if (status && deliver) {
+    const wantPrs = status === 'done' && deliver === 'pr';
+    const wantArtifact = status === 'done' && deliver === 'artifact';
+    if (prsE && !wantPrs) err(prsE.keyLine, 'value', '`prs` is only for `status: done` with `deliver: pr`');
+    else if (wantPrs && !prsE) err(marker + 3, 'missing', '`status: done` with `deliver: pr` needs `prs`');
+    else if (wantPrs && prsE?.value.kind === 'list' && prsE.value.items.length === 0) err(prsE.keyLine, 'value', '`prs` must list at least one pull request');
+    if (artifactE && !wantArtifact) err(artifactE.keyLine, 'value', '`artifact` is only for `status: done` with `deliver: artifact`');
+    else if (wantArtifact && !artifactE) err(marker + 3, 'missing', '`status: done` with `deliver: artifact` needs `artifact`');
+  }
   const report = scalar('report');
   if (report && report.value !== 'comment' && !isSafeUrl(report.value)) err(report.line, 'value', '`report` must be `comment` or the URL of the report asset');
   const resumeE = top?.get('resume');
@@ -324,15 +344,19 @@ export interface CountedResult {
 /**
  * Results that count, oldest first. A result counts only if its comment counts for markers (trusted
  * author, never edited), the claim named by its `host` and `nonce` held the issue when it was posted,
- * and the same account posted that claim. So a result quoted or pasted by someone else, edited, or
- * left by a server that had lost its claim does nothing.
+ * the same account posted that claim, and that claim has no counted result yet. So a result quoted or
+ * pasted by someone else, edited, left by a server that had lost its claim, or posted after a claim's
+ * final result (a `done` claim is never released) does nothing.
  */
 export function countedResults(comments: AuthoredComment[]): CountedResult[] {
   const out: CountedResult[] = [];
   const authors = new Map(comments.map((c) => [c.id, c.author]));
+  const finished = new Set<number>();
   walkClaims(comments, (c, holder) => {
+    if (finished.has(holder.commentId)) return;
     const r = parseResult(c.body);
     if (!r?.ok || r.result.host !== holder.host || r.result.nonce !== holder.nonce || c.author !== authors.get(holder.commentId)) return;
+    finished.add(holder.commentId);
     out.push({ commentId: c.id, claimCommentId: holder.commentId, result: r.result });
   });
   return out;

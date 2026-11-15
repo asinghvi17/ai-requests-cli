@@ -476,7 +476,7 @@ test('resume: checkpoint branches and the out/ zip', () => {
   assert.deepEqual(lint(fm('  branches:', '  - repo: a', '    branch: air/7', `    sha: ${SHA}`)).request!.resume, { branches: [{ repo: 'a', branch: 'air/7', sha: SHA }] });
   assert.deepEqual(lint(fm(...zip)).request!.resume!.branches, []);
 
-  oneError(fm('  branches: []'.replace('[]', '')), /`branches` has no value/);
+  oneError(fm('  branches: []'), /`resume` needs a `branches` entry, `out` or both/);
   oneError(body(`${MIN}\nresume: yes`), /`resume` must be a map/);
   oneError(fm(...zip, '  from: x'), /unknown key `resume.from`/);
   const branch = (repo: string, b = 'air/7', sha = SHA) => fm('  branches:', `    - repo: ${repo}`, `      branch: ${b}`, `      sha: ${sha}`);
