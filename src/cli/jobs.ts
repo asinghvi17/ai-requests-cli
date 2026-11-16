@@ -14,7 +14,7 @@ import { clientEnv } from '../tmux/env.ts';
 import { socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, readState } from '../workspace/state.ts';
 import type { Invocation } from './main.ts';
-import { UsageError } from './requests.ts';
+import { CommandError, UsageError } from './requests.ts';
 
 /** Injectable for tests. */
 export const jobDeps = {
@@ -41,7 +41,7 @@ function issueArg(raw: string | undefined): number {
 
 function workspace(ctx: ServeContext, n: number): string {
   const ws = activeWorkspace(ctx.root, ctx.gh.repo, n);
-  if (!ws) throw new UsageError(`no claim of ${ctx.gh.repo}#${n} on this machine`);
+  if (!ws) throw new CommandError(`no claim of ${ctx.gh.repo}#${n} on this machine`);
   return ws.dir;
 }
 
@@ -95,8 +95,8 @@ export async function runCommand(inv: Invocation): Promise<number> {
   if (!(await tmuxUsable(ctx, inv))) return 1;
   const dir = workspace(ctx, n);
   const job = await ensureJob(ctx, dir);
-  if (job.status !== 'ready') throw new UsageError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
-  if (!(await claimHolds(ctx, readState(dir)))) throw new UsageError(`#${n} is no longer held by this machine's claim`);
+  if (job.status !== 'ready') throw new CommandError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
+  if (!(await claimHolds(ctx, readState(dir)))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
   if ((await startOrDeliver(ctx, dir)) === 'delivered') return delivered(inv, dir, n);
   inv.io.out(`started #${n}; watch it with \`air attach ${n}\`\n`);
   return 0;
@@ -112,7 +112,7 @@ export async function stopCommand(inv: Invocation): Promise<number> {
   const n = issueArg(inv.positionals[0]);
   const ctx = contextFor(inv);
   const dir = workspace(ctx, n);
-  if (!(await stopAgent(ctx, dir, 'operator'))) throw new UsageError(`#${n} is not running`);
+  if (!(await stopAgent(ctx, dir, 'operator'))) throw new CommandError(`#${n} is not running`);
   inv.io.out(`stopped #${n}; claim and workspace kept. \`air start ${n}\` resumes it\n`);
   return 0;
 }
@@ -124,8 +124,8 @@ export async function startCommand(inv: Invocation): Promise<number> {
   const dir = workspace(ctx, n);
   const state = readState(dir);
   const job = jobOf(state);
-  if (job.status !== 'paused') throw new UsageError(`#${n} is ${job.status}, not paused`);
-  if (!(await claimHolds(ctx, state))) throw new UsageError(`#${n} is no longer held by this machine's claim`);
+  if (job.status !== 'paused') throw new CommandError(`#${n} is ${job.status}, not paused`);
+  if (!(await claimHolds(ctx, state))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
   if ((await startOrDeliver(ctx, dir)) === 'delivered') return delivered(inv, dir, n);
   inv.io.out(`started #${n}\n`);
   return 0;

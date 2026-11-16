@@ -244,3 +244,26 @@ Alternatives considered:
   usage), `air fetch`, `air retry [--effort L]`. `air retry` is the one way to offer a request again.
 - Setup, serve and delivery so far handle one repo with `ref`, cloned into `repo/` with setup run there, and
   no `resume`; `air claim` refuses other requests (`not-yet-supported`) until they implement the rest.
+
+## 2026-11-12: requester commands `air status`, `wait`, `fetch`, `retry`
+
+- They live in `src/requester/` and reuse the spec's parsers: `countedResults` and `currentClaim` for what
+  counts, `fetchContext` (download once, size and SHA-256, zip-slip and size cap, extract from the verified
+  file) for artifacts and checkpoint zips, `cloneAt` for branches, and the `formatResult` resume block
+  (`formatResume`) for the `resume` that `air retry` writes.
+- The latest result is **current** when no counted claim marker comes after it. `air wait` waits only for a
+  current one, polling every 30 s; `--timeout` takes a `timeout`-style duration and exits 4. Server errors,
+  rate limits and gh timeouts are retried at the next poll; a missing issue or an auth error exits 1.
+- Usage errors exit 2 for every command, as spec §12 always said; the router used to exit 1. Refusals that
+  depend on state (`air run` on a job that isn't ready, a lost claim) are a separate `CommandError` and
+  still exit 1, and so does any `gh` error.
+- `air fetch` mirrors the workspace layout (`repo/<path>/`, `out/`, plus `artifact/` and `REPORT.md`), so a
+  repo whose path is `out` or `artifact` can't collide with the zips. `DIR` must be new or empty, the first
+  failure stops it, and a stale result is fetched with a note. Release assets are downloaded with the same
+  credential-less fetch servers use for context zips, so for now that works on public requests repos only.
+- `air retry` refuses closed issues, issues without `ai-request`, held issues and bodies that fail lint
+  (before or after its edit), and runs only for the issue's author or an account with write access. It
+  rewrites only the `effort` line and the `resume` block of the front matter (a new block goes at the end),
+  keeping every other line as written.
+- `formatResult` now quotes a `sha256` YAML would read as a number (all digits), so such a block still
+  parses. `air:partial` joins `STATE_LABELS`, so `claimable` refuses a partial request until `air retry`.

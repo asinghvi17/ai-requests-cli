@@ -13,7 +13,7 @@ import { code, fenced } from './text.ts';
 
 export const REQUEST_LABEL = 'ai-request';
 export const CANCEL_LABEL = 'air:cancel';
-export const STATE_LABELS = ['air:claimed', 'air:running', 'air:paused', 'air:done', 'air:failed'] as const;
+export const STATE_LABELS = ['air:claimed', 'air:running', 'air:paused', 'air:done', 'air:partial', 'air:failed'] as const;
 /** State labels a holder removes when it gives an issue up. */
 export const HELD_LABELS = ['air:claimed', 'air:running', 'air:paused'] as const;
 /** The spec's minimum wait between posting a claim and re-reading comments. */
@@ -237,7 +237,7 @@ export async function release(opts: ReleaseOptions): Promise<ReleaseResult> {
   }
   const viewer = await gh.viewer();
   const message = opts.failure
-    ? `air on ${code(host)} failed at ${opts.failure.step} and released this request.\n\n${opts.failure.detail}\n\nRemove \`air:failed\` to offer it again.`
+    ? `air on ${code(host)} failed at ${opts.failure.step} and released this request.\n\n${opts.failure.detail}\n\nRun \`air retry ${n}\` to offer it again.`
     : opts.message ?? `Released by ${code(host)}.`;
   await giveUp(gh, n, viewer, host, nonce, { message, failed: opts.failure !== undefined, labels: issue.labels });
 

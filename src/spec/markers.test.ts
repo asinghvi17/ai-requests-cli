@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  associationTrust, countedResults, currentClaim, formatMarker, formatResult, parseMarkers, parseResult, RESULT_MARKER,
-  type AirResult, type AuthoredComment, type MarkedComment,
+  associationTrust, countedResults, currentClaim, formatMarker, formatResult, formatResume, parseMarkers, parseResult, RESULT_MARKER,
+  textAboveResult, type AirResult, type AuthoredComment, type MarkedComment,
 } from './markers.ts';
 
 const T = '2026-11-07T12:00:00Z';
@@ -240,4 +240,23 @@ test('countedResults: only the claim holder\'s own, unedited result counts', () 
   assert.deepEqual(countedResults(done).map((r) => [r.commentId, r.result.status]), [[11, 'done']]);
   // a result that doesn't count (here, edited) doesn't use up the claim's one result
   assert.deepEqual(ids([...claimed, a(11, doneResult(), { updatedAt: '2026-11-07T12:01:00Z' }), a(12, result())]), [12]);
+});
+
+test('textAboveResult: the report above the last block, without counted marker lines', () => {
+  const release = formatMarker({ kind: 'release', version: 0, host: 'box', nonce: 'aaaaaaaa' });
+  const quoted = `\`\`\`\n${RESULT_MARKER}\n\`\`\``;
+  const body = `# Report\n\nDone.\n${quoted}\n\n  ${release}\n${formatResult(PARTIAL)}\n`;
+  assert.equal(textAboveResult(body), `# Report\n\nDone.\n${quoted}`);
+  assert.equal(textAboveResult('no block here'), undefined);
+});
+
+test('formatResume writes the block the result and the front matter share', () => {
+  assert.deepEqual(formatResume({ branches: [{ repo: 'service', branch: 'air/12', sha: '1'.repeat(40) }] }), [
+    'resume:', '  branches:', '    - repo: service', '      branch: air/12', `      sha: "${'1'.repeat(40)}"`,
+  ]);
+});
+
+test('an all-digit sha256 is quoted, so the block still parses', () => {
+  const r: AirResult = { ...PARTIAL, resume: { branches: [], out: { ...PARTIAL.resume!.out!, sha256: '1'.repeat(64) } } };
+  assert.deepEqual(parseResult(formatResult(r)), { ok: true, result: r });
 });

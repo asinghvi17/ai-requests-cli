@@ -12,7 +12,10 @@ export const deps = {
   repo: (name: string): RequestsRepo => requestsRepo(name),
 };
 
+/** Bad flags or arguments: the router prints the command's usage and exits 2. */
 export class UsageError extends Error {}
+/** A command that can't do what was asked in the current state: the router prints the message and exits 1. */
+export class CommandError extends Error {}
 
 export function target(inv: Invocation): Target {
   const raw = inv.positionals[0]!;

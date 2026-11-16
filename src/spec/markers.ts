@@ -44,9 +44,14 @@ const MARKER_RE = /^<!-- air-(claim|release|unsupported) v(\d+)((?: [a-z]+=[^\s=
  * does nothing. Malformed markers are ignored.
  */
 export function parseMarkers(text: string): Marker[] {
-  const out: Marker[] = [];
+  return parseMarkersAt(text.replace(/\r\n?/g, '\n').split('\n')).map(({ line: _, ...m }) => m);
+}
+
+/** `parseMarkers` over lines, with each marker's 0-based line index. */
+function parseMarkersAt(lines: string[]): (Marker & { line: number })[] {
+  const out: (Marker & { line: number })[] = [];
   let fence: { char: string; len: number } | undefined;
-  for (const line of text.replace(/\r\n?/g, '\n').split('\n')) {
+  for (const [i, line] of lines.entries()) {
     const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (fence) {
       if (f && f[1]![0] === fence.char && f[1]!.length >= fence.len && line.trim() === f[1]) fence = undefined;
@@ -66,7 +71,7 @@ export function parseMarkers(text: string): Marker[] {
     }
     const host = attrs.get('host');
     if (!host || !HOST_RE.test(host)) continue;
-    const marker: Marker = { kind, version: Number(m[2]), host };
+    const marker: Marker & { line: number } = { kind, version: Number(m[2]), host, line: i };
     if (kind === 'unsupported') {
       const air = attrs.get('air');
       if (!air || !/^\d+$/.test(air)) continue;
@@ -184,18 +189,11 @@ function blockOf(r: AirResult): string {
   if (!HOST_RE.test(r.host)) throw new Error(`invalid host for result: ${r.host}`);
   if (!NONCE_RE.test(r.nonce)) throw new Error(`invalid nonce for result: ${r.nonce}`);
   const q = yamlScalar;
-  const asset = (a: Asset, indent: string) => [`${indent}url: ${q(a.url)}`, `${indent}sha256: ${a.sha256}`, `${indent}bytes: ${a.bytes}`, ...(a.expires ? [`${indent}expires: ${a.expires}`] : [])];
   const y = [`status: ${r.status}`, `deliver: ${r.deliver}`];
   if (r.prs.length) y.push('prs:', ...r.prs.flatMap((p) => [`  - repo: ${q(p.repo)}`, `    url: ${q(p.url)}`]));
-  if (r.artifact) y.push('artifact:', ...asset(r.artifact, '  '));
+  if (r.artifact) y.push('artifact:', ...assetLines(r.artifact, '  '));
   if (r.report !== undefined) y.push(`report: ${q(r.report)}`);
-  if (r.resume) {
-    y.push('resume:');
-    if (r.resume.branches.length) {
-      y.push('  branches:', ...r.resume.branches.flatMap((b) => [`    - repo: ${q(b.repo)}`, `      branch: ${q(b.branch)}`, `      sha: ${q(b.sha)}`]));
-    }
-    if (r.resume.out) y.push('  out:', ...asset(r.resume.out, '    '));
-  }
+  if (r.resume) y.push(...formatResume(r.resume));
   if (r.usage) {
     const u = r.usage;
     y.push('usage:', `  harness: ${u.harness}`, `  tier: ${u.tier}`);
@@ -207,18 +205,25 @@ function blockOf(r: AirResult): string {
   return [RESULT_MARKER, '```yaml', ...y, '```'].join('\n');
 }
 
+const assetLines = (a: Asset, indent: string) =>
+  [`${indent}url: ${yamlScalar(a.url)}`, `${indent}sha256: ${yamlScalar(a.sha256)}`, `${indent}bytes: ${a.bytes}`, ...(a.expires ? [`${indent}expires: ${a.expires}`] : [])];
+
+/** A top-level `resume:` block, as a result carries it and as `air retry` writes it into front matter. */
+export function formatResume(r: Resume): string[] {
+  const q = yamlScalar;
+  const y = ['resume:'];
+  if (r.branches.length) y.push('  branches:', ...r.branches.flatMap((b) => [`    - repo: ${q(b.repo)}`, `      branch: ${q(b.branch)}`, `      sha: ${q(b.sha)}`]));
+  if (r.out) y.push('  out:', ...assetLines(r.out, '    '));
+  return y;
+}
+
 export type ParsedResult = { ok: true; result: AirResult } | { ok: false; errors: Diagnostic[] };
 
 /** Number-valued keys of a result block. */
 const RESULT_NUMBERS = ['artifact.bytes', 'resume.out.bytes', 'usage.before_pct', 'usage.after_pct', 'usage.attempts'];
 
-/**
- * The `air-result` block that ends a comment body, if any. Only the last `<!-- air-result v0 -->` line
- * outside fenced code counts, alone on its line; the next line must open a ```` ```yaml ```` fence, and
- * that fence must close on the last non-blank line. Undefined when there is no such marker line; an
- * error when the block after it is malformed. Says nothing about who wrote it: see `countedResults`.
- */
-export function parseResult(body: string): ParsedResult | undefined {
+/** The body's lines, the end of its non-blank part, and the index of the last result marker line outside fenced code (-1: none). */
+function findResultMarker(body: string): { lines: string[]; end: number; marker: number } {
   const lines = body.replace(/\r\n?/g, '\n').split('\n');
   let end = lines.length;
   while (end > 0 && lines[end - 1]!.trim() === '') end--;
@@ -234,6 +239,29 @@ export function parseResult(body: string): ParsedResult | undefined {
     if (f) fence = { char: f[1]![0]!, len: f[1]!.length };
     else if (line.trim() === RESULT_MARKER) marker = i;
   }
+  return { lines, end, marker };
+}
+
+/**
+ * The text of a final comment above its `air-result` block (a `report: comment` report), without the
+ * claim and release marker lines that count (§9). Undefined when the body has no result marker.
+ */
+export function textAboveResult(body: string): string | undefined {
+  const { lines, marker } = findResultMarker(body);
+  if (marker < 0) return undefined;
+  const above = lines.slice(0, marker);
+  const counted = new Set(parseMarkersAt(above).map((m) => m.line));
+  return above.filter((_, i) => !counted.has(i)).join('\n').trim();
+}
+
+/**
+ * The `air-result` block that ends a comment body, if any. Only the last `<!-- air-result v0 -->` line
+ * outside fenced code counts, alone on its line; the next line must open a ```` ```yaml ```` fence, and
+ * that fence must close on the last non-blank line. Undefined when there is no such marker line; an
+ * error when the block after it is malformed. Says nothing about who wrote it: see `countedResults`.
+ */
+export function parseResult(body: string): ParsedResult | undefined {
+  const { lines, end, marker } = findResultMarker(body);
   if (marker < 0) return undefined;
   const fail = (line: number, message: string): ParsedResult => ({ ok: false, errors: [{ line: line + 1, code: 'frontmatter', message }] });
   if (!/^```yaml[ \t]*$/.test(lines[marker + 1] ?? '')) return fail(marker + 1, 'the `air-result` marker must be followed by a ```yaml fence on the next line');

@@ -60,3 +60,15 @@ test('removing an absent label is fine; permission reads role_name, 404 is none'
   await assert.rejects(repo.permission('o/r', '../m'), /bad GitHub login/);
   assert.throws(() => requestsRepo('o/r/x'), /bad repo/);
 });
+
+test('editBody PATCHes the issue; pullHead reads the head ref, sha and clone URL', async () => {
+  const { repo, calls } = fake({
+    'repos/acme/svc/pulls/7': { stdout: JSON.stringify({ head: { ref: 'air/12', sha: 'a'.repeat(40), repo: { clone_url: 'https://github.com/acme/svc.git' } } }) },
+    'repos/acme/gone/pulls/8': { stdout: JSON.stringify({ head: { ref: 'x', sha: 'b'.repeat(40), repo: null } }) },
+  });
+  await repo.editBody(5, 'new body');
+  assert.deepEqual(await repo.pullHead('acme/svc', 7), { ref: 'air/12', sha: 'a'.repeat(40), cloneUrl: 'https://github.com/acme/svc.git' });
+  await assert.rejects(repo.pullHead('acme/gone', 8), /head repo is gone/);
+  await assert.rejects(repo.pullHead('../x', 1), /bad repo/);
+  assert.deepEqual(calls.slice(0, 2), ['api repos/o/r/issues/5 --method PATCH --input - {"body":"new body"}', 'api repos/acme/svc/pulls/7 --method GET']);
+});
