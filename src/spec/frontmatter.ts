@@ -651,12 +651,11 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
 
 /**
  * Why setup, serve and delivery can't run a request yet, or undefined if they can: they handle at most
- * one repo, checked out at a `ref` into `repo/`, and no `resume`. Temporary, until they implement the rest.
+ * one repo, checked out at a `ref` into `repo/`. Temporary, until they implement the rest.
  */
 export function singleRepoLimitation(r: Request): string | undefined {
   if (r.repos.length > 1) return 'it lists more than one repo';
   if (r.repos[0]?.pr !== undefined) return 'it checks out a pull request (`pr:`)';
-  if (r.resume) return 'it resumes an earlier checkpoint (`resume:`)';
   return undefined;
 }
 

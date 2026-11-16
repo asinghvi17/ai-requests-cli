@@ -1,13 +1,15 @@
 // Claiming and releasing requests (spec/v0.md §8, §9). A claim is a comment with an `air-claim` marker;
 // after a wait, the earliest counted unreleased claim holds the issue and every other claimant backs off.
 import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Issue, RequestsRepo } from '../gh/issues.ts';
 import { lint } from '../spec/lint.ts';
-import { singleRepoLimitation, SPEC_VERSION, type Request } from '../spec/frontmatter.ts';
-import { countedMarkers, currentClaim, formatMarker } from '../spec/markers.ts';
-import { createWorkspace, findWorkspaces, updateState, type State } from '../workspace/state.ts';
+import { singleRepoLimitation, SPEC_VERSION, type Deliver, type Request } from '../spec/frontmatter.ts';
+import { countedMarkers, currentClaim, formatMarker, formatResult, type AirResult } from '../spec/markers.ts';
+import { createWorkspace, findWorkspaces, REQUEST_FILE, updateState, type State } from '../workspace/state.ts';
 import { createTrust, markedComments, type Trust } from './trust.ts';
 import { code, fenced } from './text.ts';
 
@@ -155,7 +157,7 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     // We never learned whether we hold it: withdraw the claim rather than leave one nobody acts on. If the
     // comment can't be deleted, a release marker for it ends the claim just the same.
     await gh.deleteComment(mine.id).catch(() =>
-      gh.comment(n, `Withdrawn by ${code(host)}: it could not complete the claim.\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n`)).catch(() => {});
+      gh.comment(n, `Withdrawn by ${code(host)}: it could not complete the claim.\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n${formatResult({ status: 'released', deliver: request.deliver, prs: [], host, nonce })}\n`)).catch(() => {});
     await gh.unassign(n, viewer).catch(() => {});
     throw e;
   }
@@ -177,23 +179,33 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     await gh.addLabels(n, ['air:claimed']);
     dir = createWorkspace(opts.root, state, body);
   } catch (e) {
-    await giveUp(gh, n, viewer, host, nonce, { message: `Released by ${code(host)}: it could not start work on this request.` }).catch(() => {});
+    await giveUp(gh, n, viewer, host, nonce, { message: `Released by ${code(host)}: it could not start work on this request.`, result: { status: 'released', deliver: request.deliver, prs: [], host, nonce } }).catch(() => {});
     throw e;
   }
   return { status: 'won', dir, state, request, body };
 }
 
-/** Posts the release, then fixes labels and the assignment. Shared by release and failure. */
+/**
+ * Posts the final comment (message, release marker, `air-result` block: spec §9 step 4, §10), then fixes
+ * labels and the assignment. A `failed` or `partial` result gets its label (`air:failed`, `air:partial`).
+ */
 async function giveUp(
   gh: RequestsRepo, n: number, viewer: string, host: string, nonce: string,
-  opts: { message: string; failed?: boolean; labels?: string[] },
+  opts: { message: string; result: AirResult; labels?: string[] },
 ): Promise<void> {
   const labels = opts.labels ?? (await gh.issue(n)).labels;
-  // Add air:failed before removing the held label, so the issue never looks claimable in between.
-  if (opts.failed) await gh.addLabels(n, ['air:failed']);
+  const final = opts.result.status === 'failed' || opts.result.status === 'partial' ? `air:${opts.result.status}` : undefined;
+  // Add the final label before removing the held one, so the issue never looks claimable in between.
+  if (final) await gh.addLabels(n, [final]);
   for (const l of HELD_LABELS) if (labels.includes(l)) await gh.removeLabel(n, l);
-  await gh.comment(n, `${opts.message}\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n`);
+  await gh.comment(n, `${opts.message}\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n${formatResult(opts.result)}\n`);
   await gh.unassign(n, viewer);
+}
+
+/** The `deliver` of a request body, if it lints. */
+function deliverOf(body: string): Deliver | undefined {
+  const r = lint(body);
+  return r.ok ? r.request?.deliver : undefined;
 }
 
 export interface ReleaseOptions {
@@ -209,6 +221,12 @@ export interface ReleaseOptions {
   message?: string;
   /** The claim to release. Default: the nonce of this machine's workspace for the holding claim. */
   nonce?: string;
+  /**
+   * Fields of the `air-result` block that ends the comment (§10). `status` defaults to `failed` with a
+   * `failure`, else `released`; `partial` labels the issue `air:partial`. `deliver` defaults to the
+   * claimed body's (the workspace's request.md, else the issue's).
+   */
+  result?: Partial<Pick<AirResult, 'status' | 'deliver' | 'usage' | 'resume' | 'report'>>;
 }
 
 export type ReleaseResult = { status: 'released'; nonce: string } | { status: 'refused'; message: string };
@@ -235,11 +253,23 @@ export async function release(opts: ReleaseOptions): Promise<ReleaseResult> {
   if (nonce === undefined || nonce !== holder.nonce) {
     return { status: 'refused', message: `#${n} is held by a claim from ${host} that this machine has no workspace for (another machine with the same name?)` };
   }
+  let deliver = opts.result?.deliver;
+  if (deliver === undefined && ws) {
+    try {
+      deliver = deliverOf(readFileSync(join(ws.dir, REQUEST_FILE), 'utf8'));
+    } catch {
+      // no snapshot: fall back to the issue
+    }
+  }
+  deliver ??= deliverOf(issue.body);
+  if (deliver === undefined) return { status: 'refused', message: `#${n}: neither the claimed body nor the issue says how to deliver, so no \`air-result\` can be written` };
+  const status = opts.result?.status ?? (opts.failure ? 'failed' : 'released');
   const viewer = await gh.viewer();
   const message = opts.failure
     ? `air on ${code(host)} failed at ${opts.failure.step} and released this request.\n\n${opts.failure.detail}\n\nRun \`air retry ${n}\` to offer it again.`
     : opts.message ?? `Released by ${code(host)}.`;
-  await giveUp(gh, n, viewer, host, nonce, { message, failed: opts.failure !== undefined, labels: issue.labels });
+  const result: AirResult = { prs: [], ...opts.result, status, deliver, host, nonce };
+  await giveUp(gh, n, viewer, host, nonce, { message, result, labels: issue.labels });
 
   if (ws) {
     updateState(ws.dir, opts.failure ? { phase: 'failed', failure: opts.failure.step } : { phase: 'released' }, now());

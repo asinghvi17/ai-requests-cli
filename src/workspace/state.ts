@@ -24,10 +24,18 @@ export type Phase = 'claimed' | 'setting-up' | 'ready' | 'failed' | 'released' |
  * (`--manual`). running: in its tmux window. stopping: being stopped by `air stop` or the server, so pane
  * death is not a finish. paused: stopped, claim and workspace kept. delivering: the agent finished and
  * the result is going back. failing: giving the issue up as failed (retried until the release posts).
- * done / failed / cancelled: over.
+ * checkpointing: stopped early (spec §11), keeping the work so far and posting `partial` (retried likewise).
+ * done / failed / partial / cancelled: over.
  */
-export type JobStatus = 'ready' | 'running' | 'stopping' | 'paused' | 'delivering' | 'failing' | 'done' | 'failed' | 'cancelled';
-export type PauseReason = 'operator' | 'quota' | 'restart';
+export type JobStatus = 'ready' | 'running' | 'stopping' | 'paused' | 'delivering' | 'failing' | 'checkpointing' | 'done' | 'failed' | 'partial' | 'cancelled';
+/** Job statuses after which the server does nothing more for the job. */
+export const ENDED: readonly JobStatus[] = ['done', 'failed', 'partial', 'cancelled'];
+/**
+ * operator: `air stop`, or the volunteer closed the window. quota: the subscription ran out (spec §11 rules
+ * 1, 2). restart: the window was lost while the server was down. exit: the agent exited without AIR_DONE and
+ * gets its one resume (§11 rule 3).
+ */
+export type PauseReason = 'operator' | 'quota' | 'restart' | 'exit';
 
 /** A release asset air uploaded (an artifact zip or an over-long report), as its `air-result` block needs it. */
 export interface UploadedAsset { name: string; id: number; url: string; sha256: string; bytes: number; files?: number }
@@ -54,8 +62,15 @@ export interface JobRecord {
   resumeAfter?: string;
   /** Usage reading of `subscription` when the job first started, for effort calibration. */
   usageBefore?: Subscription;
-  /** Delivery steps already done, so a retried delivery doesn't repeat them. */
-  delivery?: { branch?: string; prUrl?: string; asset?: UploadedAsset; commented?: boolean };
+  /**
+   * Delivery (or checkpoint) steps already done, so a retry doesn't repeat them: the branch chosen, the
+   * commit pushed there, the PR, the uploaded asset (artifact, long report or checkpoint `out/` zip).
+   */
+  delivery?: { branch?: string; sha?: string; prUrl?: string; asset?: UploadedAsset; commented?: boolean };
+  /** How many times the agent was resumed after exiting without AIR_DONE (spec §11 rule 3: once). */
+  exitResumes?: number;
+  /** Why the job is `checkpointing`. With `timeout`, an empty checkpoint makes the result `failed` (§11 rule 5). */
+  partial?: { why: string; timeout?: boolean };
   /** Last error from a delivery attempt that will be retried, and how many attempts failed so far. */
   lastError?: string;
   deliveryAttempts?: number;

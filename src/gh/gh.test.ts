@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { GhError, createGh, type RunResult, type Runner } from './gh.ts';
+import { GhError, createGh, type OutFile, type RunResult, type Runner } from './gh.ts';
 
 function fake(result: Partial<RunResult>) {
-  const calls: { args: string[]; input: string | undefined }[] = [];
-  const run: Runner = async (args, input) => {
-    calls.push({ args, input });
+  const calls: { args: string[]; input: string | undefined; out?: OutFile }[] = [];
+  const run: Runner = async (args, input, _signal, out) => {
+    calls.push({ args, input, ...(out ? { out } : {}) });
     return { code: 0, stdout: '', stderr: '', ...result };
   };
   return { gh: createGh(run), calls };
@@ -51,4 +51,14 @@ test('maps errors by HTTP status', async () => {
 test('rejects non-JSON output and flag-like paths', async () => {
   await assert.rejects(fake({ stdout: '<html>' }).gh.api('x'), /not JSON/);
   await assert.rejects(fake({}).gh.api('--hostname=evil'), /bad API path/);
+});
+
+test('download asks for the raw bytes and sends stdout to the file; errors map as for api', async () => {
+  const { gh, calls } = fake({});
+  await gh.download('repos/o/r/releases/assets/9', '/tmp/x.zip', 100);
+  assert.deepEqual(calls, [{
+    args: ['api', 'repos/o/r/releases/assets/9', '-H', 'Accept: application/octet-stream', '--method', 'GET'], input: undefined, out: { path: '/tmp/x.zip', maxBytes: 100 },
+  }]);
+  await assert.rejects(fake({ code: 1, stderr: 'gh: Not Found (HTTP 404)\n' }).gh.download('repos/o/r/releases/assets/9', '/tmp/y', 1),
+    (e: unknown) => e instanceof GhError && e.kind === 'not_found');
 });

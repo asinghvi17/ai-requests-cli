@@ -15,6 +15,7 @@ import { jobDeps } from '../cli/jobs.ts';
 import type { Config } from '../config.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { createGh } from '../gh/gh.ts';
+import { releaseDownload } from '../workspace/context.ts';
 import { requestsRepo } from '../gh/issues.ts';
 import { currentClaim, formatMarker, parseResult } from '../spec/markers.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
@@ -91,6 +92,7 @@ function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
     env: insteadOf(bare.bare, TARGET), stateDir: tmp('air-serve-state-'), trust: createTrust(repo),
     usage: async () => structuredClone(subs), agentEnv: () => ({}), log: (s) => logs.push(s),
     now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, claimWaitMs: 0,
+    download: releaseDownload(gh, 'github.com'),
   };
   return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root };
 }
@@ -125,6 +127,20 @@ const argvLog = (dir: string) => {
 /** Ticks until #n is running and its agent has started `starts` times (so an interrupt reaches a live agent). */
 const running = (w: World, n: number, starts = 1) =>
   until(w, `#${n} running`, () => status(w, n) === 'running' && argvLog(job(w, n)!.dir).length >= starts && readFileSync(join(job(w, n)!.dir, 'agent-argv.log'), 'utf8').endsWith('\n'));
+/** The `air-result` of #n's last comment (or the last one matching `which`), without host and nonce. */
+const resultOf = (w: World, n: number, which: (c: string) => boolean = () => true) => {
+  const r = parseResult(comments(w, n).filter(which).at(-1) ?? '');
+  if (!r?.ok) return undefined;
+  const { host: _h, nonce: _n, prs, ...rest } = r.result;
+  return prs.length ? { ...rest, prs } : rest;
+};
+const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
+async function unzip(data: Buffer): Promise<string> {
+  const d = tmp('air-serve-unzip-');
+  writeFileSync(join(d, 'a.zip'), data);
+  await extractZip(join(d, 'a.zip'), join(d, 'x'), 1 << 20);
+  return join(d, 'x');
+}
 const holder = async (w: World, n: number) => currentClaim(await markedComments(await w.store.comments(n), createTrust(w.store)));
 
 describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' }, () => {
@@ -175,7 +191,10 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(asset.data.toString(), 'x'.repeat(70000));
     assert.deepEqual(parseResult(final), {
       ok: true,
-      result: { status: 'done', deliver: 'comment', prs: [], report: `https://github.com/o/requests/releases/download/air-artifacts/air-2-${nonce}-report.md`, host: job(w, 2)!.state.host, nonce },
+      result: {
+        status: 'done', deliver: 'comment', prs: [], report: `https://github.com/o/requests/releases/download/air-artifacts/air-2-${nonce}-report.md`,
+        usage: { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 1 }, host: job(w, 2)!.state.host, nonce,
+      },
     });
   });
 
@@ -392,7 +411,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(starts[2]!.slice(0, 2), ['--resume', sessionId]);
     assert.equal(starts[3]![0], '--session-id');
     assert.notEqual(starts[3]![1], sessionId);
-    assert.match(starts[3]!.at(-1)!, /^Read AIR_TASK\.md .* interrupted: first look at what is already in out\//);
+    assert.match(starts[3]!.at(-1)!, /^Read AIR_TASK\.md .* interrupted: first read out\/PROGRESS\.md/);
     ws = job(w, 8)!;
     assert.equal(ws.state.job!.status, 'running');
     assert.equal(ws.state.job!.sessionId, starts[3]![1]);
@@ -429,6 +448,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(stateLabels(w, 10), ['air:cancel']);
     assert.equal(await tmuxClient.isAlive(10), false);
     assert.match(comments(w, 10).at(-1)!, /stopped work on this request because the requester added `air:cancel`, and released it/);
+    assert.deepEqual(resultOf(w, 10), { status: 'released', deliver: 'comment', usage: { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 1 } });
     assert.equal(await holder(w, 10), undefined);
     assert.deepEqual(w.store.issues.get(10)!.assignees, []);
   });
@@ -446,15 +466,146 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     await until(w, 'both over', () => readState(first).job!.status === 'cancelled' && status(w, 12) === 'failed');
     assert.ok(w.store.issues.get(11)!.comments.some((c) => /paused this request 48 hours ago/.test(c.body)));
     assert.notEqual((await holder(w, 11))?.nonce, readState(first).nonce);
+    assert.equal(resultOf(w, 11, (c) => /paused this request 48 hours ago/.test(c))?.status, 'released');
     assert.deepEqual(stateLabels(w, 12), ['air:failed']);
-    assert.match(comments(w, 12).at(-1)!, /failed at the timeout[\s\S]*past the request's `timeout` of 1 min/);
+    // A timeout whose checkpoint keeps nothing (no commits, empty out/) fails (spec §11 rule 5).
+    assert.match(comments(w, 12).at(-1)!, /failed at the timeout[\s\S]*past the request's `timeout` of 1 min[\s\S]*There is no checkpoint/);
+    assert.equal(resultOf(w, 12)?.status, 'failed');
+    assert.equal(resultOf(w, 12)?.resume, undefined);
   });
 
-  test('an agent that exits non-zero fails the request with the end of its window', async () => {
+  test('an agent that exits without AIR_DONE, whatever its status, is resumed once, then stopped early as partial', async () => {
     const w = world();
-    w.store.addIssue({ number: 13, body: body('exit 4') });
-    await until(w, 'failed', () => status(w, 13) === 'failed');
-    assert.match(comments(w, 13).at(-1)!, /The agent exited with status 4[\s\S]*fake agent: exit 4/);
+    w.store.addIssue({ number: 13, body: body('quit 0') });
+    w.store.addIssue({ number: 30, body: body('quit 4') });
+    await until(w, 'both partial', () => status(w, 13) === 'partial' && status(w, 30) === 'partial');
+    for (const n of [13, 30]) {
+      const ws = job(w, n)!;
+      const starts = argvLog(ws.dir);
+      assert.equal(starts.length, 2, `#${n}: one resume`);
+      assert.deepEqual(starts[1]!.slice(0, 2), ['--resume', ws.state.job!.sessionId]);
+      assert.match(starts[1]!.at(-1)!, /^Your session ended before the task was finished \(there is no AIR_DONE\)\. Read out\/PROGRESS\.md, then continue/);
+      assert.deepEqual(stateLabels(w, n), ['air:partial']);
+      assert.equal(await holder(w, n), undefined, 'a partial result releases the claim');
+      assert.deepEqual(w.store.issues.get(n)!.assignees, []);
+      assert.equal(ws.state.phase, 'released');
+      const final = comments(w, n).at(-1)!;
+      assert.match(final, /^air on `box` stopped this request early because the agent exited without finishing, again after being resumed once\. The agent exited/);
+      assert.match(final, n === 13 ? /exited with status 0 without finishing/ : /exited with status 4 without finishing/);
+      assert.match(final, new RegExp(`<!-- air-release v0 host=box nonce=${ws.state.nonce} -->\n<!-- air-result v0 -->`));
+      const r = resultOf(w, n)!;
+      const asset = w.fg.releases.find((x) => x.tag === 'air-artifacts')!.assets.find((a) => a.name === `air-${n}-${ws.state.nonce}-out.zip`)!;
+      assert.deepEqual(r, {
+        status: 'partial', deliver: 'comment', report: 'comment',
+        resume: { branches: [], out: { url: `https://github.com/o/requests/releases/download/air-artifacts/air-${n}-${ws.state.nonce}-out.zip`, sha256: sha256(asset.data), bytes: asset.data.length } },
+        usage: { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 2 },
+      });
+      assert.equal(readFileSync(join(await unzip(asset.data), 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
+    }
+  });
+
+  test('pr: a partial result pushes a checkpoint branch, and a request resumed from it continues there', async () => {
+    const w = world();
+    w.store.setPermission('o/target', 'alice', 'write');
+    w.store.addIssue({ number: 31, title: 'Long change', body: body('quit 3', PR, CONTEXT) });
+    await until(w, 'partial', () => status(w, 31) === 'partial');
+    const first = job(w, 31)!;
+    const sha = execFileSync('git', ['--git-dir', bare.bare, 'rev-parse', 'refs/heads/air/31'], { encoding: 'utf8' }).trim();
+    assert.equal(execFileSync('git', ['--git-dir', bare.bare, 'log', '--format=%s', `main..${sha}`], { encoding: 'utf8' }), 'wip 2\nwip 1\n');
+    assert.equal(w.fg.pulls.length, 0, 'a checkpoint opens no pull request');
+    const r = resultOf(w, 31)!;
+    assert.deepEqual(r.resume!.branches, [{ repo: 'target', branch: 'air/31', sha }]);
+    assert.match(r.resume!.out!.url, new RegExp(`/air-31-${first.state.nonce}-out\\.zip$`));
+    assert.match(comments(w, 31).at(-1)!, /pushed to branch `air\/31` of https:\/\/github\.com\/o\/target/);
+
+    // `air retry` writes the result's `resume` into the front matter and removes the air:* labels.
+    const resume = [
+      'resume:', '  branches:', '    - repo: target', '      branch: air/31', `      sha: "${sha}"`,
+      '  out:', `    url: ${r.resume!.out!.url}`, `    sha256: ${r.resume!.out!.sha256}`, `    bytes: ${r.resume!.out!.bytes}`,
+    ];
+    const issue = w.store.issues.get(31)!;
+    issue.body = body('pr', [...PR, ...resume], CONTEXT);
+    issue.labels = issue.labels.filter((l) => !l.startsWith('air:'));
+    const downloads = w.fg.calls.length;
+    await until(w, 'delivered', () => status(w, 31) === 'done');
+    const second = job(w, 31)!;
+    assert.notEqual(second.state.nonce, first.state.nonce);
+    assert.ok(w.fg.calls.slice(downloads).some((c) => /^api repos\/o\/requests\/releases\/assets\/\d+ -H Accept: application\/octet-stream --method GET$/.test(c)), 'the checkpoint zip came through gh');
+    assert.equal(readFileSync(join(second.dir, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
+    const task = readFileSync(join(second.dir, 'AIR_TASK.md'), 'utf8');
+    assert.match(task, /## Continuing earlier work/);
+    assert.match(task, new RegExp(`checked out at the earlier work's checkpoint, \`${sha}\` on branch \`air/31\``));
+    assert.match(task, /Keep `out\/PROGRESS\.md` up to date/);
+    // The PR carries the checkpoint's commits and the new one, on the next free branch.
+    assert.equal(w.fg.pulls.length, 1);
+    assert.equal(w.fg.pulls[0]!.head, 'air/31-2');
+    const head = execFileSync('git', ['--git-dir', bare.bare, 'rev-parse', 'refs/heads/air/31-2'], { encoding: 'utf8' }).trim();
+    assert.equal(execFileSync('git', ['--git-dir', bare.bare, 'log', '--format=%s', `main..${head}`], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n');
+    assert.equal(resultOf(w, 31)?.status, 'done');
+  });
+
+  test('a resume whose checkpoint zip is missing fails before setup runs', async () => {
+    const w = world();
+    const url = 'https://github.com/o/requests/releases/download/air-artifacts/air-33-gone-out.zip';
+    w.store.addIssue({ number: 33, body: body('comment x', ['deliver: comment', 'setup: ["touch ran"]', 'resume:', '  out:', `    url: ${url}`, `    sha256: ${'a'.repeat(64)}`, '    bytes: 10']) });
+    await until(w, 'failed', () => job(w, 33)?.state.phase === 'failed');
+    assert.match(comments(w, 33).at(-1)!, /failed at the checkpoint download[\s\S]*was not found/);
+    assert.equal(existsSync(join(job(w, 33)!.dir, 'ran')), false);
+    assert.deepEqual(resultOf(w, 33), { status: 'failed', deliver: 'comment' });
+  });
+
+  test('timeout: the agent is stopped and its checkpoint posted as partial', async () => {
+    const w = world();
+    w.store.addIssue({ number: 34, body: body('progress', ['deliver: comment', 'timeout: 1m']) });
+    await running(w, 34);
+    await waitFor(async () => existsSync(join(job(w, 34)!.dir, 'out', 'PROGRESS.md')));
+    w.clock.offset = 2 * 60_000;
+    await until(w, 'partial', () => status(w, 34) === 'partial');
+    assert.match(comments(w, 34).at(-1)!, /stopped this request early because the agent ran past the request's `timeout` of 1 min/);
+    assert.equal(await tmuxClient.isAlive(34), false);
+    const r = resultOf(w, 34)!;
+    assert.equal(r.status, 'partial');
+    assert.ok(r.resume?.out);
+    assert.deepEqual(stateLabels(w, 34), ['air:partial']);
+  });
+
+  test('quota: a window that resets more than 24 h away stops the job early as partial', async () => {
+    const w = world();
+    w.store.addIssue({ number: 35, body: body('progress') });
+    await running(w, 35);
+    w.subs[0] = weekly(100, new Date(Date.now() + 3 * 86_400_000).toISOString());
+    await until(w, 'partial', () => status(w, 35) === 'partial');
+    assert.match(comments(w, 35).at(-1)!, /ran out of quota, and it only resets at .*, more than 24 hours away/);
+    assert.deepEqual(resultOf(w, 35)?.usage, { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 100, attempts: 1 });
+  });
+
+  test('quota: a pause that does not end within 24 h becomes partial, never a 48 h release', async () => {
+    const w = world();
+    w.store.addIssue({ number: 36, body: body('progress') });
+    await running(w, 36);
+    w.subs[0] = weekly(100, new Date(Date.now() + 3600_000).toISOString());
+    await until(w, 'paused', () => status(w, 36) === 'paused');
+    assert.equal(job(w, 36)!.state.job!.pauseReason, 'quota');
+    w.clock.offset = PAUSE_LIMIT_MS + 3600_000; // still out of quota, and paused for longer than 48 h
+    await until(w, 'partial', () => status(w, 36) === 'partial');
+    assert.match(comments(w, 36).at(-1)!, /ran out of quota and did not recover within 24 hours/);
+    assert.ok(!comments(w, 36).some((c) => /paused this request 48 hours ago/.test(c)));
+    assert.deepEqual(stateLabels(w, 36), ['air:partial']);
+  });
+
+  test('effort: a job that uses more than twice its effort share is stopped early as partial', async () => {
+    const w = world();
+    w.store.addIssue({ number: 37, body: body('progress') });
+    await running(w, 37);
+    const before = job(w, 37)!.state.job!.usageBefore!;
+    w.subs[0] = weekly(12, before.windows[0]!.resetsAt!); // XS on this plan: 1 point; 2 is the cap
+    await w.server.tick();
+    await w.server.idle();
+    assert.equal(status(w, 37), 'running', 'twice the share is still allowed');
+    w.subs[0] = weekly(12.5, before.windows[0]!.resetsAt!);
+    await until(w, 'partial', () => status(w, 37) === 'partial');
+    assert.match(comments(w, 37).at(-1)!, /it used 2\.5 points of subscription `max`'s usage window, more than twice the 1 that effort XS stands for here/);
+    assert.deepEqual(resultOf(w, 37)?.usage, { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 12.5, attempts: 1 });
   });
 
   test('a hanging gh call times out; the loop logs it and carries on', async () => {

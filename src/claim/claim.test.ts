@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { GhError } from '../gh/gh.ts';
-import { currentClaim, formatMarker, parseMarkers } from '../spec/markers.ts';
+import { countedResults, currentClaim, formatMarker, parseMarkers, parseResult } from '../spec/markers.ts';
 import { readState } from '../workspace/state.ts';
 import { claim, defaultHost, deadlineTime, newNonce, release, type ClaimOptions } from './claim.ts';
 import { createTrust, markedComments } from './trust.ts';
@@ -281,6 +281,9 @@ test('release: posts a counted release, clears labels and assignment, marks the 
   assert.deepEqual(issue.labels, ['ai-request']);
   assert.deepEqual(issue.assignees, []);
   assert.deepEqual(parseMarkers(issue.comments.at(-1)!.body), [{ kind: 'release', version: 0, host: 'box-a', nonce: 'aaaaaaaaaaaa' }]);
+  // The release is the claim's final comment: it ends with a counted `released` result (spec §10).
+  assert.deepEqual(parseResult(issue.comments.at(-1)!.body), { ok: true, result: { status: 'released', deliver: 'comment', prs: [], host: 'box-a', nonce: 'aaaaaaaaaaaa' } });
+  assert.deepEqual(countedResults(issue.comments.map((c) => ({ ...c, trusted: true }))).map((c) => c.result.status), ['released']);
   assert.equal(await holder(gh), undefined);
   assert.equal(readState(won.dir).phase, 'released');
   // and the issue can be claimed again
@@ -295,7 +298,8 @@ test('release with a failure sets air:failed before dropping air:claimed', async
   const issue = gh.issues.get(7)!;
   assert.deepEqual(issue.labels, ['ai-request', 'air:failed']);
   assert.ok(gh.log.indexOf('addLabels 7 air:failed') < gh.log.indexOf('removeLabel 7 air:claimed'));
-  assert.match(issue.comments.at(-1)!.body, /failed at check[\s\S]*it broke/);
+  assert.match(issue.comments.at(-1)!.body, /failed at check[\s\S]*it broke[\s\S]*Run `air retry 7` to offer it again/);
+  assert.deepEqual(countedResults(issue.comments.map((c) => ({ ...c, trusted: true }))).map((c) => c.result.status), ['failed']);
   assert.equal(readState(won.dir).phase, 'failed');
   assert.equal(await holder(gh), undefined);
 });
@@ -374,4 +378,22 @@ test('a valid request that the single-repo setup and serve code cannot run yet i
   assert.equal(r.status === 'refused' && r.reason, 'not-yet-supported');
   assert.match(r.status === 'refused' ? r.message : '', /can't serve it yet: it checks out a pull request/);
   assert.equal(gh.issues.get(7)!.comments.length, 0);
+});
+
+test('release as partial: air:partial before dropping the held label, and a partial result with its resume', async () => {
+  const { gh, opts } = setup();
+  const won = await claim(opts);
+  if (won.status !== 'won') return assert.fail('should win');
+  const out = { url: 'https://github.com/o/requests/releases/download/air-artifacts/air-7-aaaaaaaaaaaa-out.zip', sha256: 'b'.repeat(64), bytes: 12 };
+  const usage = { harness: 'claude' as const, tier: 'medium' as const, before_pct: 4, after_pct: 9.5, attempts: 2 };
+  await release({ gh, issue: 7, root: opts.root, host: 'box-a', message: 'Stopped early.', result: { status: 'partial', report: 'comment', usage, resume: { branches: [], out } } });
+  const issue = gh.issues.get(7)!;
+  assert.deepEqual(issue.labels, ['ai-request', 'air:partial']);
+  assert.ok(gh.log.indexOf('addLabels 7 air:partial') < gh.log.indexOf('removeLabel 7 air:claimed'));
+  const [counted] = countedResults(issue.comments.map((c) => ({ ...c, trusted: true })));
+  assert.deepEqual(counted?.result, { status: 'partial', deliver: 'comment', prs: [], report: 'comment', resume: { branches: [], out }, usage, host: 'box-a', nonce: 'aaaaaaaaaaaa' });
+  assert.equal(readState(won.dir).phase, 'released');
+  // air:partial is a state label: nobody claims the issue until it is retried
+  const again = await claim({ ...opts, nonce: 'cccccccccccc' });
+  assert.equal(again.status === 'refused' && again.reason, 'state-label');
 });

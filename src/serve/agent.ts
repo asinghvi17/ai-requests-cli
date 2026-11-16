@@ -11,10 +11,15 @@ export type Harness = 'claude' | 'codex';
 
 /** The instruction for a fresh start after an interrupted run whose session could not be resumed. */
 export function restartInstruction(hasRepo: boolean): string {
-  return `${TASK_INSTRUCTION} This task was started before and interrupted: first look at what is already in out/` +
-    `${hasRepo ? ' and at the git log in repo/' : ''}, and continue from there.`;
+  return `${TASK_INSTRUCTION} This task was started before and interrupted: first read out/PROGRESS.md` +
+    `${hasRepo ? ' and the git log in repo/' : ''} to see where it stands, and continue from there.`;
 }
 export const RESUME_INSTRUCTION = 'You were interrupted. Continue the task described in AIR_TASK.md where you left off.';
+/** The one resume after the agent exited without AIR_DONE (spec §11 rule 3). */
+export function exitResumeInstruction(hasRepo: boolean): string {
+  return 'Your session ended before the task was finished (there is no AIR_DONE). Read out/PROGRESS.md' +
+    `${hasRepo ? ' and the git log in repo/' : ''}, then continue the task described in AIR_TASK.md, and create AIR_DONE only when it is done.`;
+}
 
 export interface AgentArgs {
   harness: Harness;
