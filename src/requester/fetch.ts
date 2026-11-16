@@ -7,11 +7,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { tail } from '../claim/text.ts';
 import type { Trust } from '../claim/trust.ts';
+import { createGh } from '../gh/gh.ts';
 import type { RequestsRepo } from '../gh/issues.ts';
 import type { Asset } from '../spec/frontmatter.ts';
 import { lint } from '../spec/lint.ts';
 import { textAboveResult } from '../spec/markers.ts';
-import { fetchContext, fetchDownload, type Download } from '../workspace/context.ts';
+import { fetchContext, releaseDownload, type Download } from '../workspace/context.ts';
 import { exec } from '../workspace/exec.ts';
 import { cloneAt } from '../workspace/git.ts';
 import { readStatus, type LatestResult } from './status.ts';
@@ -28,6 +29,7 @@ export interface FetchOptions {
   dir: string;
   /** The requests repo's GitHub host: pull requests must be on it. */
   ghHost?: string;
+  /** How assets are downloaded; default: release assets on `ghHost` through gh (`releaseDownload`). */
   download?: Download;
   /** git's environment (the requester's own credential setup). */
   env?: NodeJS.ProcessEnv;
@@ -55,9 +57,9 @@ export function parsePullUrl(url: string, host: string): { repo: string; number:
 export async function fetchResult(opts: FetchOptions): Promise<Fetched> {
   const { gh, issue: n, dir } = opts;
   const log = opts.log ?? (() => {});
-  const download = opts.download ?? fetchDownload;
   const env = opts.env ?? process.env;
   const host = opts.ghHost ?? (env.GH_HOST || 'github.com');
+  const download = opts.download ?? releaseDownload(createGh(), host);
 
   const status = await readStatus(gh, n, opts.trust);
   const latest = status.latest;

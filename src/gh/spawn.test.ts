@@ -77,3 +77,19 @@ function alive(pid: number): boolean {
     return false;
   }
 }
+
+test('with an output file, stdout goes to the file, never past its limit', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'air-gh-out-'));
+  dirs.push(d);
+  fakeGh(`head -c 300000 /dev/zero; echo 'some progress' >&2`);
+  const ok = await spawnGh(['api', 'x'], undefined, undefined, { path: join(d, 'a'), maxBytes: 300_000 });
+  assert.equal(ok.code, 0);
+  assert.equal(ok.stdout, '');
+  assert.equal(readFileSync(join(d, 'a')).length, 300_000);
+  // A gh that keeps writing is killed as soon as it passes the limit.
+  fakeGh(`exec cat /dev/zero`);
+  await assert.rejects(spawnGh(['api', 'x'], undefined, undefined, { path: join(d, 'b'), maxBytes: 100_000 }), /passed the 100000 bytes declared; aborted/);
+  assert.ok(readFileSync(join(d, 'b')).length <= 100_000);
+  // The file must be new.
+  await assert.rejects(spawnGh(['api', 'x'], undefined, undefined, { path: join(d, 'a'), maxBytes: 1 }), /EEXIST/);
+});

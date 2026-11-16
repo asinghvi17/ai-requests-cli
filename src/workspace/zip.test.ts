@@ -6,7 +6,8 @@ import type { AddressInfo } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ContextError, fetchContext, fetchDownload, type Download } from './context.ts';
+import { GhError, type Gh } from '../gh/gh.ts';
+import { ContextError, fetchContext, fetchDownload, releaseAssetUrl, releaseDownload, type Download } from './context.ts';
 import { buildZip, type FixtureEntry } from './zip-fixture.ts';
 import { crc32, extractZip, extractionCap, ZipError } from './zip.ts';
 
@@ -188,4 +189,39 @@ test('fetchDownload streams to one file and aborts past the declared size', asyn
     server.closeAllConnections();
     server.close();
   }
+});
+
+test('release asset URLs on the host are recognised; others are not', () => {
+  assert.deepEqual(releaseAssetUrl('https://github.com/o/r/releases/download/air-context/c%2B1.zip', 'github.com'), { repo: 'o/r', tag: 'air-context', name: 'c+1.zip' });
+  assert.deepEqual(releaseAssetUrl('https://GitHub.com/o/r/releases/download/t/a.zip', 'github.com'), { repo: 'o/r', tag: 't', name: 'a.zip' });
+  for (const u of ['https://example.com/o/r/releases/download/t/a.zip', 'https://github.com/o/r/archive/a.zip', 'https://github.com/o/r/releases/download/t/a.zip?x=1', 'https://github.com/o/r/releases/download/t/%zz']) {
+    assert.equal(releaseAssetUrl(u, 'github.com'), undefined, u);
+  }
+});
+
+test('releaseDownload gets release assets through gh (private repos work) and nothing else', async () => {
+  const calls: string[] = [];
+  const gh: Gh = {
+    api: async <T>(path: string) => {
+      calls.push(`api ${path}`);
+      if (path === 'repos/o/private/releases/tags/air-context') return { id: 5 } as T;
+      throw new GhError('not_found', 'Not Found (HTTP 404)', 404);
+    },
+    paginate: async <T>(path: string) => {
+      calls.push(`paginate ${path}`);
+      return [{ id: 8, name: 'other.zip' }, { id: 9, name: 'c.zip' }] as T[];
+    },
+    upload: async () => assert.fail('no upload'),
+    download: async (path, dest, max) => {
+      calls.push(`download ${path} ${max}`);
+      writeFileSync(dest, 'zip', { flag: 'wx' });
+    },
+  };
+  const d = tmp();
+  const dl = releaseDownload(gh, 'github.com');
+  await dl('https://github.com/o/private/releases/download/air-context/c.zip', join(d, 'a'), 3);
+  assert.equal(readFileSync(join(d, 'a'), 'utf8'), 'zip');
+  assert.deepEqual(calls, ['api repos/o/private/releases/tags/air-context', 'paginate repos/o/private/releases/5/assets?per_page=100', 'download repos/o/private/releases/assets/9 3']);
+  await assert.rejects(dl('https://github.com/o/private/releases/download/air-context/gone.zip', join(d, 'b'), 3), (e: unknown) => e instanceof ContextError && /no asset gone\.zip/.test(e.message));
+  await assert.rejects(dl('https://github.com/o/hidden/releases/download/air-context/c.zip', join(d, 'c'), 3), (e: unknown) => e instanceof ContextError && /was not found \(or gh's account can't read o\/hidden\)/.test(e.message));
 });

@@ -8,6 +8,9 @@
 //   wait           wait for the file `go`, then report "resumed"
 //   exit N         exit N at once                   hang      never finish
 //   exitdone       wait for the file `go`, then report "finished", create AIR_DONE and exit 0 at once
+//   quit N         note the start in out/PROGRESS.md (and, with repo/, commit a WIP change on branch `work`),
+//                  then exit N after 700 ms without creating AIR_DONE
+//   progress       write out/PROGRESS.md, then never finish
 // A start with --resume (or `resume`) exits 3 at once if the file `resume-fails` exists.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -26,8 +29,24 @@ const done = () => writeFileSync(join(ws, 'AIR_DONE'), '');
 const idle = () => setInterval(() => {}, 1 << 30);
 console.log(`fake agent: ${mode} ${arg}`);
 
+const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=agent', '-c', 'user.email=agent@example.com', ...a], { cwd: join(ws, 'repo'), encoding: 'utf8' });
+
 if (mode === 'exit') process.exit(Number(arg));
 if (mode === 'hang') idle();
+else if (mode === 'progress') {
+  writeFileSync(join(out, 'PROGRESS.md'), 'half done\n');
+  idle();
+} else if (mode === 'quit') {
+  const start = readFileSync(join(ws, 'agent-argv.log'), 'utf8').trim().split('\n').length;
+  appendFileSync(join(out, 'PROGRESS.md'), `start ${start}\n`);
+  if (existsSync(join(ws, 'repo'))) {
+    if (git('rev-parse', '--abbrev-ref', 'HEAD').trim() !== 'work') git('checkout', '-q', '-b', 'work');
+    writeFileSync(join(ws, 'repo', `WIP-${start}`), 'wip\n');
+    git('add', `WIP-${start}`);
+    git('commit', '-q', '-m', `wip ${start}`);
+  }
+  setTimeout(() => process.exit(Number(arg)), 700);
+}
 else if (mode === 'exitdone') {
   const t = setInterval(() => {
     if (!existsSync(join(ws, 'go'))) return;
@@ -50,7 +69,6 @@ else if (mode === 'wait') {
   if (mode === 'big') report('x'.repeat(Number(arg)));
   if (mode === 'pr' || mode === 'nopr' || mode === 'prhostile') {
     const repo = join(ws, 'repo');
-    const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=agent', '-c', 'user.email=agent@example.com', ...a], { cwd: repo });
     git('checkout', '-q', '-b', 'work');
     if (mode !== 'nopr') {
       writeFileSync(join(repo, 'CHANGE'), 'changed\n');

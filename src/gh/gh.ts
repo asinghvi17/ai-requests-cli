@@ -1,10 +1,17 @@
 // Thin wrapper around `gh api`: JSON in and out, pagination and error mapping. gh holds the credentials;
 // air never reads, stores or logs a token. The process runner is injectable for tests.
 import { spawn } from 'node:child_process';
+import { closeSync, openSync, writeSync } from 'node:fs';
 
 export type RunResult = { code: number; stdout: string; stderr: string };
-/** Runs gh. `signal` aborting means the call timed out: kill gh and reject. */
-export type Runner = (args: string[], input?: string, signal?: AbortSignal) => Promise<RunResult>;
+/** Where a download's stdout goes instead of `stdout`: a new file, at most `maxBytes` long. */
+export type OutFile = { path: string; maxBytes: number };
+/**
+ * Runs gh. `signal` aborting means the call timed out: kill gh and reject. With `out`, gh's stdout is
+ * written to that file (created, never overwritten) instead, and gh is killed and the call rejects as soon
+ * as more than `out.maxBytes` arrive.
+ */
+export type Runner = (args: string[], input?: string, signal?: AbortSignal, out?: OutFile) => Promise<RunResult>;
 
 export type GhErrorKind = 'missing_gh' | 'auth' | 'not_found' | 'rate_limited' | 'validation' | 'server' | 'timeout' | 'other';
 
@@ -23,10 +30,10 @@ export class GhError extends Error {
   }
 }
 
-// Settles once. If gh exits before reading its input (stdin EPIPE), a failing gh still resolves so its own
+// Settles once. With `outFile`, stdout goes to that file and passing its limit kills gh and rejects. If gh exits before reading its input (stdin EPIPE), a failing gh still resolves so its own
 // error is mapped; a gh that exits 0 without reading the request body rejects. An aborted `signal` kills gh
 // (SIGTERM, then SIGKILL) and rejects with a `timeout` error at once, without waiting for it to exit.
-export const spawnGh: Runner = (args, input, signal) =>
+export const spawnGh: Runner = (args, input, signal, outFile) =>
   new Promise((resolve, reject) => {
     let settled = false;
     const settle = (f: () => void) => {
@@ -35,12 +42,34 @@ export const spawnGh: Runner = (args, input, signal) =>
         f();
       }
     };
+    let fd: number | undefined;
+    try {
+      if (outFile) fd = openSync(outFile.path, 'wx', 0o600);
+    } catch (e) {
+      reject(e);
+      return;
+    }
     // Its own process group, so a timeout kills gh and anything it started (a credential helper, a pager).
     const child = spawn('gh', args, { stdio: ['pipe', 'pipe', 'pipe'], detached: true, env: { ...process.env, GH_PROMPT_DISABLED: '1', NO_COLOR: '1' } });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let stdinError: NodeJS.ErrnoException | undefined;
-    child.stdout.on('data', (b: Buffer) => out.push(b));
+    let written = 0;
+    const closeOut = () => {
+      if (fd !== undefined) closeSync(fd);
+      fd = undefined;
+    };
+    child.stdout.on('data', (b: Buffer) => {
+      if (!outFile) return void out.push(b);
+      if (fd === undefined) return;
+      written += b.length;
+      if (written > outFile.maxBytes) {
+        closeOut();
+        stop(new GhError('other', `download passed the ${outFile.maxBytes} bytes declared; aborted`));
+        return;
+      }
+      for (let off = 0; off < b.length;) off += writeSync(fd, b, off);
+    });
     child.stderr.on('data', (b: Buffer) => err.push(b));
     // A read error on a pipe must not become an uncaught 'error' event; 'close' still follows.
     child.stdout.on('error', () => {});
@@ -54,7 +83,7 @@ export const spawnGh: Runner = (args, input, signal) =>
         child.kill(sig);
       }
     };
-    const onAbort = () => {
+    const stop = (e: Error) => {
       killGroup('SIGTERM');
       killTimer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS);
       killTimer.unref();
@@ -63,13 +92,18 @@ export const spawnGh: Runner = (args, input, signal) =>
       child.stdout.destroy();
       child.stderr.destroy();
       child.unref();
-      settle(() => reject(new GhError('timeout', `gh ${args.slice(0, 2).join(' ')} timed out`)));
+      closeOut();
+      settle(() => reject(e));
     };
+    const onAbort = () => stop(new GhError('timeout', `gh ${args.slice(0, 2).join(' ')} timed out`));
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
-    child.on('error', (e: NodeJS.ErrnoException) =>
-      settle(() => reject(e.code === 'ENOENT' ? new GhError('missing_gh', 'gh not found on PATH: install the GitHub CLI and run `gh auth login`') : e)));
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      closeOut();
+      settle(() => reject(e.code === 'ENOENT' ? new GhError('missing_gh', 'gh not found on PATH: install the GitHub CLI and run `gh auth login`') : e));
+    });
     child.on('close', (code, sig) => {
+      closeOut();
       clearTimeout(killTimer);
       signal?.removeEventListener('abort', onAbort);
       settle(() => {
@@ -114,6 +148,11 @@ export type Gh = {
   paginate<T = unknown>(path: string, opts?: { headers?: Record<string, string> }): Promise<T[]>;
   /** POSTs the bytes of `file` (gh reads it; air never holds the token) to `url`, e.g. a release upload URL. */
   upload<T = unknown>(url: string, file: string, contentType: string, opts?: { timeoutMs?: number }): Promise<T>;
+  /**
+   * GETs `path` with `Accept: application/octet-stream` (a release asset's bytes, private repos included)
+   * into the new file `dest`, failing as soon as more than `maxBytes` arrive.
+   */
+  download(path: string, dest: string, maxBytes: number, opts?: { timeoutMs?: number }): Promise<void>;
 };
 
 function baseArgs(path: string, headers: Record<string, string> | undefined): string[] {
@@ -129,7 +168,7 @@ function baseArgs(path: string, headers: Record<string, string> | undefined): st
  */
 export function createGh(run: Runner = spawnGh, opts: { timeoutMs?: number } = {}): Gh {
   const limit = opts.timeoutMs ?? GH_TIMEOUT_MS;
-  const call = async (args: string[], input?: string, timeoutMs = limit): Promise<unknown> => {
+  const call = async (args: string[], input?: string, timeoutMs = limit, out?: OutFile): Promise<unknown> => {
     const ctl = new AbortController();
     const timedOut = () => new GhError('timeout', `gh ${args.slice(0, 2).join(' ')} timed out after ${Math.round(timeoutMs / 1000)} s`);
     let timer: NodeJS.Timeout | undefined;
@@ -141,14 +180,14 @@ export function createGh(run: Runner = spawnGh, opts: { timeoutMs?: number } = {
     });
     let r: RunResult;
     try {
-      r = await Promise.race([run(args, input, ctl.signal), expired]);
+      r = await Promise.race([run(args, input, ctl.signal, out), expired]);
     } catch (e) {
       throw ctl.signal.aborted ? timedOut() : e;
     } finally {
       clearTimeout(timer);
     }
     if (r.code !== 0) throw mapError(r);
-    if (r.stdout.trim() === '') return undefined; // 204 No Content
+    if (out || r.stdout.trim() === '') return undefined; // a download, or 204 No Content
     try {
       return JSON.parse(r.stdout);
     } catch {
@@ -175,6 +214,10 @@ export function createGh(run: Runner = spawnGh, opts: { timeoutMs?: number } = {
       if (file.startsWith('-')) throw new GhError('other', `bad upload file ${JSON.stringify(file)}`);
       const args = [...baseArgs(url, { 'Content-Type': contentType }), '--method', 'POST', '--input', file];
       return (await call(args, undefined, o.timeoutMs ?? limit)) as T;
+    },
+    async download(path, dest, maxBytes, o = {}) {
+      const args = [...baseArgs(path, { Accept: 'application/octet-stream' }), '--method', 'GET'];
+      await call(args, undefined, o.timeoutMs ?? limit, { path: dest, maxBytes });
     },
   };
 }

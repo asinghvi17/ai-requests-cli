@@ -1,8 +1,8 @@
 // For tests: a gh `Runner` that answers `gh api` argv from the in-memory FakeGitHub (src/gh/fake.ts), plus
 // releases, assets and pull requests. The real createGh, requestsRepo and serveGitHub run on top of it, so
 // tests see the argv and JSON gh would. `hang` makes matching calls never answer (gh timeout tests).
-import { readFileSync } from 'node:fs';
-import type { Runner, RunResult } from '../gh/gh.ts';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { GhError, type OutFile, type Runner, type RunResult } from '../gh/gh.ts';
 import type { FakeGitHub, FakeIssue } from '../gh/fake.ts';
 
 export interface FakeRelease { id: number; tag: string; assets: { id: number; name: string; data: Buffer; contentType: string }[] }
@@ -42,7 +42,7 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
     assets: r.assets.map((a) => ({ id: a.id, name: a.name })),
   });
 
-  async function answer(args: string[], input: string | undefined): Promise<RunResult> {
+  async function answer(args: string[], input: string | undefined, out: OutFile | undefined): Promise<RunResult> {
     if (args[0] !== 'api') return fail(400, `unsupported gh ${args[0]}`);
     const path = args[1]!;
     const method = args.includes('--method') ? args[args.indexOf('--method') + 1]! : 'GET';
@@ -127,6 +127,20 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
         f.releases.push(r);
         return ok(release(r));
       }
+      if ((m = /^releases\/(\d+)\/assets\?per_page=100$/.exec(rest)) && method === 'GET') {
+        const r = f.releases.find((x) => x.id === Number(m![1]));
+        return r ? page(r.assets.map((a) => ({ id: a.id, name: a.name, size: a.data.length }))) : fail(404, 'Not Found');
+      }
+      if ((m = /^releases\/assets\/(\d+)$/.exec(rest)) && method === 'GET') {
+        // Only the asset's bytes, and only to a file: what `gh api -H 'Accept: application/octet-stream'` gives.
+        const asset = f.releases.flatMap((r) => r.assets).find((a) => a.id === Number(m![1]));
+        if (!asset) return fail(404, 'Not Found');
+        if (!args.includes('Accept: application/octet-stream') || !out) return fail(415, 'fake gh: asset bytes need Accept: application/octet-stream and an output file');
+        // As spawnGh: past the limit, gh is killed and the call rejects (`return`, so the catch below doesn't map it).
+        if (asset.data.length > out.maxBytes) return Promise.reject(new GhError('other', `download passed the ${out.maxBytes} bytes declared; aborted`));
+        writeFileSync(out.path, asset.data, { flag: 'wx' });
+        return ok(undefined);
+      }
       if ((m = /^releases\/assets\/(\d+)$/.exec(rest)) && method === 'DELETE') {
         for (const r of f.releases) r.assets = r.assets.filter((a) => a.id !== Number(m![1]));
         return ok(undefined);
@@ -138,7 +152,7 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
     return fail(404, `fake gh: no route for ${method} ${path}`);
   }
 
-  f.run = (args, input, signal) => {
+  f.run = (args, input, signal, out) => {
     const joined = args.join(' ');
     f.calls.push(joined);
     if (f.failOnce?.(joined)) {
@@ -148,7 +162,7 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
     if (f.hang?.(joined)) {
       return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
     }
-    return answer(args, input);
+    return answer(args, input, out);
   };
   return f;
 }

@@ -5,16 +5,16 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { claim, claimable, deadlineTime, release } from '../claim/claim.ts';
-import { canTakeMore, choose, primaryWindow } from '../match/match.ts';
+import { canTakeMore, choose, primaryWindow, recordActual, type Effort } from '../match/match.ts';
 import { fenced } from '../claim/text.ts';
 import { lint } from '../spec/lint.ts';
 import type { Subscription } from '../usage/types.ts';
 import { setup } from '../workspace/setup.ts';
-import { allWorkspaces, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
+import { allWorkspaces, ENDED, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import {
-  agentMs, cancelJob, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, PAUSE_LIMIT_MS,
-  requestOf, saveJob, startAgent, startOrDeliver, stopAgent, type Workspace,
+  agentMs, cancelJob, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
+  PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, startAgent, startOrDeliver, stopAgent, type Workspace,
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
@@ -41,12 +41,24 @@ export function exhausted(sub: Subscription | undefined, model: string): { reset
   return resets.length ? { resetsAt: resets.at(-1)! } : {};
 }
 
+/**
+ * How far a job is past twice its effort's share (spec §11 rule 4): the points it used of its subscription's
+ * weekly (else monthly) window since it first started, when that is more than twice `expectedCost`.
+ * Undefined when it isn't, or when the readings can't tell (unknown, stale, or a window that reset since).
+ */
+export function overEffort(job: JobRecord, sub: Subscription | undefined, effort: Effort): { used: number; cap: number } | undefined {
+  if (!sub || !job.usageBefore || job.expectedCost === undefined) return undefined;
+  const { delta } = recordActual('', effort, job.usageBefore, sub);
+  const cap = 2 * job.expectedCost;
+  return delta !== null && delta > cap ? { used: delta, cap } : undefined;
+}
+
 /** Usage with the expected cost still to come of jobs we hold added on, so a tick never over-commits. */
 export function committedUsage(usage: Subscription[], held: Workspace[]): Subscription[] {
   const extra = new Map<string, number>();
   for (const { state } of held) {
     const job = state.job;
-    if (!job || ['done', 'failed', 'cancelled'].includes(job.status)) continue;
+    if (!job || ENDED.includes(job.status)) continue;
     const cost = job.expectedCost ?? 0;
     const now = usage.find((s) => s.name === job.subscription);
     const before = job.usageBefore ? primaryWindow(job.usageBefore)?.usedPct : undefined;
@@ -134,7 +146,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     }
     const job = state.job;
     if (!job) return; // set up by `air setup` by hand: `air run` gives it a job
-    if (['done', 'failed', 'cancelled'].includes(job.status)) return;
+    if (ENDED.includes(job.status)) return;
     if (job.status === 'failing') {
       // release() checks the claim itself; a lost one makes the workspace `lost`.
       const f = job.failure ?? { step: 'the agent', detail: 'The job failed.' };
@@ -143,6 +155,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     // Everything below may write to the issue (labels, comments, a resume): only while our claim holds.
     if (!(await claimHolds(ctx, state))) return loseJob(ctx, dir);
     if (job.status === 'delivering') return track(n, 'delivery', finishJob(ctx, dir));
+    if (job.status === 'checkpointing') return track(n, 'checkpoint', partialJob(ctx, dir));
 
     // The requester can call it off at any time before delivery.
     const issue = await ctx.gh.issue(n);
@@ -217,34 +230,69 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       return;
     }
     if (first) ctx.log(`#${n}: re-adopted its running agent (${pane.windowId})`);
+    const request = requestOf(dir);
     if (pane.dead) {
       // AIR_DONE may have appeared since the check above, just before the agent exited.
-      if (pane.exitStatus === 0 || isDone(dir)) {
+      if (isDone(dir)) {
         await ctx.tmux.stopJob(n, { graceMs: 0 });
         return track(n, 'delivery', finishJob(ctx, dir));
       }
+      // Exited without AIR_DONE, whatever its status (§11 rule 3): resume its session once, then stop early.
       const text = await paneTail(ctx, n);
-      return track(n, 'failure', failJob(ctx, dir, 'the agent', exitDetail(pane.exitStatus, pane.exitSignal, text)));
+      const how = exitDetail(pane.exitStatus, pane.exitSignal, text);
+      await ctx.tmux.stopJob(n, { graceMs: 0 });
+      if ((job.exitResumes ?? 0) < 1) {
+        ctx.log(`#${n}: the agent exited without AIR_DONE (status ${pane.exitStatus ?? '?'}); resuming it once`);
+        saveJob(ctx, dir, { status: 'paused', runMs: agentMs(job, now), startedAt: undefined, pausedAt: now.toISOString(), pauseReason: 'exit', exitResumes: (job.exitResumes ?? 0) + 1 });
+        return track(n, 'resume', startAgent(ctx, dir));
+      }
+      return track(n, 'partial', partialJob(ctx, dir, { why: `the agent exited without finishing, again after being resumed once. ${how}` }));
     }
-    const request = requestOf(dir);
     if (agentMs(job, now) > request.timeoutMinutes * 60_000) {
       const text = await paneTail(ctx, n);
-      return track(n, 'timeout', failJob(ctx, dir, 'the timeout',
-        `The agent ran past the request's \`timeout\` of ${request.timeoutMinutes} min and was stopped.${text.trim() ? `\n\nLast lines of its window:\n\n${fenced(text)}` : ''}`));
+      return track(n, 'timeout', partialJob(ctx, dir, {
+        timeout: true,
+        why: `the agent ran past the request's \`timeout\` of ${request.timeoutMinutes} min and was stopped.${text.trim() ? `\n\nLast lines of its window:\n\n${fenced(text)}` : ''}`,
+      }));
     }
-    const out = exhausted(usage.find((s) => s.name === job.subscription), job.model);
+    const sub = usage.find((s) => s.name === job.subscription);
+    const over = overEffort(job, sub, request.effort as Effort);
+    if (over) {
+      const r = (x: number) => Math.round(x * 10) / 10;
+      return track(n, 'effort cap', partialJob(ctx, dir, {
+        why: `it used ${r(over.used)} points of subscription \`${job.subscription}\`'s usage window, more than twice the ${r(over.cap / 2)} that effort ${request.effort} stands for here.`,
+      }));
+    }
+    const out = exhausted(sub, job.model);
     if (out) {
+      const wait = out.resetsAt ? Date.parse(out.resetsAt) - now.getTime() : undefined;
+      if (wait !== undefined && wait > QUOTA_WAIT_MS) {
+        ctx.log(`#${n}: subscription ${job.subscription} is out of quota until ${out.resetsAt}, more than 24 h away; stopping early`);
+        return track(n, 'quota stop', partialJob(ctx, dir, { why: `subscription \`${job.subscription}\` ran out of quota, and it only resets at ${out.resetsAt}, more than 24 hours away.` }));
+      }
       ctx.log(`#${n}: subscription ${job.subscription} is out of quota; stopping until ${out.resetsAt ?? 'it recovers'}`);
       return track(n, 'quota stop', stopAgent(ctx, dir, 'quota', out.resetsAt).then(() => {}));
     }
   }
 
+  /** When a quota pause gives up (§11): 24 h after it began, but not before an hour past the reset it waits on. */
+  function quotaDeadline(job: JobRecord): number {
+    const paused = Date.parse(job.pausedAt ?? '');
+    const reset = Date.parse(job.resumeAfter ?? '');
+    return Math.max(Number.isFinite(paused) ? paused + QUOTA_WAIT_MS : 0, Number.isFinite(reset) ? reset + 3600_000 : 0);
+  }
+
   async function watchPaused(dir: string, state: State, job: JobRecord, usage: Subscription[], now: Date): Promise<void> {
     const n = state.issue;
-    if (job.pausedAt && now.getTime() - Date.parse(job.pausedAt) > PAUSE_LIMIT_MS) return track(n, 'release', expirePause(ctx, dir));
+    // A quota pause is bounded by QUOTA_WAIT_MS instead (§8: it is exempt from the 48 h release).
+    if (job.pauseReason !== 'quota' && job.pausedAt && now.getTime() - Date.parse(job.pausedAt) > PAUSE_LIMIT_MS) return track(n, 'release', expirePause(ctx, dir));
     // watch() checked the claim this tick; startAgent checks it again before it touches the issue.
-    if (job.pauseReason === 'restart') return track(n, 'restart', startOrDeliver(ctx, dir).then(() => {}));
+    if (job.pauseReason === 'restart' || job.pauseReason === 'exit') return track(n, 'restart', startOrDeliver(ctx, dir).then(() => {}));
     if (job.pauseReason !== 'quota') return;
+    if (now.getTime() > quotaDeadline(job)) {
+      ctx.log(`#${n}: quota did not come back within 24 hours; stopping early`);
+      return track(n, 'quota stop', partialJob(ctx, dir, { why: `subscription \`${job.subscription}\` ran out of quota and did not recover within 24 hours.` }));
+    }
     if (job.resumeAfter && now.getTime() < Date.parse(job.resumeAfter)) return;
     let sub = usage.find((s) => s.name === job.subscription);
     if (job.resumeAfter) sub = (await ctx.usage({ refresh: true })).find((s) => s.name === job.subscription);
@@ -255,7 +303,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   /** Poll, match, claim. Returns how many open requests were candidates (unclaimed, not ours), if it polled. */
   async function poll(usage: Subscription[], mine: Workspace[]): Promise<number | undefined> {
-    let active = mine.filter((w) => !['done', 'failed', 'cancelled'].includes(w.state.job?.status ?? '')).length;
+    let active = mine.filter((w) => !ENDED.includes(w.state.job?.status ?? 'ready')).length;
     for (const n of inflight.keys()) if (!mine.some((w) => w.state.issue === n)) active++;
     if (!canTakeMore(active, ctx.config.max_jobs)) return undefined;
     const ours = new Set(mine.map((w) => w.state.issue));
@@ -379,7 +427,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   function busy(): boolean {
     if (inflight.size) return true;
     return held().some((w) => w.state.phase !== 'ready' || (w.state.job !== undefined &&
-      (['running', 'stopping', 'delivering', 'failing'].includes(w.state.job.status) || (w.state.job.status === 'ready' && !opts.manual))));
+      (['running', 'stopping', 'delivering', 'failing', 'checkpointing'].includes(w.state.job.status) || (w.state.job.status === 'ready' && !opts.manual))));
   }
 
   /**
