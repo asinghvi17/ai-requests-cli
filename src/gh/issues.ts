@@ -24,6 +24,15 @@ export interface IssueComment {
   updatedAt: string;
 }
 
+/** The head of a pull request, as `air fetch` checks it out. */
+export interface PullHead {
+  /** Branch name in the head repo. */
+  ref: string;
+  sha: string;
+  /** `https://` clone URL of the head repo. */
+  cloneUrl: string;
+}
+
 /** A role from `collaborators/{login}/permission`, or `none`. */
 export type Permission = 'admin' | 'maintain' | 'write' | 'triage' | 'read' | 'none';
 
@@ -35,6 +44,8 @@ export interface RequestsRepo {
   issue(n: number): Promise<Issue>;
   comments(n: number): Promise<IssueComment[]>;
   comment(n: number, body: string): Promise<IssueComment>;
+  /** Replaces the issue's body. */
+  editBody(n: number, body: string): Promise<void>;
   deleteComment(id: number): Promise<void>;
   addLabels(n: number, labels: string[]): Promise<void>;
   /** Removing a label the issue doesn't carry is not an error. */
@@ -43,6 +54,8 @@ export interface RequestsRepo {
   unassign(n: number, login: string): Promise<void>;
   /** `login`'s role on any repo (`owner/name`) on the same host; `none` when GitHub says it has none. */
   permission(repo: string, login: string): Promise<Permission>;
+  /** The head of pull request `n` of any repo (`owner/name`) on the same host. */
+  pullHead(repo: string, n: number): Promise<PullHead>;
 }
 
 const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -100,6 +113,9 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
     async comment(n, body) {
       return toComment(await gh.api<RawComment>(`${base}/issues/${n}/comments`, { method: 'POST', body: { body } }));
     },
+    async editBody(n, body) {
+      await gh.api(`${base}/issues/${n}`, { method: 'PATCH', body: { body } });
+    },
     async deleteComment(id) {
       await gh.api(`${base}/issues/comments/${id}`, { method: 'DELETE' });
     },
@@ -134,6 +150,12 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
       // `permission` folds maintain into write and triage into read; `role_name` keeps them.
       const role = ROLES.find((p) => p === r.role_name) ?? ROLES.find((p) => p === r.permission);
       return role ?? 'none';
+    },
+    async pullHead(target, n) {
+      checkRepo(target);
+      const p = await gh.api<{ head: { ref: string; sha: string; repo: { clone_url: string } | null } }>(`repos/${target}/pulls/${n}`);
+      if (!p.head.repo) throw new GhError('not_found', `${target}#${n}: the pull request's head repo is gone`);
+      return { ref: p.head.ref, sha: p.head.sha, cloneUrl: p.head.repo.clone_url };
     },
   };
 }

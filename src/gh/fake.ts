@@ -1,6 +1,6 @@
 // In-memory RequestsRepo for tests: one repo's issues, comments, labels, assignees and permissions.
 import { GhError } from './gh.ts';
-import type { Issue, IssueComment, Permission, RequestsRepo } from './issues.ts';
+import type { Issue, IssueComment, Permission, PullHead, RequestsRepo } from './issues.ts';
 
 export interface FakeIssue extends Issue {
   assignees: string[];
@@ -11,6 +11,8 @@ export interface FakeGitHub extends RequestsRepo {
   issues: Map<number, FakeIssue>;
   /** `owner/name` -> login -> role. Missing entries are `none`. */
   permissions: Map<string, Map<string, Permission>>;
+  /** `owner/name#n` -> head, for `pullHead`. */
+  pulls: Map<string, PullHead>;
   /** Every call, as `method arg...`, for asserting on order. */
   log: string[];
   /** Runs after `comments()` takes its snapshot: lets a test post a rival's comment mid-race. */
@@ -27,15 +29,16 @@ interface Store {
   nextId: number;
   issues: Map<number, FakeIssue>;
   permissions: Map<string, Map<string, Permission>>;
+  pulls: Map<string, PullHead>;
   log: string[];
 }
 
 export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssociation?: string } = {}, store?: Store): FakeGitHub {
   const repo = opts.repo ?? 'o/requests';
   const me = opts.viewer ?? 'bot';
-  const st: Store = store ?? { nextId: 1000, issues: new Map(), permissions: new Map(), log: [] };
+  const st: Store = store ?? { nextId: 1000, issues: new Map(), permissions: new Map(), pulls: new Map(), log: [] };
   const clock = () => new Date(Date.UTC(2026, 10, 7, 12, 0, 0) + st.nextId * 1000).toISOString();
-  const { issues, permissions } = st;
+  const { issues, permissions, pulls } = st;
   const log = { push: (s: string) => st.log.push(me === 'bot' ? s : `${me}: ${s}`) };
   const get = (n: number) => {
     const i = issues.get(n);
@@ -43,7 +46,7 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
     return i;
   };
   const gh: FakeGitHub = {
-    repo, issues, permissions, log: st.log,
+    repo, issues, permissions, pulls, log: st.log,
     as(viewer, association) {
       return fakeGitHub({ repo, viewer, viewerAssociation: association ?? 'OWNER' }, st);
     },
@@ -84,6 +87,10 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
       log.push(`comment ${n}`);
       return { ...gh.post(n, me, opts.viewerAssociation ?? 'OWNER', body) };
     },
+    async editBody(n, body) {
+      log.push(`editBody ${n}`);
+      get(n).body = body;
+    },
     async deleteComment(id) {
       log.push(`deleteComment ${id}`);
       for (const i of issues.values()) {
@@ -118,6 +125,12 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
     async permission(r, login) {
       log.push(`permission ${r} ${login}`);
       return permissions.get(r)?.get(login) ?? 'none';
+    },
+    async pullHead(r, n) {
+      log.push(`pullHead ${r} ${n}`);
+      const p = pulls.get(`${r}#${n}`);
+      if (!p) throw new GhError('not_found', 'Not Found (HTTP 404)', 404);
+      return { ...p };
     },
   };
   return gh;

@@ -85,7 +85,7 @@ test('air submit refuses secrets and lint errors with exit 1', async () => {
 
 test('air submit needs --body off a terminal and a repo', async () => {
   const r = await call('submit', '--repo', 'o/requests');
-  assert.equal(r.code, 1);
+  assert.equal(r.code, 2);
   assert.match(r.err, /pass --body FILE/);
   assert.match((await call('submit', '--repo', 'bad', '--body', bodyFile())).err, /--repo must be OWNER\/NAME/);
 });

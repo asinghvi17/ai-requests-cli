@@ -1,15 +1,21 @@
 #!/usr/bin/env node
-// air: the CLI entry. Routes argv to a command; unimplemented commands exit 2.
+// air: the CLI entry. Routes argv to a command. Usage errors exit 2, as do unimplemented commands; a GitHub
+// error exits 1.
 import { ArgError, parseArgs, type FlagSpecs } from './args.ts';
+import { GhError } from '../gh/gh.ts';
 import { VERSION } from '../version.ts';
 import { usageCommand } from '../usage/index.ts';
 import { claimCommand } from './claim.ts';
 import { releaseCommand } from './release.ts';
-import { UsageError } from './requests.ts';
+import { CommandError, UsageError } from './requests.ts';
 import { setupCommand } from './setup.ts';
 import { lintCommand } from './lint.ts';
 import { submitCommand } from './submit.ts';
 import { sweepCommand } from './sweep.ts';
+import { statusCommand } from './status.ts';
+import { waitCommand } from './wait.ts';
+import { fetchCommand } from './fetch.ts';
+import { retryCommand } from './retry.ts';
 import { attachCommand, debugCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
@@ -37,6 +43,34 @@ export const COMMANDS: Record<string, Command> = {
       'no-default-excludes': { type: 'boolean' }, expires: { type: 'string' },
     },
     run: submitCommand,
+  },
+  status: {
+    usage: 'status [--repo OWNER/NAME] [--json] ISSUE',
+    summary: "show a request's state label, holder and latest result",
+    args: ['ISSUE'],
+    flags: { ...REPO, json: { type: 'boolean' } },
+    run: statusCommand,
+  },
+  wait: {
+    usage: 'wait [--repo OWNER/NAME] [--timeout DURATION] [--json] ISSUE',
+    summary: 'wait for a current result and print it; exit 0 done, 3 partial, 1 failed or released, 4 timeout (DURATION like 90m, 2h, 1h30m)',
+    args: ['ISSUE'],
+    flags: { ...REPO, timeout: { type: 'string' }, json: { type: 'boolean' } },
+    run: waitCommand,
+  },
+  fetch: {
+    usage: 'fetch [--repo OWNER/NAME] ISSUE [DIR]',
+    summary: "download the latest result's report, branches, artifact and checkpoint into DIR (default ./air-ISSUE)",
+    args: ['ISSUE'],
+    flags: REPO,
+    run: fetchCommand,
+  },
+  retry: {
+    usage: 'retry [--repo OWNER/NAME] [--effort XS|S|M|L|XL] ISSUE',
+    summary: 'offer a cancelled, failed or partial request again (resuming a partial one from its checkpoint)',
+    args: ['ISSUE'],
+    flags: { ...REPO, effort: { type: 'string' } },
+    run: retryCommand,
   },
   serve: {
     usage: 'serve [--repo OWNER/NAME] [--manual] [--once [--once-wait SECONDS]]',
@@ -81,7 +115,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
   const [name, ...rest] = argv;
   if (name === undefined || name === '--help' || name === '-h' || name === 'help') {
     (name === undefined ? io.err : io.out)(helpText());
-    return name === undefined ? 1 : 0;
+    return name === undefined ? 2 : 0;
   }
   if (name === '--version' || name === '-v') {
     io.out(`${VERSION}\n`);
@@ -90,7 +124,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
   const cmd = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : Object.hasOwn(HIDDEN, name) ? HIDDEN[name] : undefined;
   if (!cmd) {
     io.err(`air: unknown command ${JSON.stringify(name)}\n${helpText()}`);
-    return 1;
+    return 2;
   }
   if (cmd.raw && cmd.run) return cmd.run({ argv: rest, flags: {}, positionals: [], io });
   let parsed;
@@ -99,7 +133,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
   } catch (e) {
     if (!(e instanceof ArgError)) throw e;
     io.err(`air ${name}: ${e.message}\nusage: air ${cmd.usage}\n`);
-    return 1;
+    return 2;
   }
   if (parsed.flags.help) {
     io.out(`usage: air ${cmd.usage}\n  ${cmd.summary}\n`);
@@ -107,7 +141,7 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
   }
   if (parsed.positionals.length < cmd.args.length) {
     io.err(`air ${name}: missing ${cmd.args.slice(parsed.positionals.length).join(' ')}\nusage: air ${cmd.usage}\n`);
-    return 1;
+    return 2;
   }
   if (!cmd.run) {
     io.err(`air ${name}: not implemented yet\n`);
@@ -116,9 +150,13 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
   try {
     return await cmd.run({ ...parsed, argv: rest, io });
   } catch (e) {
+    if (e instanceof GhError || e instanceof CommandError) {
+      io.err(`air ${name}: ${e.message}\n`);
+      return 1;
+    }
     if (!(e instanceof UsageError)) throw e;
     io.err(`air ${name}: ${e.message}\nusage: air ${cmd.usage}\n`);
-    return 1;
+    return 2;
   }
 }
 

@@ -54,9 +54,13 @@ export async function sha256File(path: string): Promise<string> {
 
 /**
  * Downloads `ctx` into `zipPath`, verifies it and extracts it into `dest` (which must not exist). On any
- * failure nothing is left in `dest`. Returns the bytes extracted.
+ * failure nothing is left in `dest`. Returns the bytes extracted. `label` names the zip and where its size
+ * and hash come from in messages (default: a request's context zip).
  */
-export async function fetchContext(ctx: Asset, zipPath: string, dest: string, download: Download = fetchDownload): Promise<number> {
+export async function fetchContext(
+  ctx: Asset, zipPath: string, dest: string, download: Download = fetchDownload,
+  label: { what: string; from: string } = { what: 'context zip', from: 'the request' },
+): Promise<number> {
   rmSync(zipPath, { force: true });
   try {
     await download(ctx.url, zipPath, ctx.bytes);
@@ -64,12 +68,12 @@ export async function fetchContext(ctx: Asset, zipPath: string, dest: string, do
     throw e instanceof ContextError ? e : new ContextError(`download failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   const size = statSync(zipPath).size;
-  if (size !== ctx.bytes) throw new ContextError(`context zip is ${size} bytes, the request says ${ctx.bytes}`);
+  if (size !== ctx.bytes) throw new ContextError(`${label.what} is ${size} bytes, ${label.from} says ${ctx.bytes}`);
   const sha = await sha256File(zipPath);
-  if (sha !== ctx.sha256.toLowerCase()) throw new ContextError(`context zip SHA-256 is ${sha}, the request says ${ctx.sha256}`);
+  if (sha !== ctx.sha256.toLowerCase()) throw new ContextError(`${label.what} SHA-256 is ${sha}, ${label.from} says ${ctx.sha256}`);
   try {
     return await extractZip(zipPath, dest, extractionCap(ctx.bytes));
   } catch (e) {
-    throw new ContextError(`context zip rejected: ${e instanceof Error ? e.message : String(e)}`);
+    throw new ContextError(`${label.what} rejected: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
