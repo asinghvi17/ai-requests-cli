@@ -32,15 +32,19 @@
 - Quota stop: a running job whose subscription has an all-model window (or the window scoped to its model) at
   100 % is stopped with `pauseReason: quota` and `resumeAfter` = the reset (if that is within 24 h); after that
   time a fresh reading that isn't exhausted and a claim that still holds restart it.
+- Repos (src/claim/repos.ts): before posting a claim, `claim()` checks push permissions (author and this server)
+  for every repo that gets a PR and resolves every entry to a SHA; `state.repos` records them and setup clones each
+  into `repo/<path>/` at its SHA. A `repos` or `cannot-push` refusal is retried every poll (logged once per reason).
 - Resume intake is in setup (src/workspace/setup.ts): `resume.branches` are fetched by SHA and checked out on
-  their branch in `repo/`, and `resume.out` is downloaded and checked like a context zip into `out/`. Release
+  their branch in `repo/<path>`, and `resume.out` is downloaded and checked like a context zip into `out/`. Release
   assets are downloaded through gh (`releaseDownload`), so private requests repos work.
 - gh: `createGh` bounds every call (default 2 min, uploads 30 min) with an AbortSignal; `spawnGh` runs gh in its
   own process group and kills the group on timeout. Tests drive the real gh argv layer through `fake-gh.ts`.
-- PR delivery never runs git with credentials inside `repo/`: the agent controlled its config and hooks. air
-  fetches the agent's HEAD and branches into a fresh bare repo (hooks and fsmonitor off) and pushes from there to
-  `repo.url` itself, the URL the permission check covered. The branch is HEAD if it has commits beyond the
-  remote's `<ref>`, else the most recently committed local branch that has.
+- PR delivery never runs git with credentials inside `repo/<path>`: the agent controlled its config and hooks.
+  For each repo it delivers to, air fetches the agent's HEAD and branches into a fresh bare repo (hooks and
+  fsmonitor off) and pushes from there to the entry's url itself, the URL the permission checks covered. The
+  branch is HEAD if it has commits beyond the SHA recorded at claim time, else the most recently committed local
+  branch that has. One PR per repo with commits; once all are open, each body gets its siblings.
 - Claim guard: every tick re-reads the claim of each held job before acting, and `moveLabel` / `startAgent` /
   `finishJob` check it again (`ensureHeld`). A lost claim makes the workspace `lost` and stops our agent; we
   never relabel, comment on or resume an issue another server holds. Release paths rely on `release()`'s own

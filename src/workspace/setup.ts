@@ -1,8 +1,8 @@
-// Workspace setup for a claimed request (spec/v0.md §5, §6 `pr`): permission check, context zip, clone,
-// `setup` commands and `check`, then AIR_TASK.md. Any failure sets `air:failed`, comments the failing
+// Workspace setup for a claimed request (spec/v0.md §5): context zip, a clone of each repo at the commit it
+// resolved to when claimed, the checkpoint of a resumed request, `setup` commands and `check`, then AIR_TASK.md. Any failure sets `air:failed`, comments the failing
 // step with the tail of setup.log, and releases the claim, all before an agent starts.
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createGh } from '../gh/gh.ts';
 import type { RequestsRepo } from '../gh/issues.ts';
 import { CANCEL_LABEL, defaultHost, release } from '../claim/claim.ts';
@@ -24,7 +24,7 @@ export interface SetupOptions {
   issue: number;
   root: string;
   host?: string;
-  /** The requests repo's GitHub host; a `deliver: pr` repo must be on it. */
+  /** The requests repo's GitHub host: release assets there are downloaded through gh. */
   ghHost?: string;
   /** How zips are downloaded; default: release assets on `ghHost` through gh (`releaseDownload`). */
   download?: Download;
@@ -42,15 +42,6 @@ export type SetupResult =
   | { status: 'refused'; message: string };
 
 class StepError extends Error {}
-
-/** `owner/name` for a clone URL on `host`, or a reason it isn't one. */
-export function githubRepo(url: string, host: string): { repo: string } | { error: string } {
-  const m = /^https:\/\/([^/:]+)(:\d+)?\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(url);
-  if (!m) return { error: `${url} is not a https://${host}/OWNER/NAME repository URL` };
-  if (m[1]!.toLowerCase() !== host.toLowerCase() || m[2]) return { error: `${url} is not on ${host}, the requests repo's host, so its permissions can't be checked` };
-  if ([m[3], m[4]].some((p) => p === '.' || p === '..')) return { error: `${url} is not a repository URL` };
-  return { repo: `${m[3]}/${m[4]}` };
-}
 
 function describe(r: ExecResult, timeoutMs: number): string {
   if (r.timedOut) return `timed out after ${timeoutMs >= 60_000 ? `${Math.round(timeoutMs / 60_000)} min` : `${timeoutMs / 1000} s`}`;
@@ -96,26 +87,7 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
   note(`setup of ${gh.repo}#${n} on ${host}, workspace ${dir}`);
 
   let step = 'setup';
-  // `air claim` only takes requests with at most one repo, checked out at a `ref`.
-  const repo = request.repos[0];
   try {
-    // §6: before running anything for a PR, the issue author must be able to write to the target repo.
-    if (request.deliver === 'pr') {
-      step = 'the push permission check';
-      const target = githubRepo(repo!.url, ghHost);
-      if ('error' in target) throw new StepError(target.error);
-      let role;
-      try {
-        role = await gh.permission(target.repo, state.author);
-      } catch (e) {
-        throw new StepError(`could not read ${state.author}'s permission on ${target.repo}: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      note(`${state.author} has ${role} on ${target.repo}`);
-      if (role !== 'admin' && role !== 'write' && role !== 'maintain') {
-        throw new StepError(`@${state.author} has ${role} access to ${target.repo}; \`deliver: pr\` needs write or admin`);
-      }
-    }
-
     if (request.context) {
       step = 'the context download';
       note(`downloading context ${request.context.url} (${request.context.bytes} bytes)`);
@@ -130,24 +102,26 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
       }
     }
 
-    if (repo) {
-      step = 'the git clone';
-      note(`git clone ${repo.url} at ${repo.ref}`);
+    for (const entry of request.repos) {
+      step = `the git clone of ${code(entry.path)}`;
+      const sha = state.repos.find((r) => r.path === entry.path)?.sha;
+      if (!sha) throw new StepError(`the claim recorded no commit for \`repo/${entry.path}\``);
+      note(`git clone ${entry.url} at ${sha} into repo/${entry.path}`);
+      const dest = join(dir, 'repo', entry.path);
       try {
-        await cloneAt({
-          url: repo.url, ref: repo.ref!, dest: join(dir, 'repo'), cwd: dir, log, env: opts.env ?? process.env, timeoutMs,
-        });
+        mkdirSync(dirname(dest), { recursive: true });
+        await cloneAt({ url: entry.url, sha, dest, cwd: dir, log, env: opts.env ?? process.env, timeoutMs });
       } catch (e) {
         throw new StepError(e instanceof Error ? e.message : String(e));
       }
     }
 
-    // §5 Resume: the checkpoint's branches and out/ replace the fresh checkout and the empty out/.
+    // §5 Resume: the checkpoint's branches and out/ replace the fresh checkouts and the empty out/.
     for (const b of request.resume?.branches ?? []) {
-      step = 'the checkpoint checkout';
-      note(`checking out checkpoint ${b.sha} as ${b.branch} in repo/`);
+      step = `the checkpoint checkout of ${code(b.repo)}`;
+      note(`checking out checkpoint ${b.sha} as ${b.branch} in repo/${b.repo}`);
       try {
-        await checkoutCheckpoint({ dir: join(dir, 'repo'), sha: b.sha, branch: b.branch, log, env: opts.env ?? process.env, timeoutMs });
+        await checkoutCheckpoint({ dir: join(dir, 'repo', b.repo), sha: b.sha, branch: b.branch, log, env: opts.env ?? process.env, timeoutMs });
       } catch (e) {
         throw new StepError(e instanceof Error ? e.message : String(e));
       }
@@ -169,13 +143,12 @@ export async function setup(opts: SetupOptions): Promise<SetupResult> {
       }
     }
 
-    const cwd = repo ? join(dir, 'repo') : dir;
     const env = childEnv(airEnv(dir), opts.env ?? process.env);
     const commands = [...request.setup.map((c, i) => ({ c, name: `setup command ${i + 1}` })), ...(request.check === undefined ? [] : [{ c: request.check, name: 'check' }])];
     for (const { c, name } of commands) {
       step = `${name} (${code(c)})`;
       note(`$ ${c}`);
-      const r = await exec(['sh', '-c', c], { cwd, env, log, timeoutMs });
+      const r = await exec(['sh', '-c', c], { cwd: dir, env, log, timeoutMs });
       note(`${name} ${describe(r, timeoutMs)}`);
       if (r.timedOut || r.code !== 0) throw new StepError(`${name} ${describe(r, timeoutMs)}`);
     }

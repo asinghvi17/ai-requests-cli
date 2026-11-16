@@ -40,6 +40,9 @@ export type PauseReason = 'operator' | 'quota' | 'restart' | 'exit';
 /** A release asset air uploaded (an artifact zip or an over-long report), as its `air-result` block needs it. */
 export interface UploadedAsset { name: string; id: number; url: string; sha256: string; bytes: number; files?: number }
 
+/** Delivery steps done for one repo. */
+export interface RepoDelivery { branch?: string; sha?: string; prUrl?: string; linked?: boolean }
+
 export interface JobRecord {
   status: JobStatus;
   harness: 'claude' | 'codex';
@@ -63,10 +66,11 @@ export interface JobRecord {
   /** Usage reading of `subscription` when the job first started, for effort calibration. */
   usageBefore?: Subscription;
   /**
-   * Delivery (or checkpoint) steps already done, so a retry doesn't repeat them: the branch chosen, the
-   * commit pushed there, the PR, the uploaded asset (artifact, long report or checkpoint `out/` zip).
+   * Delivery (or checkpoint) steps already done, so a retry doesn't repeat them: per repo (by `path`) the
+   * branch chosen, the commit pushed there, the PR and whether its siblings were added to its body; the
+   * uploaded asset (artifact, long report or checkpoint `out/` zip); the final comment.
    */
-  delivery?: { branch?: string; sha?: string; prUrl?: string; asset?: UploadedAsset; commented?: boolean };
+  delivery?: { repos?: Record<string, RepoDelivery>; asset?: UploadedAsset; commented?: boolean };
   /** How many times the agent was resumed after exiting without AIR_DONE (spec §11 rule 3: once). */
   exitResumes?: number;
   /** Why the job is `checkpointing`. With `timeout`, an empty checkpoint makes the result `failed` (§11 rule 5). */
@@ -78,6 +82,9 @@ export interface JobRecord {
   failure?: { step: string; detail: string };
 }
 
+/** A `repos` entry (by `path`) and the commit its `ref` or `pr` resolved to when the claim was made (spec §5). */
+export interface ResolvedRepo { path: string; sha: string }
+
 export interface State {
   version: 1;
   repo: string;
@@ -88,6 +95,8 @@ export interface State {
   host: string;
   nonce: string;
   claimCommentId: number;
+  /** Every `repos` entry, in order, with the commit every checkout of this claim uses. */
+  repos: ResolvedRepo[];
   phase: Phase;
   /** Failing step, when phase is `failed`. */
   failure?: string;

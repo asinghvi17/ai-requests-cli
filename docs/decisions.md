@@ -295,3 +295,23 @@ Alternatives considered:
   keeping every other line as written.
 - `formatResult` now quotes a `sha256` YAML would read as a number (all digits), so such a block still
   parses. `air:partial` joins `STATE_LABELS`, so `claimable` refuses a partial request until `air retry`.
+
+## 2026-11-12: multi-repo requests in `air serve` (spec §5, §6, §11)
+
+- `repos:` is served as specified, with 0..n entries; the `not-yet-supported` claim refusal is gone. A request
+  without `repos` has no `repo/`; setup and check always run in the workspace root.
+- Claim time (`checkRepos`, before the claim comment): for every entry that gets a pull request, its URL must be
+  on the requests host, the author must have write/maintain/admin, and so must the server's own account; then
+  every entry is resolved to a SHA (branch or tag via `git ls-remote`, `pr` via `refs/pull/N/head`, any other
+  ref, abbreviated or not, via a treeless bare clone). A deliverable entry resolves only from a branch. The SHAs
+  go in the claim comment and in `state.json` (`repos`), and every checkout of the claim uses them, detached.
+- Spec change: the author's permission check moved from "before setup, fail the request" to "before claiming,
+  don't claim", next to the new server-can-push check, so no request is claimed that can't be delivered.
+  Requester problems (unresolvable entry, wrong host, author without write) get one comment per body version
+  and problem; a server that can't push stays silent, since another one may. Both are checked again every poll.
+- Spec change: every PR body starts `Part of <requests>#N` (no `Closes` for a single PR: one way, and merging
+  a PR never closes the issue, which the requester closes). Siblings are added by editing the bodies once all
+  are open.
+- Delivery and checkpoints keep a record per repo path (`job.delivery.repos`: branch, pushed SHA, PR, linked),
+  so a retry repeats nothing. Commits count from the SHA recorded at claim time, not the branch's current tip.
+  The final comment lists the PRs and the delivered repos that got none, and why.

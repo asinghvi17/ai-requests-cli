@@ -7,10 +7,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Asset } from '../spec/frontmatter.ts';
 import { ContextError, type Download } from '../workspace/context.ts';
-import { insteadOf, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
+import { insteadOf, insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
 import { buildZip } from '../workspace/zip-fixture.ts';
 import { fetchResult, FetchError, parsePullUrl, type FetchOptions } from './fetch.ts';
-import { requestIssue, result } from './fixture.ts';
+import { requestBody, requestIssue, result } from './fixture.ts';
 
 const URL_BASE = 'https://github.com/o/requests/releases/download/air-artifacts';
 const SERVICE = 'https://github.com/acme/service.git';
@@ -88,6 +88,27 @@ test('partial: checkpoint branches at their sha, on their branch, and out/', asy
   assert.equal(readFileSync(join(dir, 'out', 'PROGRESS.md'), 'utf8'), 'half way\n');
   // The release marker is not part of the report.
   assert.equal(readFileSync(join(dir, 'REPORT.md'), 'utf8'), 'The report.\n');
+});
+
+test('multi-repo: each PR and each checkpoint branch in its own repo/<path>', async () => {
+  const CLIENT = 'https://github.com/acme/client.git';
+  const body = requestBody([`  - url: ${CLIENT}`, '    ref: main']);
+  const env = insteadOfAll([[bare.bare, SERVICE], [bare.bare, CLIENT]]);
+  const prs = [{ repo: 'service', url: 'https://github.com/acme/service/pull/7' }, { repo: 'client', url: 'https://github.com/acme/client/pull/3' }];
+  const gh = requestIssue({ body, labels: ['air:done'], results: [{ result: result({ prs }) }] });
+  gh.pulls.set('acme/service#7', { ref: 'air/1', sha: bare.first, cloneUrl: SERVICE });
+  gh.pulls.set('acme/client#3', { ref: 'air/1', sha: bare.main, cloneUrl: CLIENT });
+  const dir = join(tmp(), 'm');
+  assert.deepEqual((await fetchResult({ ...opts(gh, dir), env })).written, ['REPORT.md', 'repo/service', 'repo/client']);
+  assert.equal(git(join(dir, 'repo', 'service'), 'rev-parse', 'HEAD'), bare.first);
+  assert.equal(git(join(dir, 'repo', 'client'), 'rev-parse', 'HEAD'), bare.main);
+
+  const resume = { branches: [{ repo: 'service', branch: 'air/1', sha: bare.first }, { repo: 'client', branch: 'air/1-2', sha: bare.dangling }] };
+  const p = requestIssue({ body, labels: ['air:partial'], results: [{ result: result({ status: 'partial', resume }), release: true }] });
+  const pdir = join(tmp(), 'p');
+  assert.deepEqual((await fetchResult({ ...opts(p, pdir), env })).written, ['REPORT.md', 'repo/service', 'repo/client']);
+  assert.equal(git(join(pdir, 'repo', 'client'), 'rev-parse', '--abbrev-ref', 'HEAD'), 'air/1-2');
+  assert.equal(git(join(pdir, 'repo', 'client'), 'rev-parse', 'HEAD'), bare.dangling);
 });
 
 test('a bad hash or a zip-slip entry stops the fetch, and nothing of that zip is extracted', async () => {

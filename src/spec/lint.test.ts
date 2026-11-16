@@ -489,14 +489,3 @@ test('resume: checkpoint branches and the out/ zip', () => {
   oneError(fm(...zip.slice(0, 3)), /`resume.out` is missing `bytes`/);
   oneError(fm(...zip, '    expires: 2026-12-31'), /unknown key `resume.out.expires`/);
 });
-
-test('singleRepoLimitation: what setup and serve can run today', async () => {
-  const { singleRepoLimitation } = await import('./frontmatter.ts');
-  const req = (fm: string) => lint(body(`${MIN}\n${fm}`, SECTIONS + CTX)).request!;
-  const A = 'url: https://github.com/o/a.git';
-  assert.equal(singleRepoLimitation(req('repos: []')), undefined);
-  const one = req(reposOf([A, 'ref: dev', 'path: x']));
-  assert.equal(singleRepoLimitation(one), undefined);
-  assert.match(singleRepoLimitation(req(reposOf([A, 'pr: 3'])))!, /pull request/);
-  assert.match(singleRepoLimitation(req(reposOf([A, 'ref: a', 'path: a'], [A, 'ref: b', 'path: b'])))!, /more than one repo/);
-});

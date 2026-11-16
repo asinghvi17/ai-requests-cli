@@ -371,15 +371,6 @@ test('trust verdicts expire, so revoked access is noticed', async () => {
   assert.equal(await trust('erin', 'MEMBER'), false);
 });
 
-test('a valid request that the single-repo setup and serve code cannot run yet is refused quietly', async () => {
-  const pr = BODY.replace('deliver: comment', 'deliver: comment\nrepos:\n  - url: https://github.com/o/a.git\n    pr: 3') + '\n## Context\n\nA pull request.\n';
-  const { gh, opts } = setup(pr);
-  const r = await claim(opts);
-  assert.equal(r.status === 'refused' && r.reason, 'not-yet-supported');
-  assert.match(r.status === 'refused' ? r.message : '', /can't serve it yet: it checks out a pull request/);
-  assert.equal(gh.issues.get(7)!.comments.length, 0);
-});
-
 test('release as partial: air:partial before dropping the held label, and a partial result with its resume', async () => {
   const { gh, opts } = setup();
   const won = await claim(opts);

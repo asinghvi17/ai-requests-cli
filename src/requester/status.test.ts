@@ -39,6 +39,12 @@ test('the latest counted result, with PRs, checkpoint and usage', async () => {
   const p = await readStatus(requestIssue({ labels: ['air:partial'], results: [{ result: partial, release: true }] }), 1);
   assert.equal(p.holder, undefined);
   assert.match(formatStatus(p), new RegExp(`^ {2}checkpoint: service branch air/1 at ${SHA}$`, 'm'));
+
+  // multi-repo: one line per PR and per checkpoint branch
+  const two = result({ prs: [{ repo: 'service', url: PR }, { repo: 'client', url: 'https://github.com/acme/client/pull/3' }] });
+  assert.match(formatStatus(await readStatus(requestIssue({ labels: ['air:done'], results: [{ result: two }] }), 1)), /^ {2}pr: {9}service \S+\n {2}pr: {9}client https:\/\/github\.com\/acme\/client\/pull\/3$/m);
+  const both = result({ status: 'partial', resume: { branches: [{ repo: 'service', branch: 'air/1', sha: SHA }, { repo: 'client', branch: 'air/1', sha: SHA }] } });
+  assert.match(formatStatus(await readStatus(requestIssue({ labels: ['air:partial'], results: [{ result: both, release: true }] }), 1)), new RegExp(`^ {2}checkpoint: service branch air/1 at ${SHA}\n {2}checkpoint: client branch air/1 at ${SHA}$`, 'm'));
 });
 
 test('forged, edited or quoted results do not count; a later claim makes the result not current', async () => {
