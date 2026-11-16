@@ -29,7 +29,7 @@ export type Phase = 'claimed' | 'setting-up' | 'ready' | 'failed' | 'released' |
 export type JobStatus = 'ready' | 'running' | 'stopping' | 'paused' | 'delivering' | 'failing' | 'done' | 'failed' | 'cancelled';
 export type PauseReason = 'operator' | 'quota' | 'restart';
 
-/** A release asset air uploaded (an artifact zip or an over-long report), as its `air-artifact` block needs it. */
+/** A release asset air uploaded (an artifact zip or an over-long report), as its `air-result` block needs it. */
 export interface UploadedAsset { name: string; id: number; url: string; sha256: string; bytes: number; files?: number }
 
 export interface JobRecord {

@@ -3,12 +3,12 @@ air: 0
 effort: M
 harness: [claude, codex]
 model: medium
-repo:
-  url: https://github.com/acme-analytics/TimeSeriesKit.jl.git
-  ref: main
+repos:
+  - url: https://github.com/acme-analytics/TimeSeriesKit.jl.git
+    ref: main
 setup:
-  - julia --project=. -e 'using Pkg; Pkg.instantiate()'
-check: julia --project=. -e 'using TimeSeriesKit'
+  - julia --project=repo/TimeSeriesKit.jl -e 'using Pkg; Pkg.instantiate()'
+check: julia --project=repo/TimeSeriesKit.jl -e 'using TimeSeriesKit'
 deliver: pr
 deadline: 2026-11-20
 timeout: 3h
@@ -38,10 +38,12 @@ Follow the style of `rolling` in `src/rolling.jl`, which is the closest existing
 - `resample` is exported, has a docstring with a runnable `jldoctest`, and is listed in `docs/src/api.md`.
 - New tests in `test/resample.jl` (included from `test/runtests.jl`) cover: hourly → daily mean, a gap
   that yields `missing`, a custom `agg` (`sum`), a `DateTime` origin, and both `ArgumentError` cases.
-- `julia --project=. -e 'using Pkg; Pkg.test()'` passes.
+- `julia --project=. -e 'using Pkg; Pkg.test()'` passes in `repo/TimeSeriesKit.jl`.
 - The PR description explains the bucket convention in one paragraph.
 
 ## Context
+
+The package is checked out in `repo/TimeSeriesKit.jl`.
 
 - `src/TimeSeriesKit.jl` holds the module and export list; `src/types.jl` defines `TimeSeries`
   (a sorted `Vector{DateTime}` plus a `Matrix` of values with column names).

@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseMarkers } from '../spec/markers.ts';
+import { parseMarkers, parseResult } from '../spec/markers.ts';
 import type { Subscription } from '../usage/types.ts';
 import { extractZip } from '../workspace/zip.ts';
 import { agentArgv, findCodexSession, restartInstruction } from './agent.ts';
-import { artifactBlock, COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
+import { COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
 import { exitDetail } from './jobs.ts';
 import { committedUsage, exhausted } from './server.ts';
 import { acquireServeLock, LOCK_GRACE_MS, readServerState, updateServerState } from './state.ts';
@@ -80,26 +80,27 @@ test('reports: markers are defused; a long report is cut to fit with the asset b
   for (const pad of ['\u00a0', '\ufeff', '\v', '\f', '\u2003']) {
     assert.deepEqual(parseMarkers(defuseMarkers(`${pad}<!-- air-release v0 host=x nonce=abcdefgh -->`)), [], JSON.stringify(pad));
   }
-  assert.match(defuseMarkers('```air-artifact\nurl: x\n```'), /^```quoted-air-artifact\n/);
+  assert.equal(parseResult(defuseMarkers('<!-- air-result v0 -->\n```yaml\nstatus: done\n```')), undefined);
   assert.equal(openFence('a\n```js\nx'), '```');
   assert.equal(openFence('a\n````\nx\n```\n````\n'), '');
   assert.equal(openFence('~~~\n```\n'), '~~~');
-  assert.equal(await reportComment('```\ncode', 'FOOT', async () => { throw new Error('no upload'); }), '```\ncode\n```\n\nFOOT');
+  const result = (where: string) => `RESULT ${where}`;
+  assert.equal(await reportComment('```\ncode', 'FOOT', async () => { throw new Error('no upload'); }, result), '```\ncode\n```\n\nFOOT\n\nRESULT comment');
 
   let uploads = 0;
   const upload = async () => {
     uploads++;
     return { url: 'https://github.com/o/r/releases/download/air-artifacts/air-1-n-report.md', sha256: 'a'.repeat(64), bytes: 99, expires: '2026-12-07' };
   };
-  assert.equal(await reportComment('short\n\n', 'FOOT', upload), 'short\n\nFOOT');
+  assert.equal(await reportComment('short\n\n', 'FOOT', upload, result), 'short\n\nFOOT\n\nRESULT comment');
   assert.equal(uploads, 0);
-  const c = await reportComment('y'.repeat(COMMENT_LIMIT), 'FOOT', upload);
+  const c = await reportComment('y'.repeat(COMMENT_LIMIT), 'FOOT', upload, result);
   assert.equal(uploads, 1);
   assert.equal(c.length, COMMENT_LIMIT);
   assert.ok(c.startsWith(`${TRUNCATED_LINE}\n\nyyy`));
-  assert.ok(c.endsWith(`${artifactBlock(await upload())}\n\nFOOT`));
-  // A cut inside a code block closes it, so the asset block and footer still render.
-  const fenced = await reportComment(`\`\`\`\n${'z'.repeat(COMMENT_LIMIT)}`, 'FOOT', upload);
+  assert.ok(c.endsWith(`FOOT\n\nRESULT ${(await upload()).url}`));
+  // A cut inside a code block closes it, so the footer and the result block still render.
+  const fenced = await reportComment(`\`\`\`\n${'z'.repeat(COMMENT_LIMIT)}`, 'FOOT', upload, result);
   assert.ok(fenced.length <= COMMENT_LIMIT);
   assert.equal(openFence(fenced.slice(0, fenced.indexOf('[... cut ...]'))), '');
 });

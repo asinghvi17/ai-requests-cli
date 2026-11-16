@@ -4,23 +4,23 @@ Append entries, newest last: date, decision, why.
 
 - 2026-11-07: Request format v0 (spec/v0.md). Front matter in a strict YAML subset that every YAML parser
   reads identically (plain scalars with `: ` or ` #` must be quoted), parsed without a library. `model` is
-  a tier (`small | medium | large`, default `medium`) that servers map to their own models. `repo.ref` is
+  a tier (`small | medium | large`, default `medium`) that servers map to their own models. a repo's `ref` is
   required, `timeout` is capped at 24h, `harness` may be a single value and `any` can't be combined.
   Lifecycle adds `air:paused` and requester-set `air:cancel`; claims are resolved by lowest comment id, and
   an `air-release` marker (same host+nonce) ends a claim so issues can be re-offered. Fixed workspace
   layout (`repo/`, `context/`, `out/`) and `$AIR_*` env vars give `setup`, `check` and `deliver: artifact`
   a defined meaning. Why: the server must act on the format without guessing.
 
-- 2026-11-07: v0 hardening after review of PR #3 (`air` stays 0; v0 is unreleased). Context zips are
+- 2026-11-07: v0 hardening after review of PR #3. Context zips are
   downloaded once to a file, checked against `bytes`/`sha256`, and their entries are checked for zip-slip
   (relative paths that stay inside `context/`, no symlinks or special files) before anything is written.
-  For `deliver: pr` the issue author must have write/admin on `repo.url`, checked via the collaborator
+  For `deliver: pr` the issue author must have write/admin on each pushed repo, checked via the collaborator
   permission API, so a volunteer's credentials can't push for someone who couldn't. Markers count only
   from trusted authors (`OWNER`; `MEMBER`/`COLLABORATOR` are confirmed with the permission API) and only in
   unedited comments; servers never edit marker comments. Unquoted YAML 1.2 bools, nulls and numbers are
   errors in string fields (`ref: 1.10` would otherwise mean `1.1` to other parsers). URLs use a
   conservative character set, and servers run git/curl/gh with argv, never a shell. PR and
-  `air-artifact` comment formats are fixed. Zips (context and artifacts) are release assets on the
+  result comment formats are fixed. Zips (context and artifacts) are release assets on the
   requests repo with an expiry (`context.expires`, artifact `expires`, default 14 days after the issue
   closes). `air sweep`, run daily by `air serve`, deletes expired ones. `deliver: comment` may embed
   images and video with `gh ... --attach` (gh ≥ 2.99; no REST API, and it fails with App installation
@@ -32,7 +32,7 @@ Append entries, newest last: date, decision, why.
   option") before anything reached GitHub. So it is still unknown whether GitHub accepts zips or serves a
   working URL. The spec doesn't depend on it: zips stay release assets. Re-test from a host whose gh
   allows `--attach`.
-- 2026-11-07: Second review of PR #3 (`air` stays 0).
+- 2026-11-07: Second review of PR #3.
   - Markers count only alone on their own line and outside fenced code, so quoting one does nothing.
   - An HTML comment left open on a heading line hides the section body for lint.
   - Sweep never deletes an asset while a referring issue is open or claimed/running/paused; `expires`
@@ -41,7 +41,7 @@ Append entries, newest last: date, decision, why.
     central directory and again while writing.
   - Each setup command and `check` has a 30-minute timeout and stdin from /dev/null. Setup is
     deliberately outside `timeout`, so `timeout` keeps meaning "agent time", the quantity effort estimates.
-  - A `deliver: pr` with no commits beyond `repo.ref` sets `air:failed`, not `air:done`: no requested
+  - A `deliver: pr` with no commits beyond its repos' `ref` sets `air:failed`, not `air:done`: no requested
     change arrived, and failed requests stay retryable.
   - An empty `out/` fails `deliver: artifact`.
   - Over-long comment reports are truncated, and the full text goes to an `air-artifacts` asset.
@@ -208,3 +208,39 @@ Alternatives considered:
   src/tmux/NOTES.md.
 - `Job.pid` is the agent's pid (the launcher records it); `Job.panePid` is the launcher shell, the group leader.
 - An agent killed by signal N reports status 128 + N; failure comments say "killed by signal N (status 128 + N)".
+
+## 2026-11-09: `repos`, `air-result`, partial results, requester commands (approved by Anshul)
+
+- Repos are an optional list, `repos:`. Each entry has `url`, exactly one of `ref` and `pr: N`
+  (`refs/pull/N/head`), an optional `path` under `repo/` (default: the repo's name) and an optional
+  `deliver: none` (read-only, never pushed, no permission check). Paths are relative `/`-separated segments
+  that start with a letter, digit or `_`, unique case-insensitively (macOS file systems ignore case), and
+  not nested. `deliver: pr` needs an entry without `deliver: none`, and each such entry uses `ref`, since it
+  becomes a PR base: a `pr:` entry can only be read-only.
+- Refs and PRs are resolved to SHAs before the claim comment is posted; the comment lists them, and every
+  checkout of the claim uses them. An unresolvable entry is handled like a lint failure: no claim, and one
+  comment per body version. Setup runs in the workspace root, since there may be several repos or none.
+- `deliver: pr` opens one PR per repo with commits, always on the first free `air/<N>[-k]` branch. With one
+  PR its body says `Closes`; with several, `Part of`, so merging the first doesn't close the issue, and each
+  body lists its siblings. No repo with commits is `failed`.
+- The YAML subset allows block lists of maps (`- key: value`, further keys aligned under the first) and maps
+  nested in maps, which `repos` and `resume` need; the parser is a small recursive one. Flow lists hold
+  scalars only. List positions in messages are 0-based (`repos[1].ref`).
+- Every final comment ends with one `air-result` block: the `<!-- air-result v0 -->` line, then a fenced
+  `yaml` block in the §3 subset. Only the last such line outside code counts, and its fence must end the
+  comment, so a report that quotes a result can't replace the server's. It counts only if the comment
+  counts for markers (trusted, unedited), its `host` and `nonce` name the claim that held the issue when it
+  was posted, and the same account posted that claim. Artifacts, over-long reports and checkpoint zips are
+  named only there, and sweep reads its references from it. `resume.out` has `sha256` and `bytes` like
+  `context`, because the next server downloads and extracts it.
+- Cut-off rules (§11): a 5-hour window pauses and resumes. A weekly or monthly window waits if it resets
+  within 24 h, else it checkpoints as `partial` and releases. An exit without AIR_DONE resumes the session
+  once, then becomes `partial`. Using more than 2× the effort share becomes `partial`. A timeout is
+  `partial` with a checkpoint, else `failed`. Context limits are not a cut-off. The 48 h pause release skips
+  quota pauses waiting on a reset ≤ 24 h away. Checkpoint branches are pushed only for `deliver: pr`, the
+  only delivery whose write access was checked. Uncommitted changes are not checkpointed: AIR_TASK.md asks
+  for WIP commits and an up-to-date `out/PROGRESS.md`, so the server never commits for the agent.
+- Requester commands: `air status`, `air wait` (0 done, 3 partial, 1 failed/released or unreadable, 2
+  usage), `air fetch`, `air retry [--effort L]`. `air retry` is the one way to offer a request again.
+- Setup, serve and delivery so far handle one repo with `ref`, cloned into `repo/` with setup run there, and
+  no `resume`; `air claim` refuses other requests (`not-yet-supported`) until they implement the rest.

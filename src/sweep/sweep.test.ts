@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeReleases, type FakeReleases } from '../gh/releases-fake.ts';
 import type { IssueSummary } from '../gh/releases.ts';
-import { artifactBlocks, normalizeUrl, sweep } from './sweep.ts';
+import { formatResult, type AirResult } from '../spec/markers.ts';
+import { normalizeUrl, resultReferences, sweep } from './sweep.ts';
 
 const NOW = new Date('2026-11-07T12:00:00Z');
 const trustOwners = async (_login: string, association: string) => association === 'OWNER';
@@ -15,12 +16,14 @@ function issue(gh: FakeReleases, i: Partial<IssueSummary> & { number: number; bo
   gh.issueList.push({ state: 'closed', labels: ['ai-request'], body: '', closedAt: '2026-10-01T00:00:00Z', ...i });
 }
 
+const RESULT: AirResult = { status: 'done', deliver: 'artifact', prs: [], host: 'box', nonce: 'abcdefgh' };
+
 function artifact(gh: FakeReleases, issueNo: number, url: string, opts: { expires?: string; association?: string; edited?: boolean } = {}): void {
   const t = '2026-10-01T00:00:00Z';
   gh.commentList.push({
     id: gh.commentList.length + 1, issue: issueNo, author: 'server', authorAssociation: opts.association ?? 'OWNER',
     createdAt: t, updatedAt: opts.edited ? '2026-10-02T00:00:00Z' : t,
-    body: `Done.\n\n\`\`\`air-artifact\nurl: ${url}\nsha256: ${'b'.repeat(64)}\nbytes: 10\n${opts.expires ? `expires: ${opts.expires}   # keep a while\n` : ''}\`\`\`\n`,
+    body: `Done.\n\n${formatResult({ ...RESULT, artifact: { url, sha256: 'b'.repeat(64), bytes: 10, ...(opts.expires ? { expires: opts.expires } : {}) } })}\n`,
   });
 }
 
@@ -107,6 +110,15 @@ test('a failed delete is reported and the sweep carries on', async () => {
   assert.ok(gh.assetsByTag.get('air-context')!.some((x) => x.name === 'defaulted.zip'));
 });
 
+test('the resume.out of a body holds its asset like context', async () => {
+  const gh = fakeReleases();
+  const out = gh.addAsset('air-artifacts', 'air-1-abcdefgh-out.zip');
+  const body = request(gh.addAsset('air-context', 'c.zip').url).replace('---\n\n## Task', `resume:\n  out:\n    url: ${out.url}\n    sha256: ${'c'.repeat(64)}\n    bytes: 5\n---\n\n## Task`);
+  issue(gh, { number: 1, closedAt: '2026-11-01T00:00:00Z', body });
+  const r = await sweep({ repo: 'o/requests', releases: gh, trust: trustOwners, now: NOW });
+  assert.deepEqual(r.kept.map((k) => [k.asset.name, k.reason]), [['c.zip', 'held by #1 until 2026-11-15'], ['air-1-abcdefgh-out.zip', 'held by #1 until 2026-11-15']]);
+});
+
 test('an issue whose body no longer parses still holds any asset it names', async () => {
   const gh = fakeReleases();
   const asset = gh.addAsset('air-context', 'x.zip');
@@ -126,10 +138,13 @@ test('MEMBER and COLLABORATOR comments count only with write access', async () =
   assert.deepEqual(r.deleted.map((x) => x.name), ['air-1-abcdefgh.zip']);
 });
 
-test('artifactBlocks and normalizeUrl', () => {
-  assert.deepEqual(artifactBlocks('```air-artifact\nurl: "https://h/x"\nexpires: 2026-01-02 # c\n```\n```\nurl: https://no\n```\n````text\n```air-artifact\nurl: https://quoted\n```\n````'), [
-    { url: 'https://h/x', expires: '2026-01-02' },
-  ]);
+test('resultReferences and normalizeUrl', () => {
+  const zip = (url: string) => ({ url, sha256: 'b'.repeat(64), bytes: 10 });
+  const partial = formatResult({ ...RESULT, status: 'partial', deliver: 'comment', report: 'https://h/report.md', resume: { branches: [], out: zip('https://h/out.zip') } });
+  assert.deepEqual(resultReferences(`text\n\n${partial}`), [{ url: 'https://h/report.md' }, { url: 'https://h/out.zip' }]);
+  assert.deepEqual(resultReferences(formatResult({ ...RESULT, artifact: { ...zip('https://h/x'), expires: '2026-01-02' }, report: 'comment' })), [{ url: 'https://h/x', expires: '2026-01-02' }]);
+  // quoted in a fence: not a result
+  assert.deepEqual(resultReferences(`\`\`\`\n${partial}\n\`\`\``), []);
   assert.equal(normalizeUrl('https://GitHub.com/O/R/releases/download/air-context/A%20B.zip'), 'github.com/o/r/releases/download/air-context/A B.zip');
   assert.equal(normalizeUrl('https://github.com/o/r/issues/1'), undefined);
   assert.equal(normalizeUrl('not a url'), undefined);

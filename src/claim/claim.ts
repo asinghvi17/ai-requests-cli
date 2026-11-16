@@ -5,7 +5,7 @@ import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Issue, RequestsRepo } from '../gh/issues.ts';
 import { lint } from '../spec/lint.ts';
-import { SPEC_VERSION, type Request } from '../spec/frontmatter.ts';
+import { singleRepoLimitation, SPEC_VERSION, type Request } from '../spec/frontmatter.ts';
 import { countedMarkers, currentClaim, formatMarker } from '../spec/markers.ts';
 import { createWorkspace, findWorkspaces, updateState, type State } from '../workspace/state.ts';
 import { createTrust, markedComments, type Trust } from './trust.ts';
@@ -55,7 +55,7 @@ export interface ClaimOptions {
 
 export type Refusal =
   | 'not-found' | 'closed' | 'pull-request' | 'not-a-request' | 'cancelled' | 'state-label'
-  | 'untrusted' | 'unsupported-version' | 'invalid' | 'past-deadline' | 'held';
+  | 'untrusted' | 'unsupported-version' | 'invalid' | 'not-yet-supported' | 'past-deadline' | 'held';
 
 export type ClaimResult =
   | { status: 'won'; dir: string; state: State; request: Request; body: string }
@@ -133,6 +133,9 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     return refuse('invalid', `#${n} is not a valid request:\n${result.errors.map((e) => `  line ${e.line}: ${e.message}`).join('\n')}`);
   }
   const request = result.request;
+  // Setup, serve and delivery handle at most one repo, at a `ref`, so far.
+  const limit = singleRepoLimitation(request);
+  if (limit) return refuse('not-yet-supported', `#${n} is valid, but this air can't serve it yet: ${limit}`);
   if (request.deadline !== undefined && now().getTime() > deadlineTime(request.deadline)) {
     return refuse('past-deadline', `#${n} is past its deadline (${request.deadline})`);
   }

@@ -25,7 +25,8 @@ export const MAX_TIMEOUT_MINUTES = 24 * 60;
 /** GitHub's release-asset size limit; context zips can't be larger than this. */
 export const MAX_CONTEXT_BYTES = 2 * 1024 ** 3;
 
-export interface ContextZip {
+/** A zip on a release of the requests repo: `context`, `resume.out`, a result's `artifact`. */
+export interface Asset {
   url: string;
   sha256: string;
   bytes: number;
@@ -33,18 +34,37 @@ export interface ContextZip {
   expires?: string;
 }
 
-export interface RepoRef {
+/** One entry of `repos`. Exactly one of `ref` and `pr` is set. */
+export interface RepoEntry {
   url: string;
-  ref: string;
+  /** A branch, tag or commit. */
+  ref?: string;
+  /** A pull request number: check out `refs/pull/<pr>/head`. */
+  pr?: number;
+  /** Folder under `repo/`, relative, `/`-separated. Defaults to the repo's name. */
+  path: string;
+  /** `none`: read-only, never pushed. Absent: delivered as the request's `deliver` says. */
+  deliver?: 'none';
 }
+
+/** `resume`: where an earlier claim's checkpoint left off (written by `air retry` from a `partial` result). */
+export interface Resume {
+  /** Per repo (by `path`), the pushed checkpoint branch and the commit to continue from. */
+  branches: { repo: string; branch: string; sha: string }[];
+  /** The checkpoint's `out/`, zipped. */
+  out?: Asset;
+}
+
 
 export interface Request {
   air: number;
   effort: Effort;
   harness: Harness[];
   model: ModelTier;
-  context?: ContextZip;
-  repo?: RepoRef;
+  context?: Asset;
+  /** In order. Empty: no `repo/` directory. */
+  repos: RepoEntry[];
+  resume?: Resume;
   setup: string[];
   check?: string;
   deliver: Deliver;
@@ -70,7 +90,15 @@ export interface Diagnostic {
 }
 
 export type FrontMatterResult =
-  | { ok: true; request: Request; /** 0-based index into `lines` of the first line after the closing `---`. */ bodyStart: number; lines: string[] }
+  | {
+    ok: true;
+    request: Request;
+    /** Problems that don't stop a server from acting on the request. */
+    warnings: Diagnostic[];
+    /** 0-based index into `lines` of the first line after the closing `---`. */
+    bodyStart: number;
+    lines: string[];
+  }
   | { ok: false; errors: Diagnostic[]; bodyStart?: number; lines: string[] };
 
 // ---------------------------------------------------------------------------------------------
@@ -84,7 +112,8 @@ export interface Scalar {
 }
 export interface List {
   kind: 'list';
-  items: Scalar[];
+  /** Scalars, or maps for `- key: value` items. */
+  items: (Scalar | MapNode)[];
   line: number;
 }
 export interface MapNode {
@@ -111,129 +140,113 @@ export function splitLines(body: string): string[] {
  * 1-based body line number of lines[0].
  */
 export function parseYamlSubset(lines: string[], firstLine: number): { entries: Map<string, Entry>; errors: Diagnostic[] } {
-  const entries = new Map<string, Entry>();
   const errors: Diagnostic[] = [];
   const err = (line: number, message: string) => errors.push({ line, code: 'yaml', message });
 
-  // The top-level or nested key whose value is an indented block still being read.
-  interface Open {
-    entry: Entry;
-    into: Map<string, Entry>; // where the entry lives, for the "no value" check
-    childIndent?: number;
-    nested: boolean; // a key inside a nested map: may only hold a block list, not another map
-  }
-  let open: Open | undefined;
-  let topMap: { entry: Entry; indent: number } | undefined; // nested map currently being filled
-
-  const closeOpen = () => {
-    if (open && open.childIndent === undefined) {
-      err(open.entry.keyLine, `\`${open.entry.key}\` has no value`);
-    }
-    open = undefined;
-  };
-
+  // Significant lines only: blank and comment-only lines are dropped up front.
+  const toks: { line: number; indent: number; text: string }[] = [];
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i]!;
-    const lineNo = firstLine + i;
     if (/^\s*(#.*)?$/.test(raw)) continue;
     const lead = /^[ \t]*/.exec(raw)![0];
-    if (lead.includes('\t')) {
-      err(lineNo, 'indent with spaces, not tabs');
-      continue;
-    }
-    const indent = lead.length;
-    const text = raw.slice(indent);
-
-    // Block-list item: belongs to the open key (YAML allows the dash at the key's own indent).
-    if (text === '-' || text.startsWith('- ')) {
-      const owner = open;
-      if (!owner || (owner.childIndent !== undefined && owner.childIndent !== indent) || owner.entry.value.kind === 'map') {
-        err(lineNo, owner ? 'list item is not aligned with the previous item' : 'list item without a key');
-        continue;
-      }
-      const ownerIndent = owner.nested ? topMap!.indent : 0;
-      if (indent < ownerIndent) {
-        err(lineNo, 'list item is indented less than its key');
-        continue;
-      }
-      owner.childIndent = indent;
-      const list = owner.entry.value as List;
-      const item = text.slice(1).trimStart();
-      if (item === '' || item.startsWith('#')) {
-        err(lineNo, 'empty list item');
-        continue;
-      }
-      if (item.startsWith('[') || item.startsWith('{')) {
-        err(lineNo, 'nested collections are not allowed in list items; quote the value if it is a string');
-        continue;
-      }
-      const s = parseScalar(item, lineNo, false, errors);
-      if (s) list.items.push(s);
-      continue;
-    }
-
-    const m = KEY_RE.exec(text);
-    if (!m) {
-      err(lineNo, text.startsWith('---') ? 'unexpected `---` inside front matter' : 'expected `key: value`');
-      continue;
-    }
-    const key = m[1]!;
-    const rest = m[2]!.trim();
-
-    // Decide which map this key belongs to.
-    let target: Map<string, Entry>;
-    let nested: boolean;
-    if (indent === 0) {
-      closeOpen();
-      topMap = undefined;
-      target = entries;
-      nested = false;
-    } else if (topMap && indent === topMap.indent) {
-      if (open && open.nested) closeOpen();
-      target = (topMap.entry.value as MapNode).entries;
-      nested = true;
-    } else if (open && !open.nested && open.childIndent === undefined) {
-      // First key under `open`: it becomes a nested map.
-      const entry = open.entry;
-      open.childIndent = indent;
-      entry.value = { kind: 'map', entries: new Map(), line: entry.keyLine };
-      open = undefined;
-      topMap = { entry, indent };
-      target = entry.value.entries;
-      nested = true;
-    } else {
-      err(lineNo, topMap || open ? 'maps nest only one level deep; check the indentation' : 'unexpected indentation');
-      continue;
-    }
-
-    if (target.has(key)) {
-      err(lineNo, `duplicate key \`${key}\``);
-      continue;
-    }
-    const valueText = stripComment(rest);
-    const entry: Entry = { key, keyLine: lineNo, value: { kind: 'list', items: [], line: lineNo } };
-    target.set(key, entry);
-    if (valueText === '') {
-      open = { entry, into: target, nested };
-      continue;
-    }
-    if (rest.startsWith('[')) {
-      const list = parseFlowList(rest, lineNo, errors);
-      if (list) entry.value = list;
-      else target.delete(key);
-    } else if (rest.startsWith('{')) {
-      err(lineNo, 'flow maps `{...}` are not supported; write the map as indented `key: value` lines');
-      target.delete(key);
-    } else if (/^[|>][-+0-9]*$/.test(valueText)) {
-      err(lineNo, 'multi-line strings are not supported');
-      target.delete(key);
-    } else {
-      const s = parseScalar(rest, lineNo, false, errors);
-      if (s) entry.value = s;
-      else target.delete(key);
-    }
+    if (lead.includes('\t')) err(firstLine + i, 'indent with spaces, not tabs');
+    else toks.push({ line: firstLine + i, indent: lead.length, text: raw.slice(lead.length) });
   }
-  closeOpen();
+  const isItem = (text: string) => text === '-' || text.startsWith('- ');
+  let at = 0;
+
+  // `key: value` lines at exactly `indent`, until a line indented less.
+  const parseMap = (indent: number, into: Map<string, Entry>): void => {
+    while (at < toks.length) {
+      const t = toks[at]!;
+      if (t.indent < indent) return;
+      at++;
+      if (t.indent > indent) {
+        err(t.line, isItem(t.text) ? 'list item is not aligned with its key or the previous item' : 'unexpected indentation');
+        continue;
+      }
+      if (isItem(t.text)) {
+        err(t.line, 'list item without a key');
+        continue;
+      }
+      const m = KEY_RE.exec(t.text);
+      if (!m) {
+        err(t.line, t.text.startsWith('---') ? 'unexpected `---` inside front matter' : 'expected `key: value`');
+        continue;
+      }
+      const key = m[1]!;
+      const value = parseValue(key, m[2]!.trim(), t.line, indent);
+      if (into.has(key)) err(t.line, `duplicate key \`${key}\``);
+      else if (value) into.set(key, { key, keyLine: t.line, value });
+    }
+  };
+
+  // `- item` lines at exactly `indent`. An item may open a map (`- key: value`, more keys aligned with it).
+  const parseList = (indent: number, list: List): void => {
+    while (at < toks.length) {
+      const t = toks[at]!;
+      if (t.indent < indent || (t.indent === indent && !isItem(t.text))) return;
+      if (t.indent > indent) {
+        at++;
+        err(t.line, isItem(t.text) ? 'list item is not aligned with the previous item' : 'unexpected indentation');
+        continue;
+      }
+      const item = t.text.slice(1).trimStart();
+      if (item === '' || item.startsWith('#')) {
+        at++;
+        err(t.line, 'empty list item; write `- value`, or `- key: value` for a map');
+        continue;
+      }
+      if (item.startsWith('[') || item.startsWith('{') || isItem(item)) {
+        at++;
+        err(t.line, 'nested collections are not allowed in list items; quote the value if it is a string');
+        continue;
+      }
+      if (KEY_RE.test(item)) {
+        // Re-read this line as the first key of a map indented to where the key starts.
+        toks[at] = { line: t.line, indent: t.indent + t.text.length - item.length, text: item };
+        const entries = new Map<string, Entry>();
+        parseMap(toks[at]!.indent, entries);
+        list.items.push({ kind: 'map', entries, line: t.line });
+        continue;
+      }
+      at++;
+      const s = parseScalar(item, t.line, false, errors);
+      if (s) list.items.push(s);
+    }
+  };
+
+  // The value of a key at `indent`: inline on its line, or the indented block that follows.
+  const parseValue = (key: string, rest: string, line: number, indent: number): Value | undefined => {
+    if (stripComment(rest) === '') {
+      const next = toks[at];
+      if (next && isItem(next.text) && next.indent >= indent) {
+        const list: List = { kind: 'list', items: [], line };
+        parseList(next.indent, list);
+        return list;
+      }
+      if (next && next.indent > indent) {
+        const map: MapNode = { kind: 'map', entries: new Map(), line };
+        parseMap(next.indent, map.entries);
+        return map;
+      }
+      err(line, `\`${key}\` has no value`);
+      return { kind: 'list', items: [], line };
+    }
+    if (rest.startsWith('[')) return parseFlowList(rest, line, errors);
+    if (rest.startsWith('{')) {
+      err(line, 'flow maps `{...}` are not supported; write the map as indented `key: value` lines');
+      return undefined;
+    }
+    if (/^[|>][-+0-9]*$/.test(stripComment(rest))) {
+      err(line, 'multi-line strings are not supported');
+      return undefined;
+    }
+    return parseScalar(rest, line, false, errors);
+  };
+
+  const entries = new Map<string, Entry>();
+  parseMap(0, entries);
   return { entries, errors };
 }
 
@@ -326,6 +339,13 @@ function readScalar(text: string, line: number, flow: boolean, errors: Diagnosti
   return { scalar: { kind: 'scalar', value, quoted: false, line }, end };
 }
 
+/** `v` as a YAML scalar in the subset (§3): plain when that reads back as the same string, else double-quoted. */
+export function yamlScalar(v: string): string {
+  const plain = v !== '' && v.trim() === v && /^[\x21-\x7e ]*$/.test(v) && !PLAIN_BAD_START.test(v) && !/:(\s|$)/.test(v) && !/\s#/.test(v) && !yamlNonStringKind(v);
+  if (plain) return v;
+  return `"${v.replace(/[\\"]/g, (c) => `\\${c}`).replace(/[\x00-\x1f\x7f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)}"`;
+}
+
 function parseFlowList(text: string, line: number, errors: Diagnostic[]): List | undefined {
   const items: Scalar[] = [];
   let i = 1;
@@ -372,7 +392,7 @@ function parseFlowList(text: string, line: number, errors: Diagnostic[]): List |
 // ---------------------------------------------------------------------------------------------
 // Front-matter block and field validation
 
-const FIELDS = ['air', 'effort', 'harness', 'model', 'context', 'repo', 'setup', 'check', 'deliver', 'deadline', 'timeout'] as const;
+const FIELDS = ['air', 'effort', 'harness', 'model', 'context', 'repos', 'resume', 'setup', 'check', 'deliver', 'deadline', 'timeout'] as const;
 
 /** Finds the front-matter block, parses it and validates the fields. */
 export function parseFrontMatter(body: string): FrontMatterResult {
@@ -404,9 +424,10 @@ export function parseFrontMatter(body: string): FrontMatterResult {
 
   const { entries, errors } = parseYamlSubset(yaml, open + 2);
   const closeLine = close + 1;
-  const req = validateFields(entries, closeLine, errors);
+  const warnings: Diagnostic[] = [];
+  const req = validateFields(entries, closeLine, errors, warnings);
   if (errors.length > 0 || !req) return { ok: false, lines, bodyStart, errors: sortDiagnostics(errors) };
-  return { ok: true, request: req, bodyStart, lines };
+  return { ok: true, request: req, warnings: sortDiagnostics(warnings), bodyStart, lines };
 }
 
 function versionError(line: number, v: number): Diagnostic {
@@ -421,8 +442,11 @@ export function sortDiagnostics(ds: Diagnostic[]): Diagnostic[] {
   return [...ds].sort((a, b) => a.line - b.line);
 }
 
-function validateFields(entries: Map<string, Entry>, closeLine: number, errors: Diagnostic[]): Request | undefined {
-  const err = (line: number, code: DiagnosticCode, message: string): void => {
+/** Collects a diagnostic. */
+export type Report = (line: number, code: DiagnosticCode, message: string) => void;
+
+function validateFields(entries: Map<string, Entry>, closeLine: number, errors: Diagnostic[], warnings: Diagnostic[]): Request | undefined {
+  const err: Report = (line, code, message) => {
     errors.push({ line, code, message });
   };
 
@@ -435,17 +459,7 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
 
   // Unquoted values a YAML 1.2 parser would read as bool, null or a number must be quoted in string
   // fields. Other errors on those lines would only repeat the problem, so they're dropped below.
-  const nonStringLines = new Set<number>();
-  const visit = (path: string, v: Value) => {
-    if (v.kind === 'map') for (const sub of v.entries.values()) visit(`${path}.${sub.key}`, sub.value);
-    for (const sc of v.kind === 'list' ? v.items : v.kind === 'scalar' ? [v] : []) {
-      const kind = sc.quoted || INTEGER_FIELDS.includes(path) ? undefined : yamlNonStringKind(sc.value);
-      if (!kind) continue;
-      err(sc.line, 'type', `\`${path}\`: YAML reads unquoted \`${sc.value}\` as a ${kind}; quote it: "${sc.value}"`);
-      nonStringLines.add(sc.line);
-    }
-  };
-  for (const e of entries.values()) visit(e.key, e.value);
+  const nonStringLines = nonStringErrors(entries, INTEGER_FIELDS, err);
   const firstNonString = errors.length;
 
   const get = (k: string) => entries.get(k);
@@ -490,9 +504,9 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   const harnessE = get('harness');
   if (harnessE) {
     const v = harnessE.value;
-    if (v.kind === 'map') err(harnessE.keyLine, 'type', '`harness` must be a list, e.g. [claude, codex]');
+    if (v.kind === 'map' || (v.kind === 'list' && v.items.some((s) => s.kind === 'map'))) err(harnessE.keyLine, 'type', '`harness` must be a list, e.g. [claude, codex]');
     else {
-      const items = v.kind === 'scalar' ? [v] : v.items;
+      const items = v.kind === 'scalar' ? [v] : (v.items as Scalar[]);
       const got: Harness[] = [];
       for (const s of items) {
         const h = enumOf(harnessE, s, HARNESSES);
@@ -515,51 +529,58 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   }
 
   // context
-  let context: ContextZip | undefined;
+  let context: Asset | undefined;
   const contextE = get('context');
-  if (contextE) {
-    const m = mapFields(contextE, ['url', 'sha256', 'bytes'], ['expires'], err);
-    if (m) {
-      const url = m.get('url');
-      const sha = m.get('sha256');
-      const bytes = m.get('bytes');
-      const expires = m.get('expires');
-      const before = errors.length;
-      if (url && !isSafeUrl(url.value)) err(url.line, 'value', URL_MESSAGE('context.url'));
-      if (sha && !/^[0-9a-f]{64}$/.test(sha.value)) err(sha.line, 'value', '`context.sha256` must be 64 lowercase hex digits (the output of `sha256sum`)');
-      if (bytes && (bytes.quoted || !/^[1-9]\d*$/.test(bytes.value))) err(bytes.line, 'type', '`context.bytes` must be a positive unquoted integer');
-      else if (bytes && Number(bytes.value) > MAX_CONTEXT_BYTES) err(bytes.line, 'value', '`context.bytes` exceeds the 2 GiB limit');
-      if (expires && !isDate(expires.value)) err(expires.line, 'value', '`context.expires` must be a date like 2026-12-31');
-      if (errors.length === before && url && sha && bytes) {
-        context = { url: url.value, sha256: sha.value, bytes: Number(bytes.value) };
-        if (expires) context.expires = expires.value;
+  if (contextE) context = checkAsset(contextE.value, 'context', contextE.keyLine, err, { expires: true });
+
+  // repos
+  const repos: RepoEntry[] = [];
+  const repoLines: { item: number; ref?: number }[] = [];
+  let reposOk = true;
+  const reposE = get('repos');
+  if (reposE) {
+    const before = errors.length;
+    if (reposE.value.kind !== 'list') {
+      err(reposE.keyLine, 'type', '`repos` must be a list: one `- url: ...` entry per repo, with `ref:` or `pr:` on the next line');
+    } else {
+      reposE.value.items.forEach((item, i) => {
+        const r = repoEntry(item, `repos[${i}]`, err);
+        if (r) {
+          repos.push(r.entry);
+          repoLines.push(r.lines);
+        }
+      });
+    }
+    if (errors.length === before) {
+      for (let i = 0; i < repos.length; i++) {
+        for (let j = 0; j < i; j++) {
+          const a = repos[j]!.path.toLowerCase();
+          const b = repos[i]!.path.toLowerCase();
+          if (a === b) {
+            err(repoLines[i]!.item, 'value', `\`repos[${i}]\` checks out into \`repo/${repos[i]!.path}\`, like \`repos[${j}]\`; set a different \`path\` on one of them (paths compare case-insensitively)`);
+          } else if (b.startsWith(`${a}/`) || a.startsWith(`${b}/`)) {
+            err(repoLines[i]!.item, 'value', `\`repos[${i}]\` (\`${repos[i]!.path}\`) and \`repos[${j}]\` (\`${repos[j]!.path}\`) would be checked out inside each other; pick paths that don't nest`);
+          }
+        }
       }
     }
+    reposOk = errors.length === before;
   }
 
-  // repo
-  let repo: RepoRef | undefined;
-  const repoE = get('repo');
-  if (repoE) {
-    const m = mapFields(repoE, ['url', 'ref'], [], err);
-    if (m) {
-      const url = m.get('url');
-      const ref = m.get('ref');
-      const before = errors.length;
-      if (url && !isSafeUrl(url.value)) err(url.line, 'value', URL_MESSAGE('repo.url'));
-      if (ref && !isGitRef(ref.value)) err(ref.line, 'value', `\`repo.ref\` is not a valid branch, tag or commit: \`${ref.value}\``);
-      if (errors.length === before && url && ref) repo = { url: url.value, ref: ref.value };
-    }
-  }
+  // resume
+  const resumeE = get('resume');
+  const resume = resumeE && checkResume(resumeE.value, 'resume', resumeE.keyLine, err, reposOk ? repos : undefined);
 
   // setup
   let setup: string[] = [];
   const setupE = get('setup');
   if (setupE) {
-    if (setupE.value.kind !== 'list') err(setupE.keyLine, 'type', '`setup` must be a list of commands (one `- command` per line)');
-    else {
-      setup = setupE.value.items.map((s) => s.value);
-      for (const s of setupE.value.items) if (s.value.trim() === '') err(s.line, 'value', '`setup` commands must not be empty');
+    if (setupE.value.kind !== 'list' || setupE.value.items.some((s) => s.kind === 'map')) {
+      err(setupE.keyLine, 'type', '`setup` must be a list of commands (one `- command` per line; quote a command that contains `: `)');
+    } else {
+      const items = setupE.value.items as Scalar[];
+      setup = items.map((s) => s.value);
+      for (const s of items) if (s.value.trim() === '') err(s.line, 'value', '`setup` commands must not be empty');
     }
   }
 
@@ -578,7 +599,19 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
   if (deliverE) {
     const s = scalar(deliverE);
     if (s) deliver = enumOf(deliverE, s, DELIVERIES);
-    if (deliver === 'pr' && !repoE) err(s!.line, 'missing', '`deliver: pr` requires `repo`');
+    if (deliver === 'pr' && reposOk) {
+      if (repos.length === 0) err(s!.line, 'missing', '`deliver: pr` requires `repos`, with at least one repo to open a pull request on');
+      else if (repos.every((r) => r.deliver === 'none')) err(s!.line, 'value', '`deliver: pr` needs a repo to deliver to, but every entry in `repos` has `deliver: none`');
+      repos.forEach((r, i) => {
+        if (r.deliver === 'none') return;
+        if (r.pr !== undefined) {
+          err(repoLines[i]!.item, 'value', `\`repos[${i}]\` uses \`pr\`, and \`deliver: pr\` can't open a pull request against another one; use \`ref\` with a branch, or add \`deliver: none\``);
+        } else if (/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(r.ref!)) {
+          // A full commit SHA is certainly not a branch to open the PR against.
+          warnings.push({ line: repoLines[i]!.ref!, code: 'value', message: `\`deliver: pr\` needs \`repos[${i}].ref\` to be a branch to open the PR against, but it looks like a commit SHA` });
+        }
+      });
+    }
   }
 
   // deadline
@@ -608,40 +641,201 @@ function validateFields(entries: Map<string, Entry>, closeLine: number, errors: 
     errors.push(...later);
   }
   if (air === undefined || !effort || !deliver || errors.length > 0) return undefined;
-  const req: Request = { air, effort, harness, model, setup, deliver, timeoutMinutes };
+  const req: Request = { air, effort, harness, model, repos, setup, deliver, timeoutMinutes };
   if (context) req.context = context;
-  if (repo) req.repo = repo;
+  if (resume) req.resume = resume;
   if (check !== undefined) req.check = check;
   if (deadline !== undefined) req.deadline = deadline;
   return req;
 }
 
-/** Checks a nested map has all `required` keys, optionally `optional` ones, all scalars. */
-function mapFields(
-  e: Entry,
-  required: readonly string[],
-  optional: readonly string[],
-  err: (line: number, code: DiagnosticCode, message: string) => void,
-): Map<string, Scalar> | undefined {
+/**
+ * Why setup, serve and delivery can't run a request yet, or undefined if they can: they handle at most
+ * one repo, checked out at a `ref` into `repo/`, and no `resume`. Temporary, until they implement the rest.
+ */
+export function singleRepoLimitation(r: Request): string | undefined {
+  if (r.repos.length > 1) return 'it lists more than one repo';
+  if (r.repos[0]?.pr !== undefined) return 'it checks out a pull request (`pr:`)';
+  if (r.resume) return 'it resumes an earlier checkpoint (`resume:`)';
+  return undefined;
+}
+
+/** One `repos` entry, or undefined after reporting why it's invalid. */
+function repoEntry(item: Scalar | MapNode, name: string, err: Report): { entry: RepoEntry; lines: { item: number; ref?: number } } | undefined {
+  const m = scalarMap(item, name, item.line, ['url'], ['ref', 'pr', 'path', 'deliver'], err);
+  if (!m) return undefined;
+  const [url, ref, pr, path, deliver] = [m.get('url'), m.get('ref'), m.get('pr'), m.get('path'), m.get('deliver')];
+  let bad = false;
+  const fail: Report = (line, code, message) => {
+    bad = true;
+    err(line, code, message);
+  };
+  if (!url) bad = true;
+  else if (!isSafeUrl(url.value)) fail(url.line, 'value', URL_MESSAGE(`${name}.url`));
+  if (ref && pr) fail(pr.line, 'value', `\`${name}\` has both \`ref\` and \`pr\`; use one`);
+  else if (!ref && !pr) fail(item.line, 'missing', `\`${name}\` needs \`ref\` (a branch, tag or commit) or \`pr\` (a pull request number)`);
+  if (ref && !isGitRef(ref.value)) fail(ref.line, 'value', `\`${name}.ref\` is not a valid branch, tag or commit: \`${ref.value}\``);
+  if (pr && (pr.quoted || !/^[1-9]\d{0,9}$/.test(pr.value))) fail(pr.line, 'type', `\`${name}.pr\` must be a pull request number, unquoted`);
+  if (deliver && deliver.value !== 'none') {
+    fail(deliver.line, 'value', `\`${name}.deliver\` can only be \`none\` (read-only, never pushed); omit it to deliver this repo as the request's \`deliver\` says`);
+  }
+  if (path && !isSafePath(path.value)) {
+    fail(path.line, 'value', `\`${name}.path\` must be a relative folder like \`billing\` or \`deps/billing\`: segments of letters, digits, \`.\`, \`_\` and \`-\` that start with a letter, digit or \`_\`, separated by \`/\``);
+  } else if (!path && url && !bad && !isSafePath(repoName(url.value))) {
+    fail(item.line, 'missing', `\`${name}\`: no folder name can be made from \`${url.value}\`; set \`path\``);
+  }
+  if (bad) return undefined;
+  const entry: RepoEntry = { url: url!.value, path: path?.value ?? repoName(url!.value) };
+  if (ref) entry.ref = ref.value;
+  if (pr) entry.pr = Number(pr.value);
+  if (deliver) entry.deliver = 'none';
+  const lines: { item: number; ref?: number } = { item: item.line };
+  if (ref) lines.ref = ref.line;
+  return { entry, lines };
+}
+
+/**
+ * `resume` in a request, or in an `air-result` block (§6): checkpoint `branches` and the `out` zip. With
+ * `repos`, each branch must name the `path` of a repo that isn't `deliver: none`.
+ */
+export function checkResume(v: Value, name: string, line: number, err: Report, repos?: RepoEntry[]): Resume | undefined {
+  const m = mapOf(v, name, line, [], ['branches', 'out'], err);
+  if (!m) return undefined;
+  let bad = false;
+  const fail: Report = (l, code, message) => {
+    bad = true;
+    err(l, code, message);
+  };
+  const outE = m.get('out');
+  const out = outE && checkAsset(outE.value, `${name}.out`, outE.keyLine, fail, { expires: false });
+  if (outE && !out) bad = true;
+  const branches: Resume['branches'] = [];
+  const branchesE = m.get('branches');
+  if (branchesE && branchesE.value.kind !== 'list') {
+    fail(branchesE.keyLine, 'type', `\`${name}.branches\` must be a list of \`- repo: <path>\` entries, each with \`branch\` and \`sha\``);
+  } else if (branchesE && branchesE.value.kind === 'list') {
+    branchesE.value.items.forEach((item, i) => {
+      const at = `${name}.branches[${i}]`;
+      const b = scalarMap(item, at, item.line, ['repo', 'branch', 'sha'], [], fail);
+      if (!b) return void (bad = true);
+      const [repo, branch, sha] = [b.get('repo'), b.get('branch'), b.get('sha')];
+      if (!repo || !branch || !sha) return void (bad = true);
+      if (!isSafePath(repo.value)) fail(repo.line, 'value', `\`${at}.repo\` must be a repo's \`path\`, a relative folder under \`repo/\``);
+      else if (repos) {
+        const target = repos.find((r) => r.path === repo.value);
+        if (!target) fail(repo.line, 'value', `\`${at}.repo\` must be the \`path\` of an entry in \`repos\`; none checks out into \`repo/${repo.value}\``);
+        else if (target.deliver === 'none') fail(repo.line, 'value', `\`${at}.repo\` names \`${repo.value}\`, which has \`deliver: none\`: read-only repos have no checkpoint branch`);
+      }
+      if (!isGitRef(branch.value)) fail(branch.line, 'value', `\`${at}.branch\` is not a valid branch name: \`${branch.value}\``);
+      if (!isSha(sha.value)) fail(sha.line, 'value', `\`${at}.sha\` must be a full commit SHA (40 or 64 lowercase hex digits)`);
+      if (branches.some((x) => x.repo === repo.value)) fail(repo.line, 'value', `\`${name}.branches\` lists \`${repo.value}\` twice`);
+      branches.push({ repo: repo.value, branch: branch.value, sha: sha.value });
+    });
+  }
+  if (!outE && !(branchesE?.value.kind === 'list' && branchesE.value.items.length > 0)) fail(line, 'missing', `\`${name}\` needs a \`branches\` entry, \`out\` or both`);
+  if (bad) return undefined;
+  return out ? { branches, out } : { branches };
+}
+
+/** The last path segment of a clone URL without `.git`: the default `path` of a `repos` entry. */
+export function repoName(url: string): string {
+  let segments: string[];
+  try {
+    segments = new URL(url).pathname.split('/').filter(Boolean);
+  } catch {
+    return '';
+  }
+  return (segments.at(-1) ?? '').replace(/\.git$/, '');
+}
+
+/** A relative folder under `repo/`: no absolute paths, no `.`/`..` or hidden segments, no option-like names. */
+export function isSafePath(s: string): boolean {
+  return s.length > 0 && s.length <= 200 && s.split('/').every((seg) => /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(seg));
+}
+
+/** A full commit SHA (SHA-1 or SHA-256). */
+export function isSha(s: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(s);
+}
+
+/**
+ * A release-asset reference (`context`, `resume.out`, a result's `artifact`): `url`, `sha256`, `bytes`
+ * and, if `expires` is allowed, an optional `expires` date.
+ */
+export function checkAsset(v: Value, name: string, line: number, err: Report, opts: { expires: boolean }): Asset | undefined {
+  const m = scalarMap(v, name, line, ['url', 'sha256', 'bytes'], opts.expires ? ['expires'] : [], err);
+  if (!m) return undefined;
+  const [url, sha, bytes, expires] = [m.get('url'), m.get('sha256'), m.get('bytes'), m.get('expires')];
+  let bad = false;
+  const fail: Report = (l, code, message) => {
+    bad = true;
+    err(l, code, message);
+  };
+  if (url && !isSafeUrl(url.value)) fail(url.line, 'value', URL_MESSAGE(`${name}.url`));
+  if (sha && !/^[0-9a-f]{64}$/.test(sha.value)) fail(sha.line, 'value', `\`${name}.sha256\` must be 64 lowercase hex digits (the output of \`sha256sum\`)`);
+  if (bytes && (bytes.quoted || !/^[1-9]\d*$/.test(bytes.value))) fail(bytes.line, 'type', `\`${name}.bytes\` must be a positive unquoted integer`);
+  else if (bytes && Number(bytes.value) > MAX_CONTEXT_BYTES) fail(bytes.line, 'value', `\`${name}.bytes\` exceeds the 2 GiB limit`);
+  if (expires && !isDate(expires.value)) fail(expires.line, 'value', `\`${name}.expires\` must be a date like 2026-12-31`);
+  if (bad || !url || !sha || !bytes) return undefined;
+  const asset: Asset = { url: url.value, sha256: sha.value, bytes: Number(bytes.value) };
+  if (expires) asset.expires = expires.value;
+  return asset;
+}
+
+/** Checks `v` is a map with all `required` keys and only `optional` others; returns its entries. */
+export function mapOf(v: Value, name: string, line: number, required: readonly string[], optional: readonly string[], err: Report): Map<string, Entry> | undefined {
   const keys = [...required, ...optional];
-  if (e.value.kind !== 'map') {
-    err(e.keyLine, 'type', `\`${e.key}\` must be a map with ${required.map((k) => `\`${k}\``).join(', ')} on indented lines`);
+  if (v.kind !== 'map') {
+    const shape = required.length ? `with ${required.map((k) => `\`${k}\``).join(', ')} on indented lines` : 'of indented `key: value` lines';
+    err(line, 'type', `\`${name}\` must be a map ${shape}`);
     return undefined;
   }
-  const out = new Map<string, Scalar>();
-  for (const sub of e.value.entries.values()) {
+  const out = new Map<string, Entry>();
+  for (const sub of v.entries.values()) {
     if (!keys.includes(sub.key)) {
       const near = closest(sub.key, keys);
-      err(sub.keyLine, 'unknown-key', `unknown key \`${e.key}.${sub.key}\`${near ? ` (did you mean \`${near}\`?)` : ''}`);
-    } else if (sub.value.kind !== 'scalar') err(sub.keyLine, 'type', `\`${e.key}.${sub.key}\` must be a single value`);
-    else out.set(sub.key, sub.value);
+      err(sub.keyLine, 'unknown-key', `unknown key \`${name}.${sub.key}\`${near ? ` (did you mean \`${near}\`?)` : ''}`);
+    } else out.set(sub.key, sub);
   }
-  for (const k of required) if (!e.value.entries.has(k)) err(e.keyLine, 'missing', `\`${e.key}\` is missing \`${k}\``);
+  for (const k of required) if (!v.entries.has(k)) err(line, 'missing', `\`${name}\` is missing \`${k}\``);
   return out;
 }
 
+/** Like `mapOf`, for a map whose values must all be scalars. */
+export function scalarMap(v: Value, name: string, line: number, required: readonly string[], optional: readonly string[], err: Report): Map<string, Scalar> | undefined {
+  const m = mapOf(v, name, line, required, optional, err);
+  if (!m) return undefined;
+  const out = new Map<string, Scalar>();
+  for (const [k, e] of m) {
+    if (e.value.kind === 'scalar') out.set(k, e.value);
+    else err(e.keyLine, 'type', `\`${name}.${k}\` must be a single value`);
+  }
+  return out;
+}
+
+/**
+ * Reports every unquoted value that YAML 1.2 reads as a null, boolean or number, outside `numeric`
+ * fields (paths like `context.bytes`; list indices are left out). Returns the lines reported.
+ */
+export function nonStringErrors(entries: Map<string, Entry>, numeric: readonly string[], err: Report): Set<number> {
+  const lines = new Set<number>();
+  const check = (path: string, shown: string, sc: Scalar) => {
+    const kind = sc.quoted || numeric.includes(path) ? undefined : yamlNonStringKind(sc.value);
+    if (!kind) return;
+    err(sc.line, 'type', `\`${shown}\`: YAML reads unquoted \`${sc.value}\` as a ${kind}; quote it: "${sc.value}"`);
+    lines.add(sc.line);
+  };
+  const visit = (path: string, shown: string, v: Value) => {
+    if (v.kind === 'scalar') check(path, shown, v);
+    else if (v.kind === 'map') for (const sub of v.entries.values()) visit(`${path}.${sub.key}`, `${shown}.${sub.key}`, sub.value);
+    else v.items.forEach((it, i) => (it.kind === 'map' ? visit(path, `${shown}[${i}]`, it) : check(path, shown, it)));
+  };
+  for (const e of entries.values()) visit(e.key, e.key, e.value);
+  return lines;
+}
+
 /** Fields whose values are integers rather than strings. */
-const INTEGER_FIELDS = ['air', 'context.bytes'];
+const INTEGER_FIELDS = ['air', 'context.bytes', 'repos.pr', 'resume.out.bytes'];
 
 /** What a YAML 1.2 (core schema) parser makes of a plain scalar, if not a string. */
 export function yamlNonStringKind(v: string): 'null' | 'boolean' | 'number' | undefined {
@@ -653,14 +847,14 @@ export function yamlNonStringKind(v: string): 'null' | 'boolean' | 'number' | un
   return undefined;
 }
 
-const URL_MESSAGE = (field: string) =>
+export const URL_MESSAGE = (field: string) =>
   `\`${field}\` must be an https:// URL using only letters, digits and \`. - _ ~ % + = @ : , / ?\` (no spaces, quotes, \`&\`, \`;\`, \`$\` or other shell characters)`;
 
 /**
  * https URLs from a conservative character set: no whitespace, quotes or shell metacharacters, no
  * userinfo, no fragment. Servers still pass URLs to git/curl as argv, never through a shell.
  */
-function isSafeUrl(s: string): boolean {
+export function isSafeUrl(s: string): boolean {
   if (!/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?(?:\/[A-Za-z0-9._~%+=@:,\/?-]*)?$/.test(s)) return false;
   try {
     return new URL(s).hostname !== '';
@@ -670,11 +864,11 @@ function isSafeUrl(s: string): boolean {
 }
 
 /** A loose subset of git-check-ref-format, enough to reject typos and option injection. */
-function isGitRef(s: string): boolean {
+export function isGitRef(s: string): boolean {
   return /^[A-Za-z0-9_][A-Za-z0-9._/+-]*$/.test(s) && !s.includes('..') && !s.includes('//') && !s.endsWith('/') && !s.endsWith('.lock') && !s.endsWith('.');
 }
 
-function isDate(s: string): boolean {
+export function isDate(s: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
   if (!m) return false;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];

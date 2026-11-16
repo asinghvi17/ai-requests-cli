@@ -76,7 +76,7 @@ export async function promptRequest(ask: Ask, opts: { context: boolean }): Promi
   const fm = ['---', 'air: 0', `effort: ${effort}`, `deliver: ${deliver}`];
   if (harness !== 'any') fm.push(`harness: [${harness}]`);
   if (model !== 'medium') fm.push(`model: ${model}`);
-  if (repoUrl) fm.push('repo:', `  url: ${q(repoUrl)}`, `  ref: ${q(ref)}`);
+  if (repoUrl) fm.push('repos:', `  - url: ${q(repoUrl)}`, `    ref: ${q(ref)}`);
   if (setup.length) fm.push('setup:', ...setup.map((s) => `  - ${q(s)}`));
   if (check) fm.push(`check: ${q(check)}`);
   if (deadline) fm.push(`deadline: ${q(deadline)}`);

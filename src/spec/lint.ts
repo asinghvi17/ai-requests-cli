@@ -28,7 +28,7 @@ export interface LintResult {
 export function lint(body: string): LintResult {
   const fm = parseFrontMatter(body);
   const errors: Diagnostic[] = fm.ok ? [] : [...fm.errors];
-  const warnings: Diagnostic[] = [];
+  const warnings: Diagnostic[] = fm.ok ? [...fm.warnings] : [];
   // A newer spec version may change the sections too: report only that.
   if (errors.some((e) => e.code === 'version')) {
     return { ok: false, sections: {}, errors: errors.filter((e) => e.code === 'version'), warnings };
@@ -43,8 +43,8 @@ export function lint(body: string): LintResult {
     const required: SectionName[] = ['Task', 'Done when'];
     need('Task', '');
     need('Done when', '');
-    if (fm.ok && (fm.request.context || fm.request.repo)) {
-      need('Context', ' (required when `context` or `repo` is set)');
+    if (fm.ok && (fm.request.context || fm.request.repos.length > 0)) {
+      need('Context', ' (required when `context` or `repos` is set)');
       required.push('Context');
     }
 
@@ -56,11 +56,6 @@ export function lint(body: string): LintResult {
     const doneText = visible.get('Done when') ?? '';
     if (done && doneText.trim() !== '' && !/^ {0,3}(?:[-*+]|\d+[.)])\s+\S/m.test(doneText)) {
       errors.push({ line: done.line, code: 'section', message: '`## Done when` must be a list of checkable criteria (`- ...`)' });
-    }
-    // `repo.ref` must be a branch for `deliver: pr`; a full commit SHA is certainly not one.
-    if (fm.ok && fm.request.deliver === 'pr' && fm.request.repo && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(fm.request.repo.ref)) {
-      const refLine = fm.lines.findIndex((l, i) => i < fm.bodyStart && /^\s+ref:/.test(l)) + 1;
-      warnings.push({ line: refLine, code: 'value', message: '`deliver: pr` needs `repo.ref` to be a branch to open the PR against, but it looks like a commit SHA' });
     }
   }
 

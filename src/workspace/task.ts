@@ -16,10 +16,10 @@ const DELIVERY: Record<Request['deliver'], (r: Request) => string> = {
   comment: () =>
     'Deliver a written report. When you are done, write your final report in Markdown to `out/REPORT.md`; ' +
     'air posts it on the issue as a comment.',
-  pr: (r) =>
-    `Deliver a pull request against \`${r.repo!.ref}\` of ${r.repo!.url}. Work in \`repo/\` and commit your work on a new ` +
+  pr: ({ repos: [r] }) =>
+    `Deliver a pull request against \`${r!.ref}\` of ${r!.url}. Work in \`repo/\` and commit your work on a new ` +
     `branch there. Uncommitted changes are not delivered, and air opens no PR if there are no commits beyond ` +
-    `\`${r.repo!.ref}\`. Don't push: air pushes the branch and opens the PR. Write a short summary of the change ` +
+    `\`${r!.ref}\`. Don't push: air pushes the branch and opens the PR. Write a short summary of the change ` +
     'in Markdown to `out/REPORT.md` for the PR description.',
   artifact: () =>
     'Deliver files. Leave the result files in `out/`; air zips the regular files and directories there (symlinks ' +
@@ -28,7 +28,7 @@ const DELIVERY: Record<Request['deliver'], (r: Request) => string> = {
 
 export function taskPrompt(state: State, request: Request, body: string, dir: string): string {
   const layout = [
-    request.repo ? `- \`repo/\`: ${request.repo.url} checked out at \`${request.repo.ref}\`. Setup ran there.` : undefined,
+    request.repos[0] ? `- \`repo/\`: ${request.repos[0].url} checked out at \`${request.repos[0].ref}\`. Setup ran there.` : undefined,
     request.context ? '- `context/`: the request\'s context zip, extracted.' : undefined,
     '- `out/`: empty; see "Delivering" below.',
     '- `request.md`: the issue body as claimed, front matter included.',

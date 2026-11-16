@@ -2,7 +2,7 @@
 // central directory, then extract from that same file. No streaming extraction, no second download.
 import { createHash } from 'node:crypto';
 import { closeSync, createReadStream, openSync, rmSync, statSync, writeSync } from 'node:fs';
-import type { ContextZip } from '../spec/frontmatter.ts';
+import type { Asset } from '../spec/frontmatter.ts';
 import { extractZip, extractionCap } from './zip.ts';
 
 export class ContextError extends Error {}
@@ -56,7 +56,7 @@ export async function sha256File(path: string): Promise<string> {
  * Downloads `ctx` into `zipPath`, verifies it and extracts it into `dest` (which must not exist). On any
  * failure nothing is left in `dest`. Returns the bytes extracted.
  */
-export async function fetchContext(ctx: ContextZip, zipPath: string, dest: string, download: Download = fetchDownload): Promise<number> {
+export async function fetchContext(ctx: Asset, zipPath: string, dest: string, download: Download = fetchDownload): Promise<number> {
   rmSync(zipPath, { force: true });
   try {
     await download(ctx.url, zipPath, ctx.bytes);

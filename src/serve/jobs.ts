@@ -124,7 +124,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
     sessionId = job.harness === 'claude' ? randomUUID() : undefined;
     argv = agentArgv({
       harness: job.harness, agent, model: job.model, sessionId,
-      instruction: job.starts > 0 ? restartInstruction(request.repo !== undefined) : TASK_INSTRUCTION,
+      instruction: job.starts > 0 ? restartInstruction(request.repos.length > 0) : TASK_INSTRUCTION,
     });
   }
   const usageBefore = job.usageBefore ?? (await reading(ctx, job.subscription));

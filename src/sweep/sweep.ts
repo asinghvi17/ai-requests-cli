@@ -6,6 +6,7 @@ import { createTrust, type Trust } from '../claim/trust.ts';
 import { requestsRepo } from '../gh/issues.ts';
 import { ARTIFACTS_TAG, CONTEXT_TAG, releases as releasesApi, type Asset, type IssueSummary, type Releases, type RepoComment } from '../gh/releases.ts';
 import { parseFrontMatter } from '../spec/frontmatter.ts';
+import { parseResult } from '../spec/markers.ts';
 
 /** Labels that hold an asset whatever its `expires` says. */
 export const ACTIVE_LABELS = ['air:claimed', 'air:running', 'air:paused'] as const;
@@ -60,34 +61,16 @@ export function normalizeUrl(url: string): string | undefined {
   return `${u.host.toLowerCase()}${path.slice(0, at).toLowerCase()}${path.slice(at)}`;
 }
 
-/** `url` and `expires` of every `air-artifact` fenced block in a comment body. */
-export function artifactBlocks(body: string): { url: string; expires?: string }[] {
+/** The assets a comment's `air-result` block names: `artifact`, `report` when it is a URL, `resume.out`. */
+export function resultReferences(body: string): { url: string; expires?: string }[] {
+  const r = parseResult(body);
+  if (!r?.ok) return [];
+  const { artifact, report, resume } = r.result;
   const out: { url: string; expires?: string }[] = [];
-  let fence: { char: string; len: number; artifact: boolean; fields: Map<string, string> } | undefined;
-  for (const line of body.replace(/\r\n?/g, '\n').split('\n')) {
-    const f = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/.exec(line);
-    if (fence) {
-      if (f && f[1]![0] === fence.char && f[1]!.length >= fence.len && line.trim() === f[1]) {
-        const url = fence.fields.get('url');
-        if (fence.artifact && url) {
-          const expires = fence.fields.get('expires');
-          out.push(expires ? { url, expires } : { url });
-        }
-        fence = undefined;
-      } else if (fence.artifact) {
-        const kv = /^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*?)\s*$/.exec(line);
-        if (kv) fence.fields.set(kv[1]!, unquote(kv[2]!.replace(/(^|\s)#.*$/, '').trim()));
-      }
-      continue;
-    }
-    if (f) fence = { char: f[1]![0]!, len: f[1]!.length, artifact: f[2] === 'air-artifact', fields: new Map() };
-  }
+  if (artifact) out.push(artifact.expires ? { url: artifact.url, expires: artifact.expires } : { url: artifact.url });
+  if (report !== undefined && report !== 'comment') out.push({ url: report });
+  if (resume?.out) out.push({ url: resume.out.url });
   return out;
-}
-
-function unquote(v: string): string {
-  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) return v.slice(1, -1);
-  return v;
 }
 
 function bodyReferences(issue: IssueSummary, wanted: Set<string>): Map<string, Reference> {
@@ -95,8 +78,10 @@ function bodyReferences(issue: IssueSummary, wanted: Set<string>): Map<string, R
   const fm = parseFrontMatter(issue.body);
   if (fm.ok) {
     const ctx = fm.request.context;
-    const key = ctx && normalizeUrl(ctx.url);
-    if (ctx && key && wanted.has(key)) refs.set(key, ctx.expires ? { issue: issue.number, expires: ctx.expires } : { issue: issue.number });
+    for (const asset of [ctx, fm.request.resume?.out]) {
+      const key = asset && normalizeUrl(asset.url);
+      if (asset && key && wanted.has(key)) refs.set(key, asset.expires ? { issue: issue.number, expires: asset.expires } : { issue: issue.number });
+    }
     return refs;
   }
   // A body that no longer parses still holds any asset it names, with the default expiry.
@@ -149,7 +134,7 @@ export async function sweep(opts: SweepOptions): Promise<SweepResult> {
   const addRef = (key: string, ref: Reference) => refs.set(key, [...(refs.get(key) ?? []), ref]);
   for (const issue of issues) for (const [key, ref] of bodyReferences(issue, wanted)) addRef(key, ref);
   for (const c of await api.comments()) {
-    const blocks = artifactBlocks(c.body).filter((b) => wanted.has(normalizeUrl(b.url) ?? ''));
+    const blocks = resultReferences(c.body).filter((b) => wanted.has(normalizeUrl(b.url) ?? ''));
     if (blocks.length === 0 || !(await counts(c, trust))) continue;
     for (const b of blocks) addRef(normalizeUrl(b.url)!, b.expires ? { issue: c.issue, expires: b.expires } : { issue: c.issue });
   }
@@ -194,7 +179,7 @@ export async function sweep(opts: SweepOptions): Promise<SweepResult> {
   return result;
 }
 
-/** A comment's `air-artifact` block counts only from a trusted author and if never edited (spec/v0.md §9). */
+/** A comment's `air-result` block counts only from a trusted author and if never edited (spec/v0.md §9, §10). */
 async function counts(c: RepoComment, trust: Trust): Promise<boolean> {
   return c.createdAt === c.updatedAt && (await trust(c.author, c.authorAssociation));
 }

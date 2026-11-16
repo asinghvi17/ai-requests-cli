@@ -5,7 +5,8 @@ import { execFile } from 'node:child_process';
 import { existsSync, lstatSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { code } from '../claim/text.ts';
-import type { Request } from '../spec/frontmatter.ts';
+import type { Asset, Request } from '../spec/frontmatter.ts';
+import { formatResult, type AirResult } from '../spec/markers.ts';
 import { sha256File } from '../workspace/context.ts';
 import { githubRepo } from '../workspace/setup.ts';
 import { readState, updateState, type JobRecord, type State, type UploadedAsset } from '../workspace/state.ts';
@@ -22,17 +23,12 @@ const GIT_TIMEOUT_MS = 10 * 60_000;
 export type Delivered = { ok: true; comment: string } | { ok: false; step: string; detail: string };
 
 /**
- * Text the server didn't write goes into a comment it signs: any line that could read as an air marker
- * (markers are matched after trimming any whitespace) and any `air-artifact` fence are defused, so an
- * agent's report can never claim, release or refer to an asset.
+ * Text the server didn't write goes into a comment it signs: any line that could read as an air marker or
+ * an `air-result` line (both are matched after trimming any whitespace) is defused, so an agent's report can
+ * never claim, release, report a result or refer to an asset.
  */
 export function defuseMarkers(text: string): string {
-  return text.split('\n').map((line) => {
-    const t = line.trim();
-    if (t.startsWith('<!--')) return line.replace('<!--', '&lt;!--');
-    if (/^(`{3,}|~{3,})\s*air-artifact/.test(t)) return line.replace('air-artifact', 'quoted-air-artifact');
-    return line;
-  }).join('\n');
+  return text.split('\n').map((line) => (line.trim().startsWith('<!--') ? line.replace('<!--', '&lt;!--') : line)).join('\n');
 }
 
 /** The fence that closes a code block left open at the end of `text`, or '' if none is open. */
@@ -53,24 +49,27 @@ const closeFence = (text: string) => {
   return f ? `${text}\n${f}` : text;
 };
 
-export function artifactBlock(a: { url: string; sha256: string; bytes: number; expires?: string }): string {
-  return ['```air-artifact', `url: ${a.url}`, `sha256: ${a.sha256}`, `bytes: ${a.bytes}`, ...(a.expires ? [`expires: ${a.expires}`] : []), '```'].join('\n');
+/** The `air-result` block (spec/v0.md §10) that ends a `done` delivery comment. */
+export function doneResult(state: State, deliver: Request['deliver'], r: Partial<AirResult> = {}): string {
+  return formatResult({ status: 'done', deliver, prs: [], host: state.host, nonce: state.nonce, ...r });
 }
 
+const assetOf = (a: Asset): Asset => ({ url: a.url, sha256: a.sha256, bytes: a.bytes, ...(a.expires ? { expires: a.expires } : {}) });
+
 /**
- * The `comment` delivery's body: the report, then `footer`. A report that doesn't fit goes to an asset
- * (via `upload`), and the comment becomes the truncation line, the start of the report and the asset block,
- * cut to fit in COMMENT_LIMIT.
+ * The `comment` delivery's body: the report, `footer`, then the `air-result` block `result` makes for
+ * the report's place. A report that doesn't fit goes to an asset (via `upload`), and the comment becomes
+ * the truncation line, the start of the report, the footer and the block, cut to fit in COMMENT_LIMIT.
  */
-export async function reportComment(report: string, footer: string, upload: () => Promise<{ url: string; sha256: string; bytes: number; expires?: string }>): Promise<string> {
+export async function reportComment(report: string, footer: string, upload: () => Promise<Asset>, result: (report: string) => string): Promise<string> {
   const safe = defuseMarkers(report.replace(/\s+$/, ''));
-  // A fence the report leaves open would swallow the footer (and the asset block): close it.
-  const whole = `${closeFence(safe)}\n\n${footer}`;
+  // A fence the report leaves open would swallow the footer and the result block: close it.
+  const whole = `${closeFence(safe)}\n\n${footer}\n\n${result('comment')}`;
   if (whole.length <= COMMENT_LIMIT) return whole;
-  const block = artifactBlock(await upload());
+  const block = result((await upload()).url);
   const head = `${TRUNCATED_LINE}\n\n`;
   const cut = '\n\n[... cut ...]\n\n';
-  const tailText = `${cut}${block}\n\n${footer}`;
+  const tailText = `${cut}${footer}\n\n${block}`;
   // Room for a closing fence of any length the cut may need.
   const room = COMMENT_LIMIT - head.length - tailText.length;
   let start = safe.slice(0, Math.max(0, room));
@@ -137,7 +136,7 @@ async function deliverComment(ctx: ServeContext, dir: string, state: State, foot
     } finally {
       rmSync(tmp, { force: true });
     }
-  });
+  }, (where) => doneResult(state, 'comment', { report: where }));
   return { ok: true, comment };
 }
 
@@ -145,7 +144,7 @@ async function deliverArtifact(ctx: ServeContext, dir: string, state: State, foo
   const name = `air-${state.issue}-${state.nonce}.zip`;
   const zip = join(dir, `.${name}`);
   const block = (a: UploadedAsset) =>
-    ({ ok: true as const, comment: `The result is a zip of ${a.files} file${a.files === 1 ? '' : 's'} from \`out/\`:\n\n${artifactBlock(a)}\n\n${footer}` });
+    ({ ok: true as const, comment: `The result is a zip of ${a.files} file${a.files === 1 ? '' : 's'} from \`out/\`: ${a.url}\n\n${footer}\n\n${doneResult(state, 'artifact', { artifact: assetOf(a) })}` });
   const done = state.job?.delivery?.asset;
   if (done?.name === name) return block(done);
   rmSync(zip, { force: true });
@@ -176,8 +175,8 @@ const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
 
 async function deliverPr(ctx: ServeContext, dir: string, state: State, request: Request, footer: string): Promise<Delivered> {
   const repoDir = join(dir, 'repo');
-  const url = request.repo!.url;
-  const base = request.repo!.ref;
+  const url = request.repos[0]!.url;
+  const base = request.repos[0]!.ref!;
   const fail = (detail: string): Delivered => ({ ok: false, step: 'delivery', detail });
   let job = state.job!;
   const target = githubRepo(url, ctx.ghHost);
@@ -199,7 +198,7 @@ async function deliverPr(ctx: ServeContext, dir: string, state: State, request: 
       const [sha, ref] = l.split('\t');
       return [ref!.replace(/^refs\/heads\//, ''), sha!] as const;
     }));
-    if (!heads.has(base)) return fail(`\`repo.ref\` (${code(base)}) is not a branch of ${url}, so there is nothing to open a pull request against.`);
+    if (!heads.has(base)) return fail(`\`repos[0].ref\` (${code(base)}) is not a branch of ${url}, so there is nothing to open a pull request against.`);
     const fetchBase = await g(['fetch', '--quiet', '--no-tags', '--', url, `+refs/heads/${base}:refs/air/base`]);
     if (fetchBase.code !== 0) throw new Error(`git fetch of ${base} failed: ${fetchBase.stderr.trim()}`);
 
@@ -242,7 +241,8 @@ async function deliverPr(ctx: ServeContext, dir: string, state: State, request: 
     }
     job = record(dir, job, { prUrl }, ctx.now());
   }
-  return { ok: true, comment: `Opened ${job.delivery!.prUrl} from branch \`${job.delivery!.branch}\`.\n\n${footer}` };
+  const prs = [{ repo: request.repos[0]!.path, url: job.delivery!.prUrl! }];
+  return { ok: true, comment: `Opened ${job.delivery!.prUrl} from branch \`${job.delivery!.branch}\`.\n\n${footer}\n\n${doneResult(state, 'pr', { prs })}` };
 }
 
 export async function deliver(ctx: ServeContext, dir: string, state: State, request: Request, footer: string): Promise<Delivered> {
