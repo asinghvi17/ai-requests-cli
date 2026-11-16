@@ -7,9 +7,10 @@ import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Issue, RequestsRepo } from '../gh/issues.ts';
 import { lint } from '../spec/lint.ts';
-import { singleRepoLimitation, SPEC_VERSION, type Deliver, type Request } from '../spec/frontmatter.ts';
+import { SPEC_VERSION, type Deliver, type Request } from '../spec/frontmatter.ts';
 import { countedMarkers, currentClaim, formatMarker, formatResult, type AirResult } from '../spec/markers.ts';
 import { createWorkspace, findWorkspaces, REQUEST_FILE, updateState, type State } from '../workspace/state.ts';
+import { checkRepos, type RepoCheckOptions } from './repos.ts';
 import { createTrust, markedComments, type Trust } from './trust.ts';
 import { code, fenced } from './text.ts';
 
@@ -53,11 +54,21 @@ export interface ClaimOptions {
   now?: () => Date;
   nonce?: string;
   trust?: Trust;
+  /** The requests repo's GitHub host; a `deliver: pr` repo must be on it. Default: `GH_HOST` or github.com. */
+  ghHost?: string;
+  /** git's environment for resolving `repos` (the server's credentials). Default: this process's. */
+  env?: NodeJS.ProcessEnv;
+  /** How a `repos` entry is resolved to a commit (tests). */
+  resolve?: RepoCheckOptions['resolve'];
 }
 
 export type Refusal =
   | 'not-found' | 'closed' | 'pull-request' | 'not-a-request' | 'cancelled' | 'state-label'
-  | 'untrusted' | 'unsupported-version' | 'invalid' | 'not-yet-supported' | 'past-deadline' | 'held';
+  | 'untrusted' | 'unsupported-version' | 'invalid' | 'past-deadline' | 'held'
+  /** A `repos` entry can't be resolved, or its pull request can't be allowed: the requester must act. */
+  | 'repos'
+  /** This server can't push to a repo the request delivers to; another server may. */
+  | 'cannot-push';
 
 export type ClaimResult =
   | { status: 'won'; dir: string; state: State; request: Request; body: string }
@@ -67,6 +78,11 @@ export type ClaimResult =
 /** Tags the one lint-refusal comment per body version, so re-polling never posts it twice. */
 function lintTag(body: string): string {
   return `<!-- air-lint-refusal sha256=${createHash('sha256').update(body).digest('hex').slice(0, 16)} -->`;
+}
+
+/** Tags the one `repos` refusal comment per body version and problem. */
+function reposTag(body: string, problem: string): string {
+  return `<!-- air-repos-refusal sha256=${createHash('sha256').update(`${body}\0${problem}`).digest('hex').slice(0, 16)} -->`;
 }
 
 /** The `air` value of a body whose version lint rejected (the version diagnostic doesn't carry it). */
@@ -135,9 +151,6 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     return refuse('invalid', `#${n} is not a valid request:\n${result.errors.map((e) => `  line ${e.line}: ${e.message}`).join('\n')}`);
   }
   const request = result.request;
-  // Setup, serve and delivery handle at most one repo, at a `ref`, so far.
-  const limit = singleRepoLimitation(request);
-  if (limit) return refuse('not-yet-supported', `#${n} is valid, but this air can't serve it yet: ${limit}`);
   if (request.deadline !== undefined && now().getTime() > deadlineTime(request.deadline)) {
     return refuse('past-deadline', `#${n} is past its deadline (${request.deadline})`);
   }
@@ -145,8 +158,24 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
   const before = currentClaim(await markedComments(await gh.comments(n), trust));
   if (before) return refuse('held', `#${n} is already claimed by ${before.host}`);
 
+  // §5, §6: every repo resolves to a commit, and every repo that gets a pull request may get one from us.
+  const env = opts.env ?? process.env;
+  const checked = await checkRepos({
+    gh, request, author: issue.author, viewer, ghHost: opts.ghHost ?? (env.GH_HOST || 'github.com'), env, ...(opts.resolve ? { resolve: opts.resolve } : {}),
+  });
+  if (!checked.ok) {
+    if (!checked.requester) return refuse('cannot-push', `#${n}: ${checked.message}`);
+    const tag = reposTag(body, checked.message);
+    if (!(await gh.comments(n)).some((c) => c.author === viewer && c.body.includes(tag))) {
+      await gh.comment(n, `air can't claim this request: ${checked.message}.\n\nFix the request (or the access), and servers will pick it up again.\n${tag}\n`);
+    }
+    return refuse('repos', `#${n}: ${checked.message}`);
+  }
+  const repos = checked.repos;
+
   const nonce = opts.nonce ?? newNonce();
-  const mine = await gh.comment(n, `Claimed by ${code(host)} with air.\n\n${formatMarker({ kind: 'claim', version: SPEC_VERSION, host, nonce })}\n`);
+  const listed = repos.length === 0 ? '' : `\n\nRepos, checked out at:\n\n${repos.map((r) => `- ${code(r.path)}: \`${r.sha}\``).join('\n')}`;
+  const mine = await gh.comment(n, `Claimed by ${code(host)} with air.${listed}\n\n${formatMarker({ kind: 'claim', version: SPEC_VERSION, host, nonce })}\n`);
   let comments, holder;
   try {
     await gh.assign(n, viewer);
@@ -172,7 +201,7 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
   const t = now().toISOString();
   const state: State = {
     version: 1, repo: gh.repo, issue: n, title: issue.title, author: issue.author, url: issue.url, host, nonce,
-    claimCommentId: mine.id, phase: 'claimed', createdAt: t, updatedAt: t,
+    claimCommentId: mine.id, repos, phase: 'claimed', createdAt: t, updatedAt: t,
   };
   let dir: string;
   try {

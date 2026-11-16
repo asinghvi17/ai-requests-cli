@@ -6,7 +6,7 @@ import { target } from './requests.ts';
 export async function claimCommand(inv: Invocation): Promise<number> {
   const t = target(inv);
   inv.io.err(`air claim: claiming ${t.gh.repo}#${t.issue} (waiting for rival claims)...\n`);
-  const r = await claim({ gh: t.gh, issue: t.issue, root: t.root });
+  const r = await claim({ gh: t.gh, issue: t.issue, root: t.root, ghHost: process.env.GH_HOST || undefined });
   if (r.status === 'won') {
     inv.io.out(`claimed ${t.gh.repo}#${t.issue}; workspace ${r.dir}\nnext: air setup ${t.issue}\n`);
     return 0;

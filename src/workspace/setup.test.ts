@@ -1,5 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,10 +9,11 @@ import { claim } from '../claim/claim.ts';
 import { createTrust, markedComments } from '../claim/trust.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { currentClaim, formatMarker, parseMarkers } from '../spec/markers.ts';
-import { insteadOf, makeBareRepo, type BareRepo } from './git-fixture.ts';
+import { insteadOfAll, makeBareRepo, type BareRepo } from './git-fixture.ts';
 import { launchInput, TASK_INSTRUCTION } from './launch.ts';
-import { readState } from './state.ts';
-import { githubRepo, setup, type SetupOptions } from './setup.ts';
+import { githubRepo } from './git.ts';
+import { readState, updateState } from './state.ts';
+import { setup, type SetupOptions } from './setup.ts';
 import { buildZip } from './zip-fixture.ts';
 
 const dirs: string[] = [];
@@ -46,9 +48,10 @@ const SERVER_ENV = { PATH: process.env.PATH, HOME: process.env.HOME, GH_TOKEN: '
 async function claimed(b: string, extra: Partial<SetupOptions> = {}): Promise<{ gh: FakeGitHub; opts: SetupOptions; dir: string }> {
   const gh = fakeGitHub();
   gh.addIssue({ number: 7, body: b, author: 'alice' });
+  for (const login of ['alice', 'bot']) gh.setPermission('o/service', login, 'write');
   const root = mkdtempSync(join(tmpdir(), 'air-setup-'));
   dirs.push(root);
-  const r = await claim({ gh, issue: 7, root, host: 'box-a', waitMs: 0 });
+  const r = await claim({ gh, issue: 7, root, host: 'box-a', waitMs: 0, env: extra.env ?? SERVER_ENV, ghHost: 'github.com' });
   if (r.status !== 'won') throw new Error(`claim: ${JSON.stringify(r)}`);
   return { gh, dir: r.dir, opts: { gh, issue: 7, root, host: 'box-a', env: SERVER_ENV, ...extra } };
 }
@@ -73,6 +76,7 @@ test('runs setup and check in the workspace with a clean env and writes AIR_TASK
   assert.match(env, new RegExp(`^AIR_CONTEXT=${dir}/context$`, 'm'));
   assert.match(env, new RegExp(`^AIR_OUT=${dir}/out$`, 'm'));
   assert.doesNotMatch(env, /GH_TOKEN|GITHUB_TOKEN|AWS_|SSH_AUTH_SOCK|secret/);
+  assert.ok(!existsSync(join(dir, 'repo')), 'no `repos`, no repo/');
   const task = readFileSync(join(dir, 'AIR_TASK.md'), 'utf8');
   assert.match(task, /Keep `out\/PROGRESS\.md` up to date as you work: what is done, what is next, and the decisions you made\./);
   assert.doesNotMatch(task, /Continuing earlier work/);
@@ -156,44 +160,63 @@ test('the context zip is verified and extracted; a bad one fails before setup ru
   assert.match(bad.gh.issues.get(7)!.comments.at(-1)!.body, /SHA-256/);
 });
 
-const PR_URL = 'https://github.com/o/target.git';
-const prBody = (setupCmd: string) => body([
-  'repos:', `  - url: ${PR_URL}`, '    ref: main', 'deliver: pr', `setup: [${q(setupCmd)}]`,
+const SERVICE = 'https://github.com/o/service.git';
+const GUIDE = 'https://github.com/o/guide.git';
+let guide: BareRepo;
+before(() => {
+  const d = mkdtempSync(join(tmpdir(), 'air-setup-git2-'));
+  dirs.push(d);
+  guide = makeBareRepo(d);
+});
+const twoRepos = (setupCmd: string, extra: string[] = []) => body([
+  'repos:', `  - url: ${SERVICE}`, '    ref: main', `  - url: ${GUIDE}`, '    pr: 5', '    path: docs/guide', '    deliver: none',
+  'deliver: pr', `setup: [${q(setupCmd)}]`, ...extra,
 ], SECTIONS + CONTEXT);
+const gitEnv = () => insteadOfAll([[bare.bare, SERVICE], [guide.bare, GUIDE]], SERVER_ENV);
+const git = (dir: string, ...a: string[]) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
 
-test('deliver: pr checks the author can write to the target before running anything', async () => {
-  for (const role of ['read', 'triage', 'none'] as const) {
-    const { gh, opts, dir } = await claimed(prBody('touch ran'), { env: insteadOf(bare.bare, PR_URL, SERVER_ENV) });
-    gh.setPermission('o/target', 'alice', role);
+test('each repo is cloned into repo/<path> at the commit recorded at claim time; setup runs in the workspace root', async () => {
+  const { opts, dir } = await claimed(twoRepos('git -C repo/service rev-parse HEAD > head.txt; pwd > pwd.txt'), { env: gitEnv() });
+  assert.deepEqual(readState(dir).repos, [{ path: 'service', sha: bare.main }, { path: 'docs/guide', sha: guide.dangling }]);
+  // The branch moves after the claim: the checkout still uses the recorded commit.
+  execFileSync('git', ['--git-dir', bare.bare, 'update-ref', 'refs/heads/main', bare.first]);
+  try {
     const r = await setup(opts);
-    assert.equal(r.status === 'failed' && r.step, 'the push permission check', role);
-    assert.ok(!existsSync(join(dir, 'repo')), role);
-    assert.ok(!existsSync(join(dir, 'ran')), role);
-    assert.match(gh.issues.get(7)!.comments.at(-1)!.body, new RegExp(`@alice has ${role} access to o/target`));
+    assert.equal(r.status, 'ready', JSON.stringify(r));
+  } finally {
+    execFileSync('git', ['--git-dir', bare.bare, 'update-ref', 'refs/heads/main', bare.main]);
   }
-  const off = await claimed(prBody('true').replace(PR_URL, 'https://gitlab.com/o/target.git'));
-  const r = await setup(off.opts);
-  assert.equal(r.status === 'failed' && r.step, 'the push permission check');
-  assert.match(r.status === 'failed' ? r.message : '', /not on github\.com/);
-  assert.ok(!off.gh.log.some((l) => l.startsWith('permission o/target')));
+  assert.equal(readFileSync(join(dir, 'head.txt'), 'utf8').trim(), bare.main);
+  assert.equal(git(join(dir, 'repo', 'docs', 'guide'), 'rev-parse', 'HEAD'), guide.dangling);
+  assert.equal(readFileSync(join(dir, 'pwd.txt'), 'utf8').trim().replace(/^\/private/, ''), dir);
+  const task = readFileSync(join(dir, 'AIR_TASK.md'), 'utf8');
+  assert.match(task, new RegExp(`- \`repo/service/\`: ${SERVICE} checked out at \`main\`, commit \`${bare.main}\`\\.`));
+  assert.match(task, new RegExp(`- \`repo/docs/guide/\`: ${GUIDE} checked out at pull request #5, commit \`${guide.dangling}\`, read-only\\.`));
+  assert.match(task, /air opens one for each of these repos in which you commit work:\n\n- `repo\/service\/`: against `main` of https:\/\/github.com\/o\/service.git\n\n/);
+  assert.match(task, /Repos not listed here are read-only/);
 });
 
-test('the push-target host falls back to GH_HOST from the environment', async () => {
-  const { gh, opts } = await claimed(prBody('true'), { env: { ...SERVER_ENV, GH_HOST: 'ghe.example.com' } });
-  gh.setPermission('o/target', 'alice', 'write');
-  const r = await setup(opts);
-  assert.equal(r.status === 'failed' && r.step, 'the push permission check');
-  assert.match(r.status === 'failed' ? r.message : '', /not on ghe\.example\.com/);
-});
-
-test('deliver: pr with write access clones the repo and runs setup in repo/', async () => {
-  const { gh, opts, dir } = await claimed(prBody('git rev-parse HEAD > ../head.txt; pwd > ../pwd.txt'), { env: insteadOf(bare.bare, PR_URL, SERVER_ENV) });
-  gh.setPermission('o/target', 'alice', 'write');
+test('a resumed request checks out its checkpoint branch in the repo it names', async () => {
+  const resume = ['resume:', '  branches:', '    - repo: service', '      branch: air/7', `      sha: "${bare.dangling}"`];
+  const { opts, dir } = await claimed(twoRepos('true', resume), { env: gitEnv() });
   const r = await setup(opts);
   assert.equal(r.status, 'ready', JSON.stringify(r));
-  assert.equal(readFileSync(join(dir, 'head.txt'), 'utf8').trim(), bare.main);
-  assert.equal(readFileSync(join(dir, 'pwd.txt'), 'utf8').trim().replace(/^\/private/, ''), join(dir, 'repo'));
-  assert.match(readFileSync(join(dir, 'AIR_TASK.md'), 'utf8'), /commit your work on a new branch/);
+  assert.equal(git(join(dir, 'repo', 'service'), 'rev-parse', 'HEAD'), bare.dangling);
+  assert.equal(git(join(dir, 'repo', 'service'), 'rev-parse', '--abbrev-ref', 'HEAD'), 'air/7');
+  assert.equal(git(join(dir, 'repo', 'docs', 'guide'), 'rev-parse', 'HEAD'), guide.dangling);
+  const task = readFileSync(join(dir, 'AIR_TASK.md'), 'utf8');
+  assert.match(task, /## Continuing earlier work[\s\S]*git log of each repo under `repo\/`/);
+  assert.match(task, new RegExp(`- \`repo/service/\`: ${SERVICE} checked out at the earlier work's checkpoint, \`${bare.dangling}\` on branch \`air/7\``));
+});
+
+test('a clone that fails fails the request before setup runs, naming the repo', async () => {
+  const { gh, opts, dir } = await claimed(twoRepos('touch ran'), { env: gitEnv() });
+  updateState(dir, { repos: [{ path: 'service', sha: bare.main }, { path: 'docs/guide', sha: 'f'.repeat(40) }] });
+  const r = await setup(opts);
+  assert.equal(r.status === 'failed' && r.step, 'the git clone of `docs/guide`');
+  assert.match(r.status === 'failed' ? r.message : '', /could not fetch commit f{40}/);
+  assert.ok(!existsSync(join(dir, 'ran')));
+  assert.ok(gh.issues.get(7)!.labels.includes('air:failed'));
 });
 
 test('setup refuses without a claim, and stops when the claim was lost or cancelled', async () => {

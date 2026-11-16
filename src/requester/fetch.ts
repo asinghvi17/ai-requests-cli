@@ -14,7 +14,7 @@ import { lint } from '../spec/lint.ts';
 import { textAboveResult } from '../spec/markers.ts';
 import { fetchContext, releaseDownload, type Download } from '../workspace/context.ts';
 import { exec } from '../workspace/exec.ts';
-import { cloneAt } from '../workspace/git.ts';
+import { checkRef, cloneAt } from '../workspace/git.ts';
 import { readStatus, type LatestResult } from './status.ts';
 
 export class FetchError extends Error {}
@@ -93,7 +93,8 @@ export async function fetchResult(opts: FetchOptions): Promise<Fetched> {
       written.push('REPORT.md');
     }
 
-    const clone = async (url: string, ref: string, path: string, branch?: string) => {
+    /** Clones `url` into repo/<path> and checks out commit `sha` on local branch `branch`. */
+    const clone = async (url: string, sha: string, path: string, branch: string) => {
       const dest = join(dir, 'repo', ...path.split('/'));
       const logFile = join(gitLog, 'git.log');
       mkdirSync(join(dest, '..'), { recursive: true });
@@ -107,24 +108,23 @@ export async function fetchResult(opts: FetchOptions): Promise<Fetched> {
         return new FetchError(`${what}${text.trim() ? `\n${tail(text, 20, 2000)}` : ''}`);
       };
       try {
-        await cloneAt({ url, ref, dest, cwd: dir, log: logFile, env, ...(opts.allowAnyUrl ? { allowAnyUrl: true } : {}) });
+        checkRef(branch);
+        await cloneAt({ url, sha, dest, cwd: dir, log: logFile, env, ...(opts.allowAnyUrl ? { allowAnyUrl: true } : {}) });
       } catch (e) {
         throw fail(`repo/${path}: ${e instanceof Error ? e.message : String(e)}`);
       }
-      if (branch) {
-        const gitEnv: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' };
-        for (const [k, v] of Object.entries(env)) if (v !== undefined) gitEnv[k] ??= v;
-        const co = await exec(['git', 'checkout', '--quiet', '-B', branch], { cwd: dest, env: gitEnv, log: logFile });
-        if (co.code !== 0) throw fail(`repo/${path}: git checkout -B ${branch} failed`);
-      }
+      const gitEnv: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' };
+      for (const [k, v] of Object.entries(env)) if (v !== undefined) gitEnv[k] ??= v;
+      const co = await exec(['git', 'checkout', '--quiet', '-B', branch], { cwd: dest, env: gitEnv, log: logFile });
+      if (co.code !== 0) throw fail(`repo/${path}: git checkout -B ${branch} failed`);
       written.push(`repo/${path}`);
     };
 
     for (const pr of r.prs) {
       const { repo, number } = parsePullUrl(pr.url, host);
       const head = await gh.pullHead(repo, number);
-      log(`cloning ${head.cloneUrl} at ${head.ref} into repo/${pr.repo}`);
-      await clone(head.cloneUrl, head.ref, pr.repo);
+      log(`cloning ${head.cloneUrl} at ${head.sha} (branch ${head.ref}) into repo/${pr.repo}`);
+      await clone(head.cloneUrl, head.sha, pr.repo, head.ref);
     }
 
     const unzip = async (asset: Asset, into: string, what: string) => {

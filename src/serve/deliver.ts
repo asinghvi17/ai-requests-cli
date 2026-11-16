@@ -1,16 +1,16 @@
-// Delivery (spec/v0.md §6) once the agent has finished: a comment with its report, a pull request from its
-// commits, or a zip of out/ as a release asset. Each returns the issue comment to post, or why it failed.
-// A job stopped early gets a checkpoint instead (§11): its branch pushed, its out/ zipped to an asset.
-// Steps already done (pushed branch, opened PR, uploaded asset) are recorded, so a retry skips them.
-import { execFile } from 'node:child_process';
+// Delivery (spec/v0.md §6) once the agent has finished: a comment with its report, a pull request per repo
+// it changed, or a zip of out/ as a release asset. Each returns the issue comment to post, or why it failed.
+// A job stopped early gets a checkpoint instead (§11): its branches pushed, its out/ zipped to an asset.
+// Steps already done (pushed branches, opened PRs, uploaded asset) are recorded, so a retry skips them.
 import { existsSync, lstatSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { code } from '../claim/text.ts';
-import type { Asset, Request, Resume } from '../spec/frontmatter.ts';
+import { delivers } from '../claim/repos.ts';
+import type { Asset, RepoEntry, Request, Resume } from '../spec/frontmatter.ts';
 import { formatResult, type AirResult, type ResultUsage } from '../spec/markers.ts';
 import { sha256File } from '../workspace/context.ts';
-import { githubRepo } from '../workspace/setup.ts';
-import { readState, updateState, type JobRecord, type State, type UploadedAsset } from '../workspace/state.ts';
+import { githubRepo, gitOut } from '../workspace/git.ts';
+import { readState, updateState, type JobRecord, type RepoDelivery, type State, type UploadedAsset } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import { ARTIFACTS_TAG } from './github.ts';
 import { zipDir } from './zipout.ts';
@@ -82,15 +82,7 @@ export async function reportComment(report: string, footer: string, upload: () =
   }
 }
 
-function git(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    execFile('git', args, { cwd, env: { ...env, GIT_TERMINAL_PROMPT: '0' }, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', maxBuffer: 64 << 20 },
-      (err, stdout, stderr) => {
-        const c = err ? (typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : 1) : 0;
-        resolve({ code: c, stdout: String(stdout), stderr: String(stderr) });
-      });
-  });
-}
+const git = (args: string[], cwd: string, env: NodeJS.ProcessEnv) => gitOut(args, { cwd, env, timeoutMs: GIT_TIMEOUT_MS });
 
 function readReport(dir: string): string | undefined {
   const f = join(dir, 'out', REPORT_FILE);
@@ -107,6 +99,17 @@ function record(dir: string, job: JobRecord, patch: NonNullable<JobRecord['deliv
   const next = { ...job, delivery: { ...job.delivery, ...patch } };
   updateState(dir, { job: next }, now);
   return next;
+}
+
+/** What delivery recorded for the repo at `path` so far. */
+function repoRecord(dir: string, path: string): RepoDelivery {
+  return readState(dir).job!.delivery?.repos?.[path] ?? {};
+}
+
+function recordRepo(ctx: ServeContext, dir: string, path: string, patch: RepoDelivery): void {
+  const job = readState(dir).job!;
+  const repos = { ...job.delivery?.repos, [path]: { ...job.delivery?.repos?.[path], ...patch } };
+  record(dir, job, { repos }, ctx.now());
 }
 
 /**
@@ -185,45 +188,42 @@ async function deliverArtifact(ctx: ServeContext, dir: string, state: State, foo
 /** Options that keep a repo's own config from running anything (hooks, fsmonitor) while air reads it. */
 const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
 
-type Pushed = { ok: true; branch: string; sha: string } | { ok: false; detail: string; noBase?: true };
+type Pushed = { ok: true; branch: string; sha: string } | { ok: false; detail: string };
 
 /**
- * Pushes the agent's work in `repo/` to the first free `air/<N>[-k]` branch of the repo's url (§6), or says
- * why there is nothing to push: no commits beyond `ref`, or `ref` isn't a branch. The chosen branch and the
- * pushed commit are recorded, so a retry pushes the same branch. Transient failures throw.
+ * Pushes the agent's work in `repo/<path>` to the first free `air/<N>[-k]` branch of the entry's url (§6), or
+ * says why there is nothing to push: no commits beyond the commit the entry resolved to when claimed. The
+ * chosen branch and the pushed commit are recorded per repo, so a retry pushes the same branch. Transient
+ * failures throw.
  */
-async function pushWork(ctx: ServeContext, dir: string, state: State, request: Request): Promise<Pushed> {
-  const repoDir = join(dir, 'repo');
-  const url = request.repos[0]!.url;
-  const base = request.repos[0]!.ref!;
-  let job = readState(dir).job!;
-  if (job.delivery?.branch && job.delivery.sha) return { ok: true, branch: job.delivery.branch, sha: job.delivery.sha };
-  // The agent controlled repo/ (its config, hooks, remotes): air only reads commits from it, without
-  // credentials, into a fresh bare repo, and talks to repo.url (the URL the permission check covered)
-  // from there with the volunteer's credentials.
+async function pushWork(ctx: ServeContext, dir: string, state: State, entry: RepoEntry): Promise<Pushed> {
+  const repoDir = join(dir, 'repo', entry.path);
+  const url = entry.url;
+  const base = state.repos.find((r) => r.path === entry.path)?.sha;
+  if (!base) throw new Error(`the claim recorded no commit for repo/${entry.path}`);
+  const done = repoRecord(dir, entry.path);
+  if (done.branch && done.sha) return { ok: true, branch: done.branch, sha: done.sha };
+  // The agent controlled repo/<path> (its config, hooks, remotes): air only reads commits from it, without
+  // credentials, into a fresh bare repo, and talks to the entry's url (the URL the permission checks
+  // covered) from there with the volunteer's credentials.
   const clean = join(dir, '.air-push.git');
   rmSync(clean, { recursive: true, force: true });
   const init = await git(['init', '--quiet', '--bare', clean], dir, ctx.env);
   if (init.code !== 0) throw new Error(`git init failed: ${init.stderr.trim()}`);
   const g = (args: string[]) => git([...SAFE, ...args], clean, ctx.env);
 
-  const ls = await g(['ls-remote', '--heads', '--', url]);
-  if (ls.code !== 0) throw new Error(`git ls-remote failed: ${ls.stderr.trim()}`);
-  const heads = new Map(ls.stdout.split('\n').filter(Boolean).map((l) => {
-    const [sha, ref] = l.split('\t');
-    return [ref!.replace(/^refs\/heads\//, ''), sha!] as const;
-  }));
-  if (!heads.has(base)) return { ok: false, noBase: true, detail: `\`repos[0].ref\` (${code(base)}) is not a branch of ${url}, so there is nothing to open a pull request against.` };
-  const fetchBase = await g(['fetch', '--quiet', '--no-tags', '--', url, `+refs/heads/${base}:refs/air/base`]);
-  if (fetchBase.code !== 0) throw new Error(`git fetch of ${base} failed: ${fetchBase.stderr.trim()}`);
-
   // The agent's commits: HEAD and its local branches, fetched without running anything of the agent's.
   const fetchWork = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head', '+refs/heads/*:refs/air/work/*']);
   if (fetchWork.code !== 0) {
     const onlyHead = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head']);
-    if (onlyHead.code !== 0) return { ok: false, detail: `\`repo/\` has no commits air can read (${fetchWork.stderr.trim()}).` };
+    if (onlyHead.code !== 0) return { ok: false, detail: `\`repo/${entry.path}\` has no commits air can read (${fetchWork.stderr.trim()}).` };
   }
-  const ahead = async (rev: string) => Number((await g(['rev-list', '--count', `refs/air/base..${rev}`])).stdout.trim()) || 0;
+  // Commits count from the commit the entry resolved to; if the agent's history doesn't hold it, fetch it.
+  if ((await g(['cat-file', '-e', `${base}^{commit}`])).code !== 0) {
+    const fetchBase = await g(['fetch', '--quiet', '--no-tags', '--', url, base]);
+    if (fetchBase.code !== 0) throw new Error(`git fetch of ${base} from ${url} failed: ${fetchBase.stderr.trim()}`);
+  }
+  const ahead = async (rev: string) => Number((await g(['rev-list', '--count', rev, '--not', base])).stdout.trim()) || 0;
   let head: string | undefined;
   if (await ahead('refs/air/head') > 0) head = (await g(['rev-parse', 'refs/air/head'])).stdout.trim();
   else {
@@ -231,32 +231,50 @@ async function pushWork(ctx: ServeContext, dir: string, state: State, request: R
     for (const sha of refs) if (await ahead(sha) > 0) { head = sha; break; }
   }
   if (!head || !/^[0-9a-f]{40,64}$/.test(head)) {
-    return { ok: false, detail: `the agent made no commits beyond ${code(base)}. Uncommitted changes are not delivered.` };
+    return { ok: false, detail: `no commits beyond \`${base.slice(0, 12)}\`. Uncommitted changes are not delivered.` };
   }
-  let branch = job.delivery?.branch;
+  let branch = done.branch;
   if (!branch) {
+    const ls = await g(['ls-remote', '--heads', '--', url]);
+    if (ls.code !== 0) throw new Error(`git ls-remote failed: ${ls.stderr.trim()}`);
+    const heads = new Set(ls.stdout.split('\n').filter(Boolean).map((l) => l.split('\t')[1]!.replace(/^refs\/heads\//, '')));
     branch = `air/${state.issue}`;
     for (let k = 2; heads.has(branch); k++) branch = `air/${state.issue}-${k}`;
     // Recorded before the push, so a retry after a crash pushes the same branch rather than the next one.
-    job = record(dir, job, { branch }, ctx.now());
+    recordRepo(ctx, dir, entry.path, { branch });
   }
   const push = await g(['push', '--quiet', '--porcelain', '--force', '--', url, `${head}:refs/heads/${branch}`]);
-  if (push.code !== 0) throw new Error(`git push of ${branch} failed: ${push.stderr.trim() || push.stdout.trim()}`);
+  if (push.code !== 0) throw new Error(`git push of ${branch} to ${url} failed: ${push.stderr.trim() || push.stdout.trim()}`);
   rmSync(clean, { recursive: true, force: true });
-  record(dir, job, { sha: head }, ctx.now());
+  recordRepo(ctx, dir, entry.path, { sha: head });
   return { ok: true, branch, sha: head };
 }
 
-async function deliverPr(ctx: ServeContext, dir: string, state: State, request: Request, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
-  const base = request.repos[0]!.ref!;
-  const target = githubRepo(request.repos[0]!.url, ctx.ghHost);
-  if ('error' in target) return { ok: false, step: 'delivery', detail: target.error };
+/** A pull request's body (§6): the requests issue, the agent's summary and, once all are open, its siblings. */
+function prBody(ctx: ServeContext, state: State, summary: string, siblings: string[]): string {
+  const others = siblings.length ? `\n\nThe other pull requests for this request:\n\n${siblings.map((u) => `- ${u}`).join('\n')}\n` : '';
+  return `Part of ${ctx.gh.repo}#${state.issue}\n\n${defuseMarkers(summary.trim())}\n${others}`;
+}
 
-  if (!readState(dir).job!.delivery?.prUrl) {
-    const pushed = await pushWork(ctx, dir, state, request);
-    if (!pushed.ok) return { ok: false, step: 'delivery', detail: pushed.noBase ? pushed.detail : `No changes were produced: ${pushed.detail}` };
-    const summary = readReport(dir) ?? '(The agent left no summary.)';
-    const pr = { title: `air: ${state.title} (#${state.issue})`, head: pushed.branch, base, body: `Closes ${ctx.gh.repo}#${state.issue}\n\n${defuseMarkers(summary.trim())}\n` };
+/**
+ * `deliver: pr` (§6): for each repo without `deliver: none` that has commits, push `air/<N>[-k]` and open a
+ * pull request against the entry's `ref`; once all are open, add each one's siblings to its body. No repo
+ * with commits fails the request.
+ */
+async function deliverPr(ctx: ServeContext, dir: string, state: State, request: Request, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
+  const summary = readReport(dir) ?? '(The agent left no summary.)';
+  const entries = request.repos.filter((e) => delivers(request, e));
+  const without: string[] = [];
+  for (const entry of entries) {
+    if (repoRecord(dir, entry.path).prUrl) continue;
+    const target = githubRepo(entry.url, ctx.ghHost);
+    if ('error' in target) return { ok: false, step: 'delivery', detail: target.error };
+    const pushed = await pushWork(ctx, dir, state, entry);
+    if (!pushed.ok) {
+      without.push(`- ${code(entry.path)}: ${pushed.detail}`);
+      continue;
+    }
+    const pr = { title: `air: ${state.title} (#${state.issue})`, head: pushed.branch, base: entry.ref!, body: prBody(ctx, state, summary, []) };
     let prUrl: string;
     try {
       prUrl = await ctx.api.createPull(target.repo, pr);
@@ -266,11 +284,24 @@ async function deliverPr(ctx: ServeContext, dir: string, state: State, request: 
       if (!existing) throw e;
       prUrl = existing;
     }
-    record(dir, readState(dir).job!, { prUrl }, ctx.now());
+    recordRepo(ctx, dir, entry.path, { prUrl });
   }
-  const d = readState(dir).job!.delivery!;
-  const prs = [{ repo: request.repos[0]!.path, url: d.prUrl! }];
-  return { ok: true, comment: `Opened ${d.prUrl} from branch \`${d.branch}\`.\n\n${footer}\n\n${doneResult(state, 'pr', usage, { prs })}` };
+  const opened = entries.map((e) => ({ entry: e, rec: repoRecord(dir, e.path) })).filter((x) => x.rec.prUrl);
+  if (opened.length === 0) return { ok: false, step: 'delivery', detail: `No changes were produced:\n\n${without.join('\n')}` };
+  if (opened.length > 1) {
+    for (const { entry, rec } of opened) {
+      if (rec.linked) continue;
+      const target = githubRepo(entry.url, ctx.ghHost) as { repo: string };
+      const number = Number(/\/pull\/(\d+)$/.exec(rec.prUrl!)?.[1]);
+      if (!Number.isSafeInteger(number) || number < 1) throw new Error(`can't tell the number of pull request ${rec.prUrl}`);
+      await ctx.api.updatePull(target.repo, number, prBody(ctx, state, summary, opened.filter((o) => o.entry !== entry).map((o) => o.rec.prUrl!)));
+      recordRepo(ctx, dir, entry.path, { linked: true });
+    }
+  }
+  const prs = opened.map(({ entry, rec }) => ({ repo: entry.path, url: rec.prUrl! }));
+  const list = opened.map(({ entry, rec }) => `- ${code(entry.path)}: ${rec.prUrl} from branch \`${rec.branch}\``).join('\n');
+  const rest = without.length ? `\n\nNo pull request for:\n\n${without.join('\n')}` : '';
+  return { ok: true, comment: `Opened ${opened.length === 1 ? 'a pull request' : `${opened.length} pull requests`}:\n\n${list}${rest}\n\n${footer}\n\n${doneResult(state, 'pr', usage, { prs })}` };
 }
 
 /** A checkpoint (§11): what it keeps, as `resume` (undefined when it keeps nothing), and a description. */
@@ -280,21 +311,21 @@ export interface Checkpoint {
 }
 
 /**
- * Makes the checkpoint of a job stopped early (spec §11): with `deliver: pr`, the agent's commits pushed as
- * `air/<N>[-k]` (no pull request); and `out/`, if it holds a regular file, zipped and uploaded as
+ * Makes the checkpoint of a job stopped early (spec §11): with `deliver: pr`, the agent's commits in each repo
+ * without `deliver: none` pushed as `air/<N>[-k]` (no pull request); and `out/`, if it holds a regular file, zipped and uploaded as
  * `air-<N>-<nonce>-out.zip`. Uncommitted changes are left out.
  */
 export async function checkpoint(ctx: ServeContext, dir: string, state: State, request: Request): Promise<Checkpoint> {
   const lines: string[] = [];
   const resume: Resume = { branches: [] };
-  const repo = request.repos[0];
-  if (request.deliver === 'pr' && repo && existsSync(join(dir, 'repo'))) {
-    const pushed = await pushWork(ctx, dir, state, request);
+  for (const entry of request.repos) {
+    if (!delivers(request, entry) || !existsSync(join(dir, 'repo', entry.path))) continue;
+    const pushed = await pushWork(ctx, dir, state, entry);
     if (pushed.ok) {
-      resume.branches.push({ repo: repo.path, branch: pushed.branch, sha: pushed.sha });
-      lines.push(`- \`${repo.path}\`: the agent's commits, pushed to branch \`${pushed.branch}\` of ${repo.url} (\`${pushed.sha.slice(0, 12)}\`). Uncommitted changes are not kept.`);
+      resume.branches.push({ repo: entry.path, branch: pushed.branch, sha: pushed.sha });
+      lines.push(`- ${code(entry.path)}: the agent's commits, pushed to branch \`${pushed.branch}\` of ${entry.url} (\`${pushed.sha.slice(0, 12)}\`). Uncommitted changes are not kept.`);
     } else {
-      lines.push(`- \`${repo.path}\`: nothing pushed: ${pushed.detail}`);
+      lines.push(`- ${code(entry.path)}: nothing pushed: ${pushed.detail}`);
     }
   }
   const out = await uploadOut(ctx, dir, `air-${state.issue}-${state.nonce}-out.zip`);
@@ -313,6 +344,5 @@ export async function checkpoint(ctx: ServeContext, dir: string, state: State, r
 export async function deliver(ctx: ServeContext, dir: string, state: State, request: Request, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
   if (request.deliver === 'comment') return deliverComment(ctx, dir, state, footer, usage);
   if (request.deliver === 'artifact') return deliverArtifact(ctx, dir, state, footer, usage);
-  if (!existsSync(join(dir, 'repo'))) return { ok: false, step: 'delivery', detail: 'The workspace has no `repo/` checkout.' };
   return deliverPr(ctx, dir, state, request, footer, usage);
 }
