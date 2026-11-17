@@ -330,3 +330,43 @@ Alternatives considered:
   parent), and `--print` only prints that path. It replaces only an empty directory or one whose `SKILL.md`
   says `name: ai-request`. Anything else is refused (exit 1), so `--dir ~` can't wipe a home directory. The
   new copy is built in a sibling directory and swapped in by rename.
+
+## 2026-11-17: unattended agents by default, `air config init`, `air doctor` and stuck-prompt detection
+
+- Before this, an `[agents.X]` table left out meant `claude` or `codex` with no extra args. Claude Code then
+  ran in its default permission mode and Codex with its default approval policy, so each stopped at its first
+  prompt, and nothing checked for that. Now `DEFAULT_AGENTS` (`src/config.ts`) fills in any missing key, and
+  `air config init` writes all of it out, generated from the same constants. It writes once and never
+  overwrites; `--print` shows the file instead.
+- Flags, checked against the installed CLIs (Claude Code 2.1.311, Codex CLI 0.164.0):
+  - Claude Code: `--permission-mode auto`. `claude --help` lists the modes `acceptEdits`, `auto`,
+    `bypassPermissions`, `manual`, `dontAsk` and `plan`. Started in tmux with `--permission-mode auto` in a
+    trusted folder, it opened no dialog. `bypassPermissions` opens "WARNING: Claude Code running in Bypass
+    Permissions mode" until it is accepted once, which sets `skipDangerousModePermissionPrompt` in
+    `settings.json`.
+  - Codex: `--ask-for-approval never --sandbox workspace-write -c sandbox_workspace_write.network_access=true`.
+    `codex --help` gives `-a never` as "Never ask for user approval", and the sandbox keeps writes inside the
+    workspace. `--approve-for-me` (automatic review) is closer to Claude's auto mode, but this CLI also says
+    "Approve for me is unavailable" on some accounts, and nothing then answers its prompts.
+- `air doctor`, which `air serve` also runs at startup (`src/serve/preflight.ts`), checks each claude or codex
+  login listed in subscriptions.json. The agent's binary must be found and `--version` must print a version.
+  Its args must carry an unattended mode. For Claude Code, the login's `.claude.json` (`$CLAUDE_CONFIG_DIR`
+  or `~/.claude.json`) must have `hasCompletedOnboarding` and must trust `workspace_root` or a folder above it
+  (`projects[path].hasTrustDialogAccepted`). Trust is inherited: tested by trusting a parent, and also the
+  home directory. Bypass mode also needs `skipDangerousModePermissionPrompt`. For Codex, when
+  `workspace_root` is in a git repo, that repo's root must be `trust_level = "trusted"` in `config.toml`.
+  Tested: Codex asks "Trust this folder?" in a git repo even with `-a never`, not outside one, and saves the
+  answer under the repo root. Only those keys are read, and no file content is printed. Credential stores
+  (`.credentials.json`, `auth.json`, keychains) are never opened, so a missing Codex login isn't caught here;
+  the runtime check below catches its sign-in screen. Each problem comes with the command or setting that
+  fixes it.
+- A login that fails is refused through `MatchConfig.refused`. It takes no new requests ("not served: ..."
+  in the no-fit log), and the other logins carry on. Jobs already running on it are left alone.
+- At runtime, each tick reads the running job's visible pane (`capture-pane -p -J`) and matches its last 30
+  lines, whitespace collapsed, against `PROMPTS` (`src/serve/prompts.ts`). A screen that hasn't changed for
+  5 minutes counts as `idle`. Each pattern records its source. Most were captured from the installed CLIs in
+  tmux with throwaway config dirs (`src/serve/fixtures/panes/`). The permission and approval prompts need a
+  working model to appear, so their fixtures are built from the CLIs' strings. When a prompt is found, the
+  server logs it once with its fix, records it as `job.waiting` (which `air status` shows on the serving
+  machine), puts it in the tmux status bar and posts at most one issue comment per job (`waitingNotified`).
+  It does not stop the job: the timeout and cut-off rules do.

@@ -73,6 +73,16 @@ test('harness filter', () => {
   assert.ok('none' in none); assert.match(none.reasons[0]!, /^x: harness codex not allowed/);
 });
 
+test('a subscription the preflight refused takes no work; the others still do', () => {
+  const subs = [sub('c', { harness: 'claude', used: 0 }), sub('x', { harness: 'codex', used: 50 })];
+  const r = choose(req(), subs, { ...config, refused: { c: "claude can't run unattended: it is not installed" } }, NOW);
+  assert.ok(!('none' in r));
+  assert.equal(r.subscription.name, 'x');
+  const none = choose(req(), [subs[0]!], { ...config, refused: { c: "claude can't run unattended: it is not installed" } }, NOW);
+  assert.ok('none' in none);
+  assert.equal(none.reasons[0], "c: not served: claude can't run unattended: it is not installed");
+});
+
 test('model tier filter, default medium', () => {
   const subs = [sub('x', { harness: 'codex' })];
   const r = choose(req(), subs, config, NOW);

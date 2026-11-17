@@ -428,6 +428,28 @@ export function createTmux(options: TmuxOptions = {}) {
     throw new Error(`tmux capture-pane: ${r.stderr.trim()}`);
   }
 
+  /** The job pane's visible screen (`tmux capture-pane -p -J`: wrapped lines joined), or null if there is no such job. */
+  async function screen(issue: number): Promise<string | null> {
+    const job = await findJob(issue);
+    if (!job) return null;
+    const r = await run(['capture-pane', '-p', '-J', '-t', job.paneId]);
+    if (r.code === 0) return r.stdout;
+    if (vanished(r.stderr)) return null;
+    throw new Error(`tmux capture-pane: ${r.stderr.trim()}`);
+  }
+
+  /**
+   * Show `text` in the session's status line (right side) to whoever attaches, or clear it. It goes in as
+   * one argv word with `#` doubled, so tmux shows it verbatim.
+   */
+  async function setNotice(text: string | undefined): Promise<void> {
+    const t = `${target}:`;
+    const r = text === undefined
+      ? await run(['set-option', '-u', '-t', t, 'status-right'])
+      : await run(['set-option', '-t', t, 'status-right-length', '200', ';', 'set-option', '-t', t, 'status-right', text.replaceAll('#', '##')]);
+    if (r.code !== 0 && !noServer(r.stderr) && !vanished(r.stderr)) throw new Error(`tmux set-option: ${r.stderr.trim()}`);
+  }
+
   /**
    * Interrupt the agent, wait up to `graceMs` for it to exit, then kill the window. Returns the exit status
    * if the agent exited (null when it had to be killed), or undefined if there was no such job.
@@ -477,7 +499,7 @@ export function createTmux(options: TmuxOptions = {}) {
     await run(['kill-server']);
   }
 
-  return { socket, session, version, checkVersion, ensureSession, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, attachArgs, killServer };
+  return { socket, session, version, checkVersion, ensureSession, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, screen, setNotice, attachArgs, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;

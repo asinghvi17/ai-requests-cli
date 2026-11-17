@@ -29,7 +29,7 @@ test('--help lists every command; no args prints help to stderr and fails', asyn
 
 test('routes the full command set', () => {
   assert.deepEqual(Object.keys(COMMANDS).sort(), [
-    'attach', 'claim', 'fetch', 'lint', 'pause', 'release', 'resume', 'retry', 'run', 'serve', 'setup', 'skill', 'start', 'status', 'stop', 'submit',
+    'attach', 'claim', 'config', 'doctor', 'fetch', 'lint', 'pause', 'release', 'resume', 'retry', 'run', 'serve', 'setup', 'skill', 'start', 'status', 'stop', 'submit',
     'sweep', 'usage', 'wait',
   ]);
 });

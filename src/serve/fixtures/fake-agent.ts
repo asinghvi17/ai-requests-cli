@@ -12,6 +12,8 @@
 //   quit N         note the start in out/PROGRESS.md (and commit a WIP change on branch `work` in every repo),
 //                  then exit N after 700 ms without creating AIR_DONE
 //   progress       write out/PROGRESS.md, then never finish
+//   prompt NAME    show the captured prompt screen fixtures/panes/NAME.txt until the file `go` exists, then
+//                  clear the screen, report "answered" and create AIR_DONE
 // A start with --resume (or `resume`) exits 3 at once if the file `resume-fails` exists.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -62,6 +64,17 @@ else if (mode === 'exitdone') {
     report('finished');
     done();
     process.exit(0);
+  }, 50);
+}
+else if (mode === 'prompt') {
+  process.stdout.write(readFileSync(new URL(`panes/${arg}.txt`, import.meta.url), 'utf8'));
+  const t = setInterval(() => {
+    if (!existsSync(join(ws, 'go'))) return;
+    clearInterval(t);
+    process.stdout.write('\x1b[2J\x1b[Hanswered; working\n');
+    report('answered');
+    done();
+    idle();
   }, 50);
 }
 else if (mode === 'wait') {

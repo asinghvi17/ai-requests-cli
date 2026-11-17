@@ -140,7 +140,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   const pane = (await ctx.tmux.listJobs()).find((j) => j.issue === n);
   job = saveJob(ctx, dir, {
     status: 'running', sessionId, paneNonce: pane?.nonce, startedAt: startedAt.toISOString(), starts: job.starts + 1,
-    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, ...(usageBefore ? { usageBefore } : {}),
+    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, waiting: undefined, ...(usageBefore ? { usageBefore } : {}),
   });
   ctx.log(`#${n}: started ${job.harness} (${job.model}) ${resume ? `resuming session ${resume}` : 'fresh'}: ${argv.map((a) => JSON.stringify(a)).join(' ')}`);
   await moveLabel(ctx, dir, 'air:running');

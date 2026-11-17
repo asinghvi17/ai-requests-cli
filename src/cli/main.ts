@@ -17,7 +17,8 @@ import { waitCommand } from './wait.ts';
 import { fetchCommand } from './fetch.ts';
 import { retryCommand } from './retry.ts';
 import { skillCommand } from './skill.ts';
-import { attachCommand, debugCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
+import { configCommand } from './config.ts';
+import { attachCommand, debugCommand, doctorCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
 export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
@@ -47,7 +48,7 @@ export const COMMANDS: Record<string, Command> = {
   },
   status: {
     usage: 'status [--repo OWNER/NAME] [--json] ISSUE',
-    summary: "show a request's state label, holder and latest result",
+    summary: "show a request's state label, holder and latest result; on the machine serving it, whether its agent waits on you",
     args: ['ISSUE'],
     flags: { ...REPO, json: { type: 'boolean' } },
     run: statusCommand,
@@ -79,6 +80,20 @@ export const COMMANDS: Record<string, Command> = {
     args: [],
     flags: { ...REPO, manual: { type: 'boolean' }, once: { type: 'boolean' }, 'once-wait': { type: 'string' } },
     run: serveCommand,
+  },
+  config: {
+    usage: 'config init [--repo OWNER/NAME] [--print]',
+    summary: 'write the default config (Claude Code and Codex agents, both unattended) to ~/.config/air/config.toml; --print shows it instead',
+    args: ['ACTION'],
+    flags: { ...REPO, print: { type: 'boolean' } },
+    run: configCommand,
+  },
+  doctor: {
+    usage: 'doctor',
+    summary: 'check that each configured agent can run unattended (binary, version, launch flags, onboarding, folder trust); `air serve` runs it at startup',
+    args: [],
+    flags: {},
+    run: doctorCommand,
   },
   claim: { usage: 'claim [--repo OWNER/NAME] ISSUE', summary: 'claim a request', args: ['ISSUE'], flags: REPO, run: claimCommand },
   setup: { usage: 'setup [--repo OWNER/NAME] ISSUE', summary: 'prepare the workspace for a claimed request', args: ['ISSUE'], flags: REPO, run: setupCommand },

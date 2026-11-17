@@ -2,7 +2,7 @@
 // config, usage and a log. Built from the config by `serveContext`; tests build their own.
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { Config } from '../config.ts';
+import { configPath, type Config } from '../config.ts';
 import { defaultHost } from '../claim/claim.ts';
 import { createTrust, type Trust } from '../claim/trust.ts';
 import { createGh } from '../gh/gh.ts';
@@ -45,14 +45,18 @@ export interface ServeContext {
   setupTimeoutMs?: number;
   download?: Download;
   codexHome?: string;
+  /** air's config file, named in fixes the server logs. */
+  configFile?: string;
+  /** Subscription name -> why new work isn't run on it (the startup preflight failed for its agent). */
+  refused?: Record<string, string>;
   /** Release assets for the daily sweep; default: the requests repo through gh. */
   releases?: Releases;
 }
 
 export const SERVE_LOG = 'serve.log';
 
-export function matchConfig(config: Config): MatchConfig {
-  return { subscriptions: config.subscriptions, models: config.models, maxJobs: config.max_jobs };
+export function matchConfig(config: Config, refused?: Record<string, string>): MatchConfig {
+  return { subscriptions: config.subscriptions, models: config.models, maxJobs: config.max_jobs, ...(refused ? { refused } : {}) };
 }
 
 /** A logger that appends timestamped lines to `file` (shown in tmux window 0) and echoes them. */
@@ -82,6 +86,7 @@ export function serveContext(config: Config, repo: string, opts: { echo?: (line:
     releases: releases(repo, gh),
     tmux: createTmux(),
     config,
+    configFile: configPath(),
     root: config.workspace_root,
     host: defaultHost(),
     ghHost: env.GH_HOST || 'github.com',

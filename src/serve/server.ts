@@ -20,6 +20,8 @@ import {
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
+import { matchPrompt, STUCK_MS, waitingFor } from './prompts.ts';
+import { configPath } from '../config.ts';
 
 export interface ServerOptions {
   /** Wait for `air run` instead of starting agents. */
@@ -106,6 +108,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
    * never decides a job's fate: only a second consecutive miss pauses (or, after a restart, resumes) it.
    */
   const missing = new Map<number, { restart: boolean; nonce: string | undefined; starts: number }>();
+  /** Running job -> its pane's last screen and since when it has not changed (STUCK_MS). */
+  const screens = new Map<number, { text: string; since: number }>();
+  /** Running job -> the line shown in the tmux status bar while it waits on the volunteer. */
+  const notices = new Map<number, string>();
+  let notice: string | undefined;
 
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -303,6 +310,54 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       ctx.log(`#${n}: subscription ${job.subscription} is out of quota; stopping until ${out.resetsAt ?? 'it recovers'}`);
       return track(n, 'quota stop', stopAgent(ctx, dir, 'quota', out.resetsAt).then(() => {}));
     }
+    await watchPrompt(dir, n, job, pane.windowId);
+  }
+
+  /**
+   * Whether the running agent waits on a person: a known prompt at the bottom of its screen, or a screen that
+   * has not changed for STUCK_MS. Logs it once per prompt with the fix, records it for `air status`, puts it
+   * in the tmux status bar and, once per job, tells the issue. The job keeps running: its timeout decides.
+   */
+  async function watchPrompt(dir: string, n: number, job: JobRecord, windowId: string): Promise<void> {
+    const text = await ctx.tmux.screen(n);
+    if (text === null) return;
+    const now = ctx.now().getTime();
+    const prev = screens.get(n);
+    const since = prev?.text === text ? prev.since : now;
+    if (prev?.text !== text) screens.set(n, { text, since });
+    const found = matchPrompt(job.harness, text) ?? (now - since >= STUCK_MS ? 'idle' : undefined);
+    if (!found) {
+      notices.delete(n);
+      // Right after a restart an idle screen has no history yet: keep that until the screen changes.
+      if (job.waiting && !(job.waiting.prompt === 'idle' && prev === undefined)) {
+        saveJob(ctx, dir, { waiting: undefined });
+        ctx.log(`#${n}: ${job.harness} moved on from ${job.waiting.what}`);
+      }
+      return;
+    }
+    const w = waitingFor(found, {
+      configFile: ctx.configFile ?? configPath(), workspaceRoot: ctx.root,
+      attach: `\`air attach ${n}\` (\`tmux -L ${ctx.tmux.socket} attach -t ${windowId}\`)`,
+    });
+    notices.set(n, `#${n} ${job.harness} waits on you: ${w.what}; see air status ${n}`);
+    if (job.waiting?.prompt !== w.prompt) {
+      saveJob(ctx, dir, { waiting: { ...w, since: new Date(found === 'idle' ? since : now).toISOString() } });
+      ctx.log(`#${n}: ${job.harness} is waiting on you: ${w.what}. Fix: ${w.fix}`);
+    }
+    if (job.waitingNotified) return;
+    await ctx.gh.comment(n, `The ${job.harness} agent working on this request on ${code(ctx.host)} is waiting on the volunteer: ${w.what}. ` +
+      'They have been told. The job keeps running, and the request\'s `timeout` still applies.');
+    saveJob(ctx, dir, { waitingNotified: true });
+  }
+
+  /** Puts the waiting jobs' notices in the tmux status bar, or clears it; only when that changes. */
+  async function showNotices(running: Set<number>): Promise<void> {
+    for (const n of [...screens.keys()]) if (!running.has(n)) screens.delete(n);
+    for (const n of [...notices.keys()]) if (!running.has(n)) notices.delete(n);
+    const text = notices.size ? [...notices.values()].join(' | ') : undefined;
+    if (text === notice) return;
+    await ctx.tmux.setNotice(text);
+    notice = text;
   }
 
   /** When a quota pause gives up (§11): 24 h after it began, but not before an hour past the reset it waits on. */
@@ -363,7 +418,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         skip.set(n, hash);
         continue;
       }
-      const choice = choose({ effort: request.effort, harness: request.harness, model: request.model }, free, matchConfig(ctx.config), ctx.now());
+      const choice = choose({ effort: request.effort, harness: request.harness, model: request.model }, free, matchConfig(ctx.config, ctx.refused), ctx.now());
       if ('none' in choice) {
         const why = choice.reasons.join('; ') || 'no subscriptions';
         if (noFit.get(n) !== why) ctx.log(`#${n}: no fit: ${why}`);
@@ -432,6 +487,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         } catch (e) {
           ctx.log(`#${ws.state.issue}: ${err(e)}`);
         }
+      }
+      try {
+        await showNotices(new Set(held().filter((w) => w.state.job?.status === 'running').map((w) => w.state.issue)));
+      } catch (e) {
+        ctx.log(`tmux status: ${err(e)}`);
       }
       if (o.poll === false || readServerState(ctx.stateDir).paused) return undefined;
       return await poll(usage, held());

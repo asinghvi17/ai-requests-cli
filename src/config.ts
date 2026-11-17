@@ -16,11 +16,11 @@ export type Subscription = {
   budget?: number; // manual effort budget per window, for subscriptions whose usage can't be read
 };
 
-/** `[agents.<harness>]`: how `air serve` starts that harness's agent. */
+/** `[agents.<harness>]`: how `air serve` starts that harness's agent. A missing key takes its DEFAULT_AGENTS value. */
 export type Agent = {
-  /** argv prefix for the agent (default: the harness name, e.g. `["claude"]`). */
+  /** argv prefix for the agent, e.g. `["claude"]`. */
   command: string[];
-  /** Extra arguments after air's own (e.g. a permission mode). */
+  /** Arguments after air's own: the mode that lets the agent run unattended. */
   args: string[];
 };
 
@@ -39,6 +39,16 @@ export const AGENT_HARNESSES = ['claude', 'codex'] as const;
 
 export const DEFAULT_MODELS: Record<string, Models> = {
   claude: { small: 'haiku', medium: 'sonnet', large: 'opus' },
+};
+
+/**
+ * How each harness runs unattended (checked against Claude Code 2.1.311 and Codex CLI 0.164.0; see
+ * docs/decisions.md). Claude Code: auto mode, where a classifier approves safe tool calls and blocks risky
+ * ones instead of asking. Codex: never ask for approval, in the workspace-write sandbox with network access.
+ */
+export const DEFAULT_AGENTS: Record<(typeof AGENT_HARNESSES)[number], Agent> = {
+  claude: { command: ['claude'], args: ['--permission-mode', 'auto'] },
+  codex: { command: ['codex'], args: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true'] },
 };
 
 export class ConfigError extends Error {}
@@ -127,15 +137,16 @@ export function parseConfig(src: string, home = homedir()): Config {
     models[harness] = tiers as Models;
   }
 
-  const agents: Record<string, Agent> = {};
+  const agents: Record<string, Agent> = structuredClone(DEFAULT_AGENTS);
   for (const [harness, raw] of Object.entries(table(doc.agents, 'agents'))) {
     const w = `agents.${harness}`;
     if (!(AGENT_HARNESSES as readonly string[]).includes(harness)) throw new ConfigError(`${w}: harness must be one of ${AGENT_HARNESSES.join(', ')}`);
     const t = table(raw, w);
     only(t, ['command', 'args'], `${w}.`);
-    const command = strings(t.command, `${w}.command`) ?? [harness];
+    const def = DEFAULT_AGENTS[harness as keyof typeof DEFAULT_AGENTS];
+    const command = strings(t.command, `${w}.command`) ?? def.command;
     if (command.length === 0 || command[0] === '') throw new ConfigError(`${w}.command must not be empty`);
-    agents[harness] = { command, args: strings(t.args, `${w}.args`) ?? [] };
+    agents[harness] = { command, args: strings(t.args, `${w}.args`) ?? def.args };
   }
 
   const config: Config = {
@@ -148,6 +159,53 @@ export function parseConfig(src: string, home = homedir()): Config {
   };
   if (repo !== undefined) config.repo = repo;
   return config;
+}
+
+const tomlArray = (xs: string[]) => `[${xs.map((x) => JSON.stringify(x)).join(', ')}]`;
+
+/**
+ * What `air config init` writes: both harnesses, each with a subscription, model tiers and its unattended
+ * agent command. Every value is spelled out, so the file shows what air runs.
+ */
+export function configTemplate(repo?: string): string {
+  const agent = (h: keyof typeof DEFAULT_AGENTS) => `command = ${tomlArray(DEFAULT_AGENTS[h].command)}\nargs = ${tomlArray(DEFAULT_AGENTS[h].args)}`;
+  return `# air serve's config. \`air doctor\` checks that each agent below can run unattended.
+${repo ? `repo = "${repo}"` : '# repo = "OWNER/NAME"   # the requests repo to serve (or pass --repo)'}
+workspace_root = "~/air"   # each job gets a fresh directory under it; trust it in Claude Code once
+max_jobs = 1               # jobs running at once
+tick_seconds = 60          # how often air serve polls; a job's time limit is its request's \`timeout\`
+
+# One table per login, named as in subscriptions.json (default: one \`claude\` and one \`codex\` login).
+[subscriptions.claude]
+harness = "claude"
+scale = 1        # effort multiplier: 4 for a Max 20x plan next to a 5x one
+reserve = 0.3    # share of each usage window kept for yourself
+
+[subscriptions.codex]
+harness = "codex"
+scale = 1
+reserve = 0.3
+
+# Request tier -> model. A request never runs below its tier.
+[models.claude]
+small = "haiku"
+medium = "sonnet"
+large = "opus"
+
+[models.codex]
+small = "gpt-6-luna"
+medium = "gpt-6.1-sol"
+large = "gpt-6-astra"
+
+# How air starts each agent: air adds the session, model and prompt; \`args\` is what lets it run unattended.
+# Claude Code in auto mode: a classifier approves safe actions and blocks risky ones, without asking.
+[agents.claude]
+${agent('claude')}
+
+# Codex never asks for approval; commands run in its workspace-write sandbox, with network access.
+[agents.codex]
+${agent('codex')}
+`;
 }
 
 // A missing file is the all-defaults config; a malformed one is an error naming the file.

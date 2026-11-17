@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { createTrust, markedComments } from '../claim/trust.ts';
 import { main } from '../cli/main.ts';
 import { jobDeps } from '../cli/jobs.ts';
+import { deps as requestDeps } from '../cli/requests.ts';
 import type { Config } from '../config.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { createGh, GhError } from '../gh/gh.ts';
@@ -29,6 +30,7 @@ import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';
 import { fakeGh, type FakeGh } from './fake-gh.ts';
 import { serveGitHub } from './github.ts';
 import { PAUSE_LIMIT_MS } from './jobs.ts';
+import { STUCK_MS } from './prompts.ts';
 import { CLAIM_RETRY_MS, createServer, type Server } from './server.ts';
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0;
@@ -653,6 +655,48 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(stateLabels(w, 9), ['air:running']);
   });
 
+  test('an agent at a prompt: logged with its fix, shown in tmux and air status, one issue comment, and it keeps running', async () => {
+    const w = world();
+    w.store.addIssue({ number: 40, body: body('prompt claude-trust') });
+    await running(w, 40);
+    await until(w, 'waiting', () => job(w, 40)!.state.job!.waiting?.prompt === 'claude-trust');
+    const waiting = job(w, 40)!.state.job!.waiting!;
+    assert.equal(waiting.what, 'Claude Code folder trust ("Quick safety check")');
+    assert.match(waiting.fix, new RegExp(`^run \`mkdir -p ${w.root} && cd ${w.root} && claude\`, answer "Yes, I trust this folder"`));
+    assert.equal(w.logs.filter((l) => l.startsWith('#40: claude is waiting on you: Claude Code folder trust ("Quick safety check"). Fix: run `mkdir -p')).length, 1);
+    const bar = () => spawnSync('tmux', ['-L', socket, 'show-options', '-v', '-t', '=air:', 'status-right'], { encoding: 'utf8' }).stdout;
+    assert.equal(bar().trim(), '##40 claude waits on you: Claude Code folder trust ("Quick safety check"); see air status 40');
+    const st = await statusViaCli(w, 40);
+    assert.match(st.out, /waiting: the claude agent here waits on you since \S+: Claude Code folder trust/);
+    for (let i = 0; i < 3; i++) {
+      await w.server.tick();
+      await w.server.idle();
+    }
+    const told = () => comments(w, 40).filter((c) => /is waiting on the volunteer/.test(c));
+    assert.equal(told().length, 1);
+    assert.match(told()[0]!, /^The claude agent working on this request on `box` is waiting on the volunteer: Claude Code folder trust/);
+    assert.equal(w.logs.filter((l) => l.startsWith('#40: claude is waiting on you')).length, 1);
+    assert.equal(status(w, 40), 'running');
+    writeFileSync(join(job(w, 40)!.dir, 'go'), '');
+    await until(w, 'delivered', () => status(w, 40) === 'done');
+    assert.equal(told().length, 1);
+    await w.server.tick();
+    assert.equal(bar(), '');
+  });
+
+  test('an agent whose screen stops changing for STUCK_MS may be at a prompt: reported as idle', async () => {
+    const w = world();
+    w.store.addIssue({ number: 41, body: body('hang', ['deliver: comment', 'timeout: 1h']) });
+    await running(w, 41);
+    await w.server.tick();
+    assert.equal(job(w, 41)!.state.job!.waiting, undefined);
+    w.clock.offset = STUCK_MS + 60_000;
+    await until(w, 'idle', () => job(w, 41)!.state.job!.waiting?.prompt === 'idle');
+    assert.match(job(w, 41)!.state.job!.waiting!.fix, /^attach with `air attach 41` \(`tmux -L \S+ attach -t @\d+`\) and answer it$/);
+    assert.equal(comments(w, 41).filter((c) => /may be waiting at a prompt/.test(c)).length, 1);
+    assert.equal(status(w, 41), 'running');
+  });
+
   test('cancel: air:cancel stops the agent, comments and releases', async () => {
     const w = world();
     w.store.addIssue({ number: 10, body: body('wait') });
@@ -1061,6 +1105,14 @@ async function waitFor(check: () => Promise<boolean>, ms = 10_000): Promise<void
     if (Date.now() > end) throw new Error('timed out');
     await sleep(50);
   }
+}
+
+async function statusViaCli(w: World, n: number) {
+  requestDeps.loadConfig = () => w.ctx.config;
+  requestDeps.repo = () => w.ctx.gh;
+  let out = '';
+  const code = await main(['status', String(n)], { out: (s) => { out += s; }, err: () => {} });
+  return { code, out };
 }
 
 async function stopViaCli(w: World, n: number) {
