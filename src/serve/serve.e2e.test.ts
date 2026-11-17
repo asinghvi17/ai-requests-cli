@@ -821,7 +821,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const git = (...a: string[]) => execFileSync('git', ['--git-dir', bare.bare, ...a], { encoding: 'utf8' }).trim();
     const checkpointSha = git('rev-parse', 'refs/heads/air/34');
     // Someone else pushes to the checkpoint branch before the request is resumed.
-    const moved = git('commit-tree', `${checkpointSha}^{tree}`, '-p', checkpointSha, '-m', 'by hand');
+    const moved = git('-c', 'user.name=Someone', '-c', 'user.email=someone@example.com', 'commit-tree', `${checkpointSha}^{tree}`, '-p', checkpointSha, '-m', 'by hand');
     git('update-ref', 'refs/heads/air/34', moved);
     const issue = w.store.issues.get(34)!;
     issue.body = body('pr', [...PR, 'resume:', '  branches:', '    - repo: target', '      branch: air/34', `      sha: "${checkpointSha}"`,

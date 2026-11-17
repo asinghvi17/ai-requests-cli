@@ -58,7 +58,7 @@ describe('env', () => {
     assert.ok(!l.argv[1]!.endsWith(';'));
     const r = spawnSync(l.argv[0]!, l.argv.slice(1), { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', INHERITED: 'yes', FOO: 'old' } });
     const out = r.stdout.split('\n');
-    assert.equal(out[0], realpathSync(ws)); // macOS: /var is /private/var
+    assert.equal(realpathSync(out[0]!), realpathSync(ws)); // macOS: /var is /private/var
     assert.ok(out.includes(`FOO=b'ar;`));
     assert.ok(!out.includes('FOO=old'));
     assert.ok(out.includes('INHERITED=yes'));
