@@ -11,9 +11,10 @@ import { releases, type Releases } from '../gh/releases.ts';
 import type { MatchConfig } from '../match/match.ts';
 import { createTmux, type Tmux } from '../tmux/tmux.ts';
 import { configFile, loadConfig as loadSubscriptions, readAll, stateDir as usageStateDir } from '../usage/index.ts';
-import type { Subscription, SubscriptionConfig } from '../usage/types.ts';
+import type { ManualConfig, Subscription, SubscriptionConfig } from '../usage/types.ts';
 import type { Download } from '../workspace/context.ts';
 import { serveGitHub, type ServeGitHub } from './github.ts';
+import { loginsOf } from './preflight.ts';
 
 export interface ServeContext {
   gh: RequestsRepo;
@@ -33,6 +34,8 @@ export interface ServeContext {
   usage(opts?: { refresh?: boolean }): Promise<Subscription[]>;
   /** Environment that selects a subscription's login for its agent (CLAUDE_CONFIG_DIR / CODEX_HOME). */
   agentEnv(subscription: string): Record<string, string>;
+  /** A manual subscription's budget (subscriptions.json), which a job is charged what it spent; undefined for others. */
+  manual?(subscription: string): ManualConfig | undefined;
   log(message: string): void;
   /** The file `log` appends to; tmux window 0 follows it. */
   logFile?: string;
@@ -95,10 +98,14 @@ export function serveContext(config: Config, repo: string, opts: { echo?: (line:
     trust: createTrust(issues),
     usage: (o = {}) => readAll(subscriptions(), { stateDir: dir, refresh: o.refresh }),
     agentEnv(name): Record<string, string> {
-      const s = subscriptions().find((c) => c.name === name);
-      if (s?.harness === 'claude' && s.configDir) return { CLAUDE_CONFIG_DIR: s.configDir };
-      if (s?.harness === 'codex' && s.codexHome) return { CODEX_HOME: s.codexHome };
+      const [login] = loginsOf(subscriptions().filter((c) => c.name === name), config);
+      if (login?.configDir) return { CLAUDE_CONFIG_DIR: login.configDir };
+      if (login?.codexHome) return { CODEX_HOME: login.codexHome };
       return {};
+    },
+    manual(name) {
+      const s = subscriptions().find((c) => c.name === name);
+      return s?.harness === 'manual' ? s : undefined;
     },
     log: fileLogger(join(dir, SERVE_LOG), opts.echo),
     logFile: join(dir, SERVE_LOG),

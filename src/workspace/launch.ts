@@ -11,7 +11,7 @@ export interface LaunchInput {
   cwd: string;
   /** Harness argv; the last word is TASK_INSTRUCTION. */
   argv: string[];
-  /** Added to the launcher's allowlisted environment. */
+  /** Added to (or overriding) the volunteer's environment, which the agent inherits. */
   env?: Record<string, string>;
   /** Unused: setup already wrote AIR_TASK.md. */
   task?: string;

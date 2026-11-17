@@ -26,8 +26,8 @@ export const PID_FILE = 'pid';
 export const REAP_GRACE_SECONDS = 3;
 
 /**
- * Write a self-deleting launcher that cds to `cwd` and execs `argv`. With `clearEnv`, the environment is
- * exactly `env` (`env -i`); otherwise `env` is added to the inherited one.
+ * Write a self-deleting launcher that cds to `cwd` and execs `argv`, with `env` added to the inherited
+ * environment.
  *
  * With `status` (job panes), the launcher shell stays: it is the pane's process, session and process group
  * leader, and it runs the agent in the foreground of that group (so C-c and the terminal reach the agent as
@@ -44,10 +44,10 @@ export const REAP_GRACE_SECONDS = 3;
  * hangup; even as a zombie tmux never reaps, its fds are closed), the reaper sends the whole group TERM, and
  * KILL after REAP_GRACE_SECONDS. An agent killed by a signal exits as sh reports it: status 128 + N.
  */
-export function writeLauncher(opts: { argv: string[]; env?: Record<string, string>; cwd?: string; clearEnv?: boolean; status?: boolean }): Launcher {
+export function writeLauncher(opts: { argv: string[]; env?: Record<string, string>; cwd?: string; status?: boolean }): Launcher {
   const dir = mkdtempSync(join(tmpdir(), 'air-launch-')); // mode 0700
   const script = join(dir, 'run.sh');
-  const words = ['env', ...(opts.clearEnv ? ['-i'] : []), ...Object.entries(opts.env ?? {}).map(([k, v]) => `${k}=${v}`), ...opts.argv];
+  const words = ['env', ...Object.entries(opts.env ?? {}).map(([k, v]) => `${k}=${v}`), ...opts.argv];
   let lines: string[];
   if (opts.status) {
     const q = (f: string) => shQuote(join(dir, f));

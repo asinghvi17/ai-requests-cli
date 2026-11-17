@@ -5,6 +5,7 @@ import { ArgError, parseArgs, type FlagSpecs } from './args.ts';
 import { GhError } from '../gh/gh.ts';
 import { VERSION } from '../version.ts';
 import { usageCommand } from '../usage/index.ts';
+import { loadConfig, type Config } from '../config.ts';
 import { claimCommand } from './claim.ts';
 import { releaseCommand } from './release.ts';
 import { CommandError, UsageError } from './requests.ts';
@@ -30,6 +31,22 @@ type Command = {
   raw?: boolean; // the command parses its own argv (and handles --help); the router passes it through
   run?: (inv: Invocation) => Promise<number> | number;
 };
+
+
+/** config.toml's `window_usd` per subscription, for `air usage` to show windows in dollars; none if config.toml is unreadable. */
+function windowUsdFromConfig(): (name: string) => number | undefined {
+  let config: Config | null | undefined;
+  return (name) => {
+    if (config === undefined) {
+      try {
+        config = loadConfig();
+      } catch {
+        config = null;
+      }
+    }
+    return config?.subscriptions[name]?.window_usd;
+  };
+}
 
 const HELP: FlagSpecs = { help: { type: 'boolean', short: 'h' } };
 const REPO: FlagSpecs = { repo: { type: 'string' } };
@@ -104,12 +121,12 @@ export const COMMANDS: Record<string, Command> = {
   pause: { usage: 'pause', summary: 'stop claiming new requests (running jobs continue)', args: [], flags: {}, run: pauseCommand },
   resume: { usage: 'resume', summary: 'resume claiming requests', args: [], flags: {}, run: resumeCommand },
   usage: {
-    usage: 'usage [--refresh] [--json] [spend NAME AMOUNT | reset-ledger]',
+    usage: 'usage [--refresh] [--json] [spend NAME USD | reset-ledger]',
     summary: 'show subscription quota',
     args: [],
     flags: {},
     raw: true,
-    run: ({ argv, io }) => usageCommand(argv, { out: (s) => io.out(`${s}\n`), err: (s) => io.err(`${s}\n`) }),
+    run: ({ argv, io }) => usageCommand(argv, { out: (s) => io.out(`${s}\n`), err: (s) => io.err(`${s}\n`), windowUsd: windowUsdFromConfig() }),
   },
   release: { usage: 'release [--repo OWNER/NAME] ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: REPO, run: releaseCommand },
   lint: { usage: 'lint [FILE|-]', summary: 'check a request body against the spec', args: [], flags: {}, run: lintCommand },

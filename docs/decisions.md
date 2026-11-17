@@ -331,6 +331,48 @@ Alternatives considered:
   says `name: ai-request`. Anything else is refused (exit 1), so `--dir ~` can't wipe a home directory. The
   new copy is built in a sibling directory and swapped in by rename.
 
+## 2026-11-17: trailing text after results, real spend, the agent's environment, resumes keep their branch
+
+- Spec §10: text may follow a comment's `air-result` block (signatures, bot footers) and is ignored. The block is
+  the one `<!-- air-result v0 -->` line outside code, the ```` ```yaml ```` fence after it, and the line closing
+  that fence. A comment holds exactly one block: a second marker line outside code makes the comment hold no
+  result, where before the last one won. Only a claim's first counted result counts, as before.
+- Manual budgets are charged what a job actually spent, when it ends (delivered, failed, partial, cancelled or
+  lost), once. One source per agent, its own records: Claude Code's session transcripts (`message.usage` of each
+  API call, once per message id, subagents included), Codex's rollouts (the largest `total_token_usage` per
+  session started in the workspace). Both give tokens, so only budgets in `tokens` are charged; a budget in
+  `percent` is not, since no agent reports a share of a plan. No estimate (say, the effort's expected cost) stands
+  in for a missing record: the final comment says the job wasn't charged and why.
+- The agent inherits the volunteer's whole environment: the launcher no longer runs `env -i` with an allowlist.
+  air adds or overrides only `AIR_WORKSPACE`, `AIR_CONTEXT`, `AIR_OUT`, a subscription's `CLAUDE_CONFIG_DIR` or
+  `CODEX_HOME`, and `TERM` (tmux's); `TMUX` and `TMUX_PANE` are tmux's own for the pane. `setup` and `check` keep
+  their allowlisted environment.
+- A resumed request pushes to its checkpoint's branch (`resume.branches[].branch`) instead of the next free
+  `air/<N>-<k>`, for its PR or its next checkpoint, so no branch is left over. The push is
+  `--force-with-lease` on the checkpoint's commit (or on the branch being absent): if someone moved the branch
+  since, air leaves it alone and that repo gets no push, with the reason in the final comment.
+- A PR body holds the agent's report (§6 already said so). One too long for GitHub's 65,536-character body is now
+  cut, with the full report uploaded as the report asset, where before `createPull` failed.
+
+## 2026-11-17: everything in US dollars at API prices
+
+- Raw tokens mislead across models, and a share of a plan depends on the plan, so efforts, budgets and spend
+  are all US dollars at API prices: the agent's tokens at the provider's published per-token rates. Spec §2:
+  `effort` is XS $1, S $3, M $10, L $30, XL $100 (was 1, 3, 8, 20, 40 % of a weekly window). Matching compares
+  dollars with dollars.
+- Budgets in `percent` and `tokens` are gone; a manual budget is `{ "usd": N }`, and its ledger records dollars.
+  config.toml's `scale` and `budget` are gone too: `[subscriptions.X] window_usd` says what a readable
+  subscription's whole primary window is worth, so its percent meter reads as dollars. Without it a readable
+  subscription takes nothing.
+- A job's cost is priced from the agent's own token records with one table, `src/usage/prices.ts`, keyed by
+  model id, each price citing its page. Claude Code's own total (`cost-state.totalCostUSD` in the transcript)
+  can't be used: it is written only when a session exits, so a running job (for the effort check) or a killed
+  one has none. The table reproduces it to the cent where it exists. Codex reports no cost at all.
+- A model not in the table costs nothing, and serve logs a warning naming it; the final comment names it too.
+- Spec §11 rule 4: a job is stopped early once its cost passes twice its effort's dollars, measured from the
+  agent's records rather than the window's meter. The final comment says "Cost at API prices: $X; effort E
+  expects $Y." and, for a manual budget, "Charged $X to manual budget `name`."
+
 ## 2026-11-17: unattended agents by default, `air config init`, `air doctor` and stuck-prompt detection
 
 - Before this, an `[agents.X]` table left out meant `claude` or `codex` with no extra args. Claude Code then
@@ -360,6 +402,12 @@ Alternatives considered:
   (`.credentials.json`, `auth.json`, keychains) are never opened, so a missing Codex login isn't caught here;
   the runtime check below catches its sign-in screen. Each problem comes with the command or setting that
   fixes it.
+- A manual subscription in subscriptions.json may set `configDir` or `codexHome`, and they apply to the
+  harness config.toml gives it: a second Claude account whose usage air can't read runs on its own login.
+  `loginsOf` resolves this in one place, and `agentEnv` (the agent's environment and the transcripts its spend
+  is priced from) and the preflight both use it. Under the full-environment launch the agent sees the
+  server's `CLAUDE_CONFIG_DIR`/`CODEX_HOME` unless the login sets its own, and the preflight checks the same
+  directory.
 - A login that fails is refused through `MatchConfig.refused`. It takes no new requests ("not served: ..."
   in the no-fit log), and the other logins carry on. Jobs already running on it are left alone.
 - At runtime, each tick reads the running job's visible pane (`capture-pane -p -J`). A prompt in
@@ -369,8 +417,11 @@ Alternatives considered:
   box without the footer, and never does. A screen unchanged for 15 minutes counts as `idle`: long enough for
   a quiet build. Each pattern records its source. Most were captured from the installed CLIs in tmux with
   throwaway config dirs (`src/serve/fixtures/panes/`). The permission and approval prompts need a working
-  model to appear, so their fixtures are built from the CLIs' strings, and the Codex approval has no footer
-  check: its footer is assembled from fragments in the binary.
+  model to appear, so their fixtures are built from the CLIs' strings. The Codex approval has no footer
+  check. Its screen couldn't be produced: Codex 0.164.0 sends model calls over a websocket and runs shell
+  commands inside its code-mode `exec` tool, so a fake model would have to emulate both. Its binary holds the
+  footer only as fragments ("to confirm", "to cancel") that other popups share, and the trust screen captured
+  from the same build uses another style ("enter continue · esc back").
 - Each waiting episode is logged once with its fix, recorded as `job.waiting` (which `air status` shows on the
   serving machine) and put in the tmux status bar. An episode ends when its prompt leaves the screen, or for
   `idle` when the screen changes; a restart keeps it until then. A prompt, never `idle`, posts an issue

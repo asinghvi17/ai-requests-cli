@@ -4,7 +4,7 @@ import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -20,7 +20,8 @@ import { releaseDownload } from '../workspace/context.ts';
 import { requestsRepo } from '../gh/issues.ts';
 import { currentClaim, formatMarker, parseResult } from '../spec/markers.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
-import type { Subscription } from '../usage/types.ts';
+import { ledgerFile, loadLedger } from '../usage/index.ts';
+import type { ManualConfig, Subscription } from '../usage/types.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
 import { allWorkspaces, readState, updateState } from '../workspace/state.ts';
 import { claim } from '../claim/claim.ts';
@@ -77,7 +78,7 @@ interface World {
 let bare: BareRepo, service: BareRepo, guide: BareRepo;
 const tmuxClient = createTmux({ socket });
 
-function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
+function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig['budget']; transcripts?: boolean } = {}): World {
   const store = fakeGitHub();
   // This server's account can push to the repos requests deliver to; each test grants the requester's access.
   for (const r of ['o/target', 'o/service', 'o/guide']) store.setPermission(r, 'bot', 'write');
@@ -89,7 +90,7 @@ function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
   const logs: string[] = [];
   const clock = { offset: 0 };
   const config: Config = {
-    repo: 'o/requests', workspace_root: root, max_jobs: 2, tick_seconds: 60, subscriptions: { max: { harness: 'claude', scale: 1, reserve: 0 } },
+    repo: 'o/requests', workspace_root: root, max_jobs: 2, tick_seconds: 60, subscriptions: { max: { harness: 'claude', window_usd: 1000, reserve: 0 } },
     models: { claude: { small: 'haiku', medium: 'sonnet', large: 'opus' } },
     agents: { claude: { command: [process.execPath, FAKE_AGENT], args: ['--permission-mode', 'acceptEdits'] } },
   };
@@ -100,6 +101,12 @@ function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
     now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, claimWaitMs: 0,
     download: releaseDownload(gh, 'github.com'),
   };
+  if (o.budget || o.transcripts) {
+    // The fake agent leaves Claude Code transcripts in a config dir of its own; with `budget`, `max` is a manual budget.
+    const claudeDir = tmp('air-serve-claude-');
+    if (o.budget) ctx.manual = (name) => (name === 'max' ? { name, harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: o.budget! } : undefined);
+    ctx.agentEnv = () => ({ CLAUDE_CONFIG_DIR: claudeDir, FAKE_TRANSCRIPT: '1' });
+  }
   return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root };
 }
 
@@ -152,6 +159,13 @@ async function unzip(data: Buffer): Promise<string> {
   await extractZip(join(d, 'a.zip'), join(d, 'x'), 1 << 20);
   return join(d, 'x');
 }
+/** Appends an API call on `model` to the transcript of #n's Claude Code session. */
+function addCall(w: World, n: number, model: string, usage: object): void {
+  const id = job(w, n)!.state.job!.sessionId!;
+  const projects = join(w.ctx.agentEnv('max').CLAUDE_CONFIG_DIR!, 'projects');
+  const file = readdirSync(projects).map((d) => join(projects, d, `${id}.jsonl`)).find((f) => existsSync(f))!;
+  appendFileSync(file, `${JSON.stringify({ type: 'assistant', message: { id: `msg_${Math.random()}`, model, usage } })}\n`);
+}
 const holder = async (w: World, n: number) => currentClaim(await markedComments(await w.store.comments(n), createTrust(w.store)));
 
 describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' }, () => {
@@ -179,8 +193,9 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(w.store.issues.get(1)!.assignees, []);
     const final = comments(w, 1).at(-1)!;
     assert.match(final, /^hello\n\n<sub>air on `box`: subscription `max`, claude `sonnet`/);
-    assert.match(final, /Usage: 10% before, 10% after: 0 points; effort XS expects 1/);
-    assert.match(final, /<!-- air-usage \{"issue":"o\/requests#1","effort":"XS","expected":1,"delta":0,"share":0\} -->/);
+    assert.match(final, /Cost at API prices: unknown, the agent left no usage record; effort XS expects \$1\.00\./);
+    assert.match(final, /Usage of `max`'s window: 10% before, 10% after\./);
+    assert.match(final, /<!-- air-usage \{"issue":"o\/requests#1","effort":"XS","expected":1,"usd":null\} -->/);
     const [argv] = argvLog(ws.dir);
     assert.equal(argv![0], '--session-id');
     assert.equal(argv![1], ws.state.job!.sessionId);
@@ -190,6 +205,41 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     // Labels moved claimed -> running -> done, each added before the previous one was removed.
     const order = w.store.log.filter((l) => /^(addLabels|removeLabel) 1 /.test(l));
     assert.deepEqual(order, ['addLabels 1 air:claimed', 'addLabels 1 air:running', 'removeLabel 1 air:claimed', 'addLabels 1 air:done', 'removeLabel 1 air:running']);
+  });
+
+  test('a manual budget is charged what each job cost at API prices, from its transcripts', async () => {
+    const w = world({ budget: { usd: 100 } });
+    const spent = () => (loadLedger(ledgerFile(w.ctx.stateDir)).ledger?.subscriptions.max?.spent);
+    const start = 0.500325 + 0.00003; // one start: a claude-sonnet-5-5 call and a claude-haiku-4-5 subagent call
+    const near = (a: number | undefined, b: number) => assert.ok(a !== undefined && Math.abs(a - b) < 1e-9, `${a} != ${b}`);
+    w.store.addIssue({ number: 80, body: body('comment Done.') });
+    await until(w, 'delivered', () => status(w, 80) === 'done');
+    near(spent(), start);
+    assert.deepEqual(job(w, 80)!.state.job!.spend, { usd: start, charged: true });
+    assert.match(comments(w, 80).at(-1)!, /Cost at API prices: \$0\.50; effort XS expects \$1\.00\.\nCharged \$0\.50 to manual budget `max`\./);
+    assert.match(comments(w, 80).at(-1)!, /<!-- air-usage \{"issue":"o\/requests#80","effort":"XS","expected":1,"usd":0\.500355\} -->/);
+    // A partial job is charged for both its starts: the fresh one and the resumed session.
+    w.store.addIssue({ number: 81, body: body('quit 3') });
+    await until(w, 'partial', () => status(w, 81) === 'partial');
+    assert.equal(job(w, 81)!.state.job!.starts, 2);
+    near(spent(), 3 * start);
+    // A cancelled job too.
+    w.store.addIssue({ number: 82, body: body('hang') });
+    await running(w, 82);
+    w.store.issues.get(82)!.labels.push('air:cancel');
+    await until(w, 'cancelled', () => status(w, 82) === 'cancelled');
+    near(spent(), 4 * start);
+  });
+
+  test('a model the price table lacks is not charged, with a warning naming it', async () => {
+    const w = world({ budget: { usd: 100 } });
+    w.store.addIssue({ number: 84, body: body('progress') });
+    await running(w, 84);
+    addCall(w, 84, 'claude-future-9', { input_tokens: 1000, output_tokens: 1000 });
+    w.store.issues.get(84)!.labels.push('air:cancel');
+    await until(w, 'cancelled', () => status(w, 84) === 'cancelled');
+    assert.deepEqual(job(w, 84)!.state.job!.spend, { usd: 0.500355, unpriced: ['claude-future-9'], charged: true });
+    assert.ok(w.logs.some((l) => l === '#84: warning: no API price for claude-future-9; calls on it are not charged'), w.logs.join('\n'));
   });
 
   test('comment: an over-long report is truncated and the full text uploaded', async () => {
@@ -230,6 +280,22 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(stateLabels(w, 4), ['air:failed']);
     assert.match(comments(w, 4).at(-1)!, /No changes were produced/);
     assert.equal(await holder(w, 4), undefined, 'a failure releases the claim');
+  });
+
+  test('pr: the report is the PR body; an over-long one is cut to fit and uploaded whole', async () => {
+    const w = world();
+    w.store.setPermission('o/target', 'alice', 'write');
+    w.store.addIssue({ number: 5, title: 'Big', body: body('prbig 70000', PR, CONTEXT) });
+    await until(w, 'delivered', () => status(w, 5) === 'done');
+    const nonce = job(w, 5)!.state.nonce;
+    const url = `https://github.com/o/requests/releases/download/air-artifacts/air-5-${nonce}-report.md`;
+    const pr = w.fg.pulls.find((p) => p.title.endsWith('(#5)'))!;
+    assert.ok(pr.body.length <= COMMENT_LIMIT, String(pr.body.length));
+    assert.ok(pr.body.startsWith(`Part of o/requests#5\n\n**Truncated:** the full report is ${url}\n\n\`\`\`\nyyyy`));
+    // the report's open fence is closed before the cut, so it can't swallow what follows
+    assert.match(pr.body, /y\n```\n\n\[\.\.\. cut \.\.\.\]\n$/);
+    const asset = w.fg.releases.find((r) => r.tag === 'air-artifacts')!.assets.find((a) => a.name === `air-5-${nonce}-report.md`)!;
+    assert.equal(asset.data.toString(), `\`\`\`\n${'y'.repeat(70000)}`);
   });
 
   test("pr: the agent's repo config can't run code or redirect the push; a PR whose response was lost is found", async () => {
@@ -312,10 +378,12 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
       '  out:', `    url: ${r.resume!.out!.url}`, `    sha256: ${r.resume!.out!.sha256}`, `    bytes: ${r.resume!.out!.bytes}`], CONTEXT);
     issue.labels = issue.labels.filter((l) => !l.startsWith('air:'));
     await until(w, 'delivered', () => status(w, 63) === 'done');
+    // Each repo's checkpoint branch moved on; no second branch is left behind.
     for (const [b, repo] of [[service, 'o/service'], [bare, 'o/target']] as const) {
-      assert.equal(execFileSync('git', ['--git-dir', b.bare, 'log', '--format=%s', 'main..air/63-2'], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n', repo);
+      assert.equal(execFileSync('git', ['--git-dir', b.bare, 'log', '--format=%s', 'main..air/63'], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n', repo);
+      assert.equal(spawnSync('git', ['--git-dir', b.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/63-2']).status, 1, repo);
     }
-    assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#63)')).map((p) => [p.repo, p.head]), [['o/service', 'air/63-2'], ['o/target', 'air/63-2']]);
+    assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#63)')).map((p) => [p.repo, p.head]), [['o/service', 'air/63'], ['o/target', 'air/63']]);
     assert.equal(readFileSync(join(job(w, 63)!.dir, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
   });
 
@@ -897,12 +965,34 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.match(task, /## Continuing earlier work/);
     assert.match(task, new RegExp(`checked out at the earlier work's checkpoint, \`${sha}\` on branch \`air/31\``));
     assert.match(task, /Keep `out\/PROGRESS\.md` up to date/);
-    // The PR carries the checkpoint's commits and the new one, on the next free branch.
+    // The PR carries the checkpoint's commits and the new one, on the checkpoint's own branch: nothing is left over.
     assert.equal(w.fg.pulls.length, 1);
-    assert.equal(w.fg.pulls[0]!.head, 'air/31-2');
-    const head = execFileSync('git', ['--git-dir', bare.bare, 'rev-parse', 'refs/heads/air/31-2'], { encoding: 'utf8' }).trim();
+    assert.equal(w.fg.pulls[0]!.head, 'air/31');
+    const head = execFileSync('git', ['--git-dir', bare.bare, 'rev-parse', 'refs/heads/air/31'], { encoding: 'utf8' }).trim();
     assert.equal(execFileSync('git', ['--git-dir', bare.bare, 'log', '--format=%s', `main..${head}`], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n');
+    assert.equal(spawnSync('git', ['--git-dir', bare.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/31-2']).status, 1, 'no second branch');
     assert.equal(resultOf(w, 31)?.status, 'done');
+  });
+
+  test("pr: a resumed request never overwrites a checkpoint branch someone moved since", async () => {
+    const w = world();
+    w.store.setPermission('o/target', 'alice', 'write');
+    w.store.addIssue({ number: 34, title: 'Long change', body: body('quit 3', PR, CONTEXT) });
+    await until(w, 'partial', () => status(w, 34) === 'partial');
+    const r = resultOf(w, 34)!;
+    const git = (...a: string[]) => execFileSync('git', ['--git-dir', bare.bare, ...a], { encoding: 'utf8' }).trim();
+    const checkpointSha = git('rev-parse', 'refs/heads/air/34');
+    // Someone else pushes to the checkpoint branch before the request is resumed.
+    const moved = git('-c', 'user.name=Someone', '-c', 'user.email=someone@example.com', 'commit-tree', `${checkpointSha}^{tree}`, '-p', checkpointSha, '-m', 'by hand');
+    git('update-ref', 'refs/heads/air/34', moved);
+    const issue = w.store.issues.get(34)!;
+    issue.body = body('pr', [...PR, 'resume:', '  branches:', '    - repo: target', '      branch: air/34', `      sha: "${checkpointSha}"`,
+      '  out:', `    url: ${r.resume!.out!.url}`, `    sha256: ${r.resume!.out!.sha256}`, `    bytes: ${r.resume!.out!.bytes}`], CONTEXT);
+    issue.labels = issue.labels.filter((l) => !l.startsWith('air:'));
+    await until(w, 'failed', () => status(w, 34) === 'failed');
+    assert.equal(git('rev-parse', 'refs/heads/air/34'), moved, 'the moved branch is left as it is');
+    assert.equal(w.fg.pulls.length, 0);
+    assert.match(comments(w, 34).at(-1)!, /checkpoint branch `air\/34` moved since the checkpoint/);
   });
 
   test('a resume whose checkpoint zip is missing fails before setup runs', async () => {
@@ -954,19 +1044,18 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(stateLabels(w, 36), ['air:partial']);
   });
 
-  test('effort: a job that uses more than twice its effort share is stopped early as partial', async () => {
-    const w = world();
+  test('effort: a job that costs more than twice its effort is stopped early as partial', async () => {
+    const w = world({ transcripts: true });
     w.store.addIssue({ number: 37, body: body('progress') });
-    await running(w, 37);
-    const before = job(w, 37)!.state.job!.usageBefore!;
-    w.subs[0] = weekly(12, before.windows[0]!.resetsAt!); // XS on this plan: 1 point; 2 is the cap
+    await running(w, 37); // $0.50 so far
+    addCall(w, 37, 'claude-sonnet-5-5', { input_tokens: 0, output_tokens: 140_000 }); // + $1.40: XS is $1, the cap $2
     await w.server.tick();
     await w.server.idle();
-    assert.equal(status(w, 37), 'running', 'twice the share is still allowed');
-    w.subs[0] = weekly(12.5, before.windows[0]!.resetsAt!);
+    assert.equal(status(w, 37), 'running', 'twice the effort is still allowed');
+    addCall(w, 37, 'claude-sonnet-5-5', { input_tokens: 0, output_tokens: 20_000 }); // + $0.20
     await until(w, 'partial', () => status(w, 37) === 'partial');
-    assert.match(comments(w, 37).at(-1)!, /it used 2\.5 points of subscription `max`'s usage window, more than twice the 1 that effort XS stands for here/);
-    assert.deepEqual(resultOf(w, 37)?.usage, { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 12.5, attempts: 1 });
+    assert.match(comments(w, 37).at(-1)!, /it has cost \$2\.10 at API prices, more than twice the \$1\.00 that effort XS stands for/);
+    assert.deepEqual(resultOf(w, 37)?.usage, { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 1 });
   });
 
   test('a hanging gh call times out; the loop logs it and carries on', async () => {

@@ -1,22 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Subscription } from '../usage/types.ts';
-import { effectiveHarness, canTakeMore, choose, largestEffort, recordActual, reserveFor, type MatchConfig, type Request } from './match.ts';
+import { effectiveHarness, canTakeMore, choose, largestEffort, reserveFor, windowSize, type MatchConfig, type Request } from './match.ts';
 
 const NOW = new Date('2026-01-10T00:00:00Z');
 const inH = (h: number) => new Date(NOW.getTime() + h * 3600_000).toISOString();
 
 function sub(name: string, o: {
-  harness?: string; used?: number | null | undefined; incomplete?: boolean; reset?: string | null; five?: number; stale?: boolean; kind?: string;
+  harness?: string; used?: number | null | undefined; incomplete?: boolean; reset?: string | null; five?: number; stale?: boolean; kind?: string; usdBudget?: number;
 } = {}): Subscription {
-  const windows = [{ name: 'seven_day', kind: o.kind ?? 'weekly', usedPct: o.used === undefined ? 10 : o.used, resetsAt: o.reset === undefined ? inH(100) : o.reset }];
+  const windows: Subscription['windows'] = [{ name: 'seven_day', kind: o.kind ?? 'weekly', usedPct: o.used === undefined ? 10 : o.used, resetsAt: o.reset === undefined ? inH(100) : o.reset, ...(o.usdBudget !== undefined ? { usdBudget: o.usdBudget } : {}) }];
   if (o.five !== undefined) windows.push({ name: 'five_hour', kind: 'five_hour', usedPct: o.five, resetsAt: inH(2) });
   return { name, harness: o.harness ?? 'claude', windows, readAt: NOW.toISOString(), stale: o.stale ?? false, ...(o.incomplete ? { incomplete: true } : {}) };
 }
 
 const config: MatchConfig = {
   models: { claude: { small: 'haiku', medium: 'sonnet', large: 'opus' }, codex: { medium: 'gpt' } },
-  subscriptions: { pro: { scale: 5 }, lowres: { reserve: 0.1 }, m1: { harness: 'claude' }, m2: { harness: 'bogus' } },
+  // Every readable test subscription's window is worth $1,000, so $1 is 0.1 points of it.
+  subscriptions: {
+    ...Object.fromEntries(['a', 'b', 'c', 'x', 's', 'u', 'i', 'm', 'sub2', 'sub3'].map((n) => [n, { window_usd: 1000 }])),
+    pro: { window_usd: 100 }, lowres: { window_usd: 1000, reserve: 0.1 }, m1: { harness: 'claude' }, m2: { harness: 'bogus' },
+  },
 };
 const req = (r: Partial<Request> = {}): Request => ({ effort: 'M', ...r });
 
@@ -35,27 +39,34 @@ test('reserve tapers linearly over the last 24h', () => {
   assert.equal(reserveFor(30, null, NOW), 30);
 });
 
-test('effort costs and fit boundary (weekly left - cost >= reserve)', () => {
-  for (const [used, effort, ok] of [[62, 'M', true], [62.1, 'M', false], [69, 'XS', true], [69.1, 'XS', false],
-    [30, 'XL', true], [30.1, 'XL', false], [50, 'L', true], [51, 'L', false], [67, 'S', true]] as const) {
+test('effort costs and fit boundary in dollars (window left - cost >= reserve)', () => {
+  // $1,000 window, $300 reserve: M ($10) fits with $310 left, XL ($100) with $400.
+  for (const [used, effort, ok] of [[69, 'M', true], [69.1, 'M', false], [69.9, 'XS', true], [69.95, 'XS', false],
+    [60, 'XL', true], [60.1, 'XL', false], [67, 'L', true], [67.1, 'L', false], [69.7, 'S', true]] as const) {
     const r = choose({ effort }, [sub('a', { used })], config, NOW);
     assert.equal('none' in r, !ok, `${effort} at ${used}% used`);
   }
+  const r = choose({ effort: 'L' }, [sub('a')], config, NOW);
+  assert.ok(!('none' in r)); assert.equal(r.cost, 30);
 });
 
 test('taper lets a nearly-expired sub take big work', () => {
   const s = (h: number) => sub('a', { used: 80, reset: inH(h) });
-  assert.ok('none' in choose({ effort: 'L' }, [s(24)], config, NOW)); // 20 left < 20 + 30
-  assert.ok('none' in choose({ effort: 'L' }, [s(12)], config, NOW)); // 20 < 20 + 15
-  assert.ok(!('none' in choose({ effort: 'L' }, [s(0)], config, NOW))); // 20 >= 20 + 0
-  assert.ok(!('none' in choose({ effort: 'S' }, [s(12)], config, NOW))); // 20 >= 3 + 15
+  assert.ok('none' in choose({ effort: 'XL' }, [s(24)], config, NOW)); // $200 left < $100 + $300
+  assert.ok('none' in choose({ effort: 'XL' }, [s(12)], config, NOW)); // $200 < $100 + $150
+  assert.ok(!('none' in choose({ effort: 'XL' }, [s(0)], config, NOW))); // $200 >= $100 + $0
+  assert.ok(!('none' in choose({ effort: 'S' }, [s(12)], config, NOW))); // $200 >= $3 + $150
 });
 
-test('scale multiplies cost', () => {
-  const r = choose({ effort: 'M' }, [sub('pro', { used: 20 })], config, NOW); // cost 40, 80 left >= 70
-  assert.ok(!('none' in r)); assert.equal(r.cost, 40);
-  const n = choose({ effort: 'M' }, [sub('pro', { used: 31 })], config, NOW);
-  assert.ok('none' in n); assert.equal(n.reasons[0], 'pro: weekly 69% left, needs 40% + 30% reserve');
+test('window_usd sizes a readable window; without it a subscription takes nothing', () => {
+  const r = choose({ effort: 'M' }, [sub('pro', { used: 20 })], config, NOW); // $80 left >= $10 + $30
+  assert.ok(!('none' in r)); assert.equal(r.cost, 10);
+  const n = choose({ effort: 'M' }, [sub('pro', { used: 61 })], config, NOW);
+  assert.ok('none' in n); assert.equal(n.reasons[0], 'pro: weekly $39.00 left, needs $10.00 + $30.00 reserve');
+  const none = choose({ effort: 'XS' }, [sub('nosize', { used: 0 })], config, NOW);
+  assert.ok('none' in none); assert.match(none.reasons[0]!, /^nosize: no window_usd in config\.toml/);
+  assert.equal(windowSize(sub('pro'), config), 100);
+  assert.equal(windowSize(sub('m1', { harness: 'manual', usdBudget: 50 }), config), 50);
 });
 
 test('per-subscription reserve', () => {
@@ -115,35 +126,27 @@ test('earliest reset wins, then headroom, then name', () => {
   assert.equal(name([sub('a', { reset: null }), sub('b', { reset: inH(500) })]), 'b');
 });
 
-test('monthly budgets use the same taper, cost against the monthly window', () => {
+test('monthly windows match the same way, with the same taper', () => {
   const m = (used: number, h: number) => sub('m', { kind: 'monthly', used, reset: inH(h) });
-  const r = choose(req({ effort: 'XL' }), [m(50, 100)], config, NOW); // cost 40*7/30 = 9.33, 50 left >= 39.33
-  assert.ok(!('none' in r)); assert.ok(Math.abs(r.cost - 40 * 7 / 30) < 1e-9);
+  const r = choose(req({ effort: 'XL' }), [m(50, 100)], config, NOW); // $500 left >= $100 + $300
+  assert.ok(!('none' in r)); assert.equal(r.cost, 100);
   assert.ok('none' in choose(req({ effort: 'XL' }), [m(62, 100)], config, NOW));
-  assert.ok(!('none' in choose(req({ effort: 'XL' }), [m(62, 12)], config, NOW))); // reserve 15
+  assert.ok(!('none' in choose(req({ effort: 'XL' }), [m(62, 12)], config, NOW))); // reserve $150
 });
 
 test('none-fit reasons, one per subscription', () => {
   const n = choose(req(), [sub('sub2', { used: 75 }), sub('sub3', { used: 99 })], config, NOW);
   assert.ok('none' in n);
   assert.deepEqual(n.reasons, [
-    'sub2: weekly 25% left, needs 8% + 30% reserve',
-    'sub3: weekly 1% left, needs 8% + 30% reserve',
+    'sub2: weekly $250.00 left, needs $10.00 + $300.00 reserve',
+    'sub3: weekly $10.00 left, needs $10.00 + $300.00 reserve',
   ]);
 });
 
 test('largestEffort', () => {
-  for (const [used, want] of [[0, 'XL'], [30, 'XL'], [31, 'L'], [51, 'M'], [63, 'S'], [67, 'S'], [68, 'XS'], [69, 'XS'], [71, null]] as const) {
+  for (const [used, want] of [[0, 'XL'], [60, 'XL'], [61, 'L'], [67, 'L'], [68, 'M'], [69, 'M'], [69.5, 'S'], [69.8, 'XS'], [70, null]] as const) {
     assert.equal(largestEffort(sub('a', { used }), config, NOW), want, `${used}`);
   }
-});
-
-test('recordActual', () => {
-  const r = recordActual('o/r#1', 'M', sub('pro', { used: 10 }), sub('pro', { used: 50 }), config);
-  assert.deepEqual(r, { issue: 'o/r#1', effort: 'M', expected: 8, delta: 40, share: 8 });
-  const reset = recordActual('o/r#1', 'M', sub('a', { used: 90, reset: inH(1) }), sub('a', { used: 3, reset: inH(169) }));
-  assert.equal(reset.delta, null);
-  assert.equal(recordActual('i', 'S', sub('a', { stale: true }), sub('a')).delta, null);
 });
 
 test('unknown primary usage takes nothing (null, undefined, NaN, Infinity, negative)', () => {
@@ -176,11 +179,11 @@ test('unknown or malformed effort takes nothing', () => {
   }
 });
 
-test('exact fit survives float error (44.5% used, 744 minutes to reset, XL)', () => {
-  const s = sub('a', { used: 44.5, reset: inH(744 / 60) });
-  const r = choose({ effort: 'XL' }, [s], config, NOW); // left 55.5 = 40 + 15.5
+test('exact fit survives float error (74.5% used, 744 minutes to reset, XL)', () => {
+  const s = sub('a', { used: 74.5, reset: inH(744 / 60) });
+  const r = choose({ effort: 'XL' }, [s], config, NOW); // left $255 = $100 + $155 reserve
   assert.ok(!('none' in r));
-  assert.ok('none' in choose({ effort: 'XL' }, [sub('a', { used: 44.51, reset: inH(744 / 60) })], config, NOW));
+  assert.ok('none' in choose({ effort: 'XL' }, [sub('a', { used: 74.51, reset: inH(744 / 60) })], config, NOW));
 });
 
 test('headroom ties within epsilon fall back to name', () => {
@@ -190,13 +193,13 @@ test('headroom ties within epsilon fall back to name', () => {
 
 test('monthly reasons say monthly', () => {
   const n = choose(req(), [sub('m', { kind: 'monthly', used: 95 })], config, NOW);
-  assert.ok('none' in n); assert.match(n.reasons[0]!, /^m: monthly 5% left/);
+  assert.ok('none' in n); assert.match(n.reasons[0]!, /^m: monthly \$50\.00 left/);
   const u = choose(req(), [sub('m', { kind: 'monthly', used: null })], config, NOW);
   assert.ok('none' in u); assert.match(u.reasons[0]!, /^m: monthly usage unknown/);
 });
 
-test('manual subscriptions fund the harness their config declares', () => {
-  const m = (name: string) => sub(name, { harness: 'manual', kind: 'monthly', used: 10 });
+test('manual subscriptions fund the harness their config declares, from a budget in dollars', () => {
+  const m = (name: string) => sub(name, { harness: 'manual', kind: 'monthly', used: 10, usdBudget: 1000 });
   assert.equal(effectiveHarness(m('m1'), config), 'claude');
   const ok = choose(req({ harness: ['claude'] }), [m('m1')], config, NOW);
   assert.ok(!('none' in ok)); assert.equal(ok.model, 'sonnet');
@@ -208,6 +211,11 @@ test('manual subscriptions fund the harness their config declares', () => {
   assert.match(none.reasons[1]!, /^m2: manual subscription declares no harness/);
   assert.equal(largestEffort(m('m0'), config, NOW), null);
   assert.equal(largestEffort(m('m1'), config, NOW), 'XL');
+  // $50 budget, $30 spent: $20 left, $15 reserve: S ($3) fits, M ($10) doesn't
+  const small = sub('m1', { harness: 'manual', used: 60, usdBudget: 50 });
+  assert.equal(largestEffort(small, config, NOW), 'S');
+  const n = choose(req(), [small], config, NOW);
+  assert.ok('none' in n); assert.equal(n.reasons[0], 'm1: weekly $20.00 left, needs $10.00 + $15.00 reserve');
 });
 
 test('largestEffort needs an executable harness', () => {

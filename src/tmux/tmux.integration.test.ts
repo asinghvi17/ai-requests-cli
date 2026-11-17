@@ -57,12 +57,12 @@ async function until(what: string, check: () => Promise<boolean> | boolean, ms =
 describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, () => {
   let t = createTmux({ socket });
   let dir = '';
-  const saved = process.env.GH_TOKEN;
+  const saved = process.env.AIR_TEST_INHERITED;
 
   before(async () => {
     dir = mkdtempSync(join(tmpdir(), 'air-tmux-'));
-    // A secret in the caller's environment must not reach jobs (nor the tmux server).
-    process.env.GH_TOKEN = 'ghp_should_not_leak';
+    // The caller's environment reaches jobs whole (the tmux server itself gets an allowlisted one).
+    process.env.AIR_TEST_INHERITED = 'from the volunteer';
     assert.equal(await t.ensureSession(), true);
     assert.equal(await t.ensureSession(), false);
   });
@@ -72,7 +72,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
   });
   after(() => {
     killTestServer();
-    if (saved === undefined) delete process.env.GH_TOKEN; else process.env.GH_TOKEN = saved;
+    if (saved === undefined) delete process.env.AIR_TEST_INHERITED; else process.env.AIR_TEST_INHERITED = saved;
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
@@ -93,19 +93,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.deepEqual((await t.listJobs()).find((j) => j.issue === 77)?.nonce, jobs[0]!.nonce);
   });
 
-  test('a job runs interactively in its workspace with a scrubbed environment and a task file', async () => {
-    // Even secrets and shell startup hooks in tmux's own global environment must not reach the job.
-    const globals = [['GITHUB_TOKEN', 'ghp_global'], ['BASH_ENV', '/nonexistent/bashenv'], ['ENV', '/nonexistent/env']] as const;
-    try {
-      for (const [k, v] of globals) assert.equal((await raw(['set-environment', '-g', k, v])).code, 0);
-      await scrubbedJob();
-    } finally {
-      for (const [k] of globals) await raw(['set-environment', '-gu', k]);
-    }
-    assert.equal((await raw(['show-environment', '-g', 'GITHUB_TOKEN'])).code, 1);
-  });
-
-  async function scrubbedJob() {
+  test("a job runs interactively in its workspace with the caller's environment and a task file", async () => {
     const out = join(dir, 'env.txt');
     const script = `{ env; echo "pwd=$(pwd)"; echo "arg=$1"; [ -t 0 ] && echo stdin=tty; } > ${out}.tmp; mv ${out}.tmp ${out}`;
     const task = 'fix the bug\n'.repeat(200_000); // ~2.4 MB: would be E2BIG in argv
@@ -113,17 +101,18 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.match(id, /^@\d+$/);
     await until('env file', () => existsSync(out));
     const env = readFileSync(out, 'utf8');
-    assert.doesNotMatch(env, /GH_TOKEN|GITHUB_TOKEN|ghp_|BASH_ENV|^ENV=/m);
-    assert.doesNotMatch(env, /^TMUX/m);
-    assert.match(env, /^PATH=/m);
+    assert.match(env, /^AIR_TEST_INHERITED=from the volunteer$/m);
+    assert.match(env, new RegExp(`^PATH=${process.env.PATH!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
     assert.match(env, new RegExp(`^HOME=${process.env.HOME}$`, 'm'));
     assert.match(env, /^AIR_EXTRA=yes$/m);
+    // tmux's own pane variables, not the caller's
+    assert.match(env, new RegExp(`^TMUX=.*/${socket},\\d+,\\d+$`, 'm'));
     assert.match(env, /^TERM=/m);
     assert.match(env, new RegExp(`^pwd=${dir}$`, 'm'));
     assert.match(env, new RegExp(`^arg=${TASK_INSTRUCTION.replace(/\./g, '\\.')}$`, 'm'));
     assert.match(env, /^stdin=tty$/m);
     assert.equal(readFileSync(join(dir, TASK_FILE), 'utf8'), task);
-  }
+  });
 
   test('regression: argv words that look like tmux separators are passed literally, never run', async () => {
     // Reviewer PoC: a word `;` or ending in `;` used to end the respawn-pane command, so the rest ran as tmux commands.

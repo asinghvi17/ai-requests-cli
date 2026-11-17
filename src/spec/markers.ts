@@ -222,24 +222,21 @@ export type ParsedResult = { ok: true; result: AirResult } | { ok: false; errors
 /** Number-valued keys of a result block. */
 const RESULT_NUMBERS = ['artifact.bytes', 'resume.out.bytes', 'usage.before_pct', 'usage.after_pct', 'usage.attempts'];
 
-/** The body's lines, the end of its non-blank part, and the index of the last result marker line outside fenced code (-1: none). */
-function findResultMarker(body: string): { lines: string[]; end: number; marker: number } {
+/** The body's lines and the indexes of every result marker line outside fenced code. */
+function findResultMarkers(body: string): { lines: string[]; markers: number[] } {
   const lines = body.replace(/\r\n?/g, '\n').split('\n');
-  let end = lines.length;
-  while (end > 0 && lines[end - 1]!.trim() === '') end--;
-  let marker = -1;
+  const markers: number[] = [];
   let fence: { char: string; len: number } | undefined;
-  for (let i = 0; i < end; i++) {
-    const line = lines[i]!;
+  for (const [i, line] of lines.entries()) {
     const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
     if (fence) {
       if (f && f[1]![0] === fence.char && f[1]!.length >= fence.len && line.trim() === f[1]) fence = undefined;
       continue;
     }
     if (f) fence = { char: f[1]![0]!, len: f[1]!.length };
-    else if (line.trim() === RESULT_MARKER) marker = i;
+    else if (line.trim() === RESULT_MARKER) markers.push(i);
   }
-  return { lines, end, marker };
+  return { lines, markers };
 }
 
 /**
@@ -247,28 +244,31 @@ function findResultMarker(body: string): { lines: string[]; end: number; marker:
  * claim and release marker lines that count (§9). Undefined when the body has no result marker.
  */
 export function textAboveResult(body: string): string | undefined {
-  const { lines, marker } = findResultMarker(body);
-  if (marker < 0) return undefined;
+  const { lines, markers } = findResultMarkers(body);
+  const marker = markers[0];
+  if (marker === undefined) return undefined;
   const above = lines.slice(0, marker);
   const counted = new Set(parseMarkersAt(above).map((m) => m.line));
   return above.filter((_, i) => !counted.has(i)).join('\n').trim();
 }
 
 /**
- * The `air-result` block that ends a comment body, if any. Only the last `<!-- air-result v0 -->` line
- * outside fenced code counts, alone on its line; the next line must open a ```` ```yaml ```` fence, and
- * that fence must close on the last non-blank line. Undefined when there is no such marker line; an
- * error when the block after it is malformed. Says nothing about who wrote it: see `countedResults`.
+ * The `air-result` block of a comment body, if any: the `<!-- air-result v0 -->` line outside fenced code,
+ * alone on its line, then a ```` ```yaml ```` fence on the next line, up to the line that closes it. Text
+ * after the closing fence (a signature, a bot's footer) is ignored. A comment holds exactly one block: a
+ * second marker line outside code is an error. Undefined when there is no marker line; an error when the
+ * block is malformed. Says nothing about who wrote it: see `countedResults`.
  */
 export function parseResult(body: string): ParsedResult | undefined {
-  const { lines, end, marker } = findResultMarker(body);
-  if (marker < 0) return undefined;
+  const { lines, markers } = findResultMarkers(body);
+  const marker = markers[0];
+  if (marker === undefined) return undefined;
   const fail = (line: number, message: string): ParsedResult => ({ ok: false, errors: [{ line: line + 1, code: 'frontmatter', message }] });
+  if (markers.length > 1) return fail(markers[1]!, 'a comment holds exactly one `air-result` block');
   if (!/^```yaml[ \t]*$/.test(lines[marker + 1] ?? '')) return fail(marker + 1, 'the `air-result` marker must be followed by a ```yaml fence on the next line');
   let close = marker + 2;
-  while (close < end && !/^```[ \t]*$/.test(lines[close]!)) close++;
-  if (close >= end) return fail(marker + 1, 'the `air-result` block is not closed');
-  if (close !== end - 1) return fail(close + 1, 'the `air-result` block must end the comment');
+  while (close < lines.length && !/^```[ \t]*$/.test(lines[close]!)) close++;
+  if (close >= lines.length) return fail(marker + 1, 'the `air-result` block is not closed');
 
   const { entries, errors } = parseYamlSubset(lines.slice(marker + 2, close), marker + 3);
   const err: Report = (line, code, message) => void errors.push({ line, code, message });

@@ -7,15 +7,16 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { backOff, claim, claimable, deadlineTime, release } from '../claim/claim.ts';
 import { markedComments } from '../claim/trust.ts';
 import { currentClaim } from '../spec/markers.ts';
-import { canTakeMore, choose, primaryWindow, recordActual, type Effort } from '../match/match.ts';
+import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig } from '../match/match.ts';
 import { code, fenced } from '../claim/text.ts';
 import { lint } from '../spec/lint.ts';
+import { usd } from '../usage/prices.ts';
 import type { Subscription } from '../usage/types.ts';
 import { setup } from '../workspace/setup.ts';
 import { allWorkspaces, ENDED, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import {
-  agentMs, cancelJob, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
+  agentMs, cancelJob, jobSpent, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
   PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, startAgent, startOrDeliver, stopAgent, type Workspace,
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
@@ -50,37 +51,38 @@ export function exhausted(sub: Subscription | undefined, model: string): { reset
 }
 
 /**
- * How far a job is past twice its effort's share (spec §11 rule 4): the points it used of its subscription's
- * weekly (else monthly) window since it first started, when that is more than twice `expectedCost`.
- * Undefined when it isn't, or when the readings can't tell (unknown, stale, or a window that reset since).
+ * Whether a job costs more than twice its effort (spec §11 rule 4): `spent` is what it has cost so far at API
+ * prices, from its agent's records (`jobSpent`). Undefined when it doesn't, or when that can't be measured.
  */
-export function overEffort(job: JobRecord, sub: Subscription | undefined, effort: Effort): { used: number; cap: number } | undefined {
-  if (!sub || !job.usageBefore || job.expectedCost === undefined) return undefined;
-  const { delta } = recordActual('', effort, job.usageBefore, sub);
-  const cap = 2 * job.expectedCost;
-  return delta !== null && delta > cap ? { used: delta, cap } : undefined;
+export function overEffort(spent: number | undefined, effort: Effort): { usd: number; cap: number } | undefined {
+  const cap = 2 * EFFORT_USD[effort];
+  return spent !== undefined && spent > cap ? { usd: spent, cap } : undefined;
 }
 
-/** Usage with the expected cost still to come of jobs we hold added on, so a tick never over-commits. */
-export function committedUsage(usage: Subscription[], held: Workspace[]): Subscription[] {
+/**
+ * Usage with what jobs we hold are still to spend added on, so a tick never over-commits. `spent` is what a job
+ * has cost so far. A readable meter already shows that, so the rest of the expected cost is added; a manual
+ * ledger is charged only when the job ends, so the whole of its expected or actual cost, whichever is more.
+ */
+export function committedUsage(usage: Subscription[], held: Workspace[], config: MatchConfig, spent: (w: Workspace) => number): Subscription[] {
   const extra = new Map<string, number>();
-  for (const { state } of held) {
-    const job = state.job;
+  for (const w of held) {
+    const job = w.state.job;
     if (!job || ENDED.includes(job.status)) continue;
+    const sub = usage.find((s) => s.name === job.subscription);
     const cost = job.expectedCost ?? 0;
-    const now = usage.find((s) => s.name === job.subscription);
-    const before = job.usageBefore ? primaryWindow(job.usageBefore)?.usedPct : undefined;
-    const used = now ? primaryWindow(now)?.usedPct : undefined;
-    const spent = typeof before === 'number' && typeof used === 'number' ? Math.max(0, used - before) : 0;
-    extra.set(job.subscription, (extra.get(job.subscription) ?? 0) + Math.max(0, cost - spent));
+    const so = spent(w);
+    extra.set(job.subscription, (extra.get(job.subscription) ?? 0) + (sub?.harness === 'manual' ? Math.max(cost, so) : Math.max(0, cost - so)));
   }
-  return usage.map((s) => addUsage(s, extra.get(s.name) ?? 0));
+  return usage.map((s) => addUsage(s, extra.get(s.name) ?? 0, config));
 }
 
-function addUsage(s: Subscription, points: number): Subscription {
-  if (!points) return s;
+/** `s` with `usd` more used of its primary window. */
+function addUsage(s: Subscription, usd: number, config: MatchConfig): Subscription {
+  const size = windowSize(s, config);
+  if (!usd || !size) return s;
   const primary = primaryWindow(s);
-  return { ...s, windows: s.windows.map((w) => (w === primary && typeof w.usedPct === 'number' ? { ...w, usedPct: w.usedPct + points } : w)) };
+  return { ...s, windows: s.windows.map((w) => (w === primary && typeof w.usedPct === 'number' ? { ...w, usedPct: w.usedPct + (usd / size) * 100 } : w)) };
 }
 
 const bodyHash = (body: string) => createHash('sha256').update(body).digest('hex').slice(0, 16);
@@ -293,11 +295,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       }));
     }
     const sub = usage.find((s) => s.name === job.subscription);
-    const over = overEffort(job, sub, request.effort as Effort);
+    const spent = jobSpent(ctx, dir, job);
+    const over = overEffort(spent?.usd, request.effort as Effort);
     if (over) {
-      const r = (x: number) => Math.round(x * 10) / 10;
       return track(n, 'effort cap', partialJob(ctx, dir, {
-        why: `it used ${r(over.used)} points of subscription \`${job.subscription}\`'s usage window, more than twice the ${r(over.cap / 2)} that effort ${request.effort} stands for here.`,
+        why: `it has cost ${usd(over.usd)} at API prices, more than twice the ${usd(over.cap / 2)} that effort ${request.effort} stands for.`,
       }));
     }
     const out = exhausted(sub, job.model);
@@ -403,7 +405,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     for (const n of inflight.keys()) if (!mine.some((w) => w.state.issue === n)) active++;
     if (!canTakeMore(active, ctx.config.max_jobs)) return undefined;
     const ours = new Set(mine.map((w) => w.state.issue));
-    let free = committedUsage(usage, mine);
+    const config = matchConfig(ctx.config);
+    let free = committedUsage(usage, mine, config, (w) => jobSpent(ctx, w.dir, w.state.job!)?.usd ?? 0);
     const issues = await ctx.api.openRequests();
     let candidates = 0;
     for (const issue of issues) {
@@ -468,7 +471,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       updateState(r.dir, { job: jobFromChoice(ctx, choice) }, ctx.now());
       ctx.log(`#${n}: claimed (nonce ${r.state.nonce}) for ${choice.subscription.name}/${choice.model}`);
       track(n, 'setup', prepare(r.dir));
-      free = free.map((s) => (s.name === choice.subscription.name ? addUsage(s, choice.cost) : s));
+      free = free.map((s) => (s.name === choice.subscription.name ? addUsage(s, choice.cost, config) : s));
       if (!canTakeMore(++active, ctx.config.max_jobs)) return candidates;
     }
     return candidates;

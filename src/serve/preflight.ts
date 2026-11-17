@@ -68,15 +68,19 @@ export const defaultPreflightDeps = (configFile: string): PreflightDeps => ({
   },
 });
 
-/** The logins `air serve` may run agents on: claude and codex subscriptions, and manual ones declaring a harness. */
+/**
+ * The logins `air serve` may run agents on: claude and codex subscriptions, and manual ones by the harness
+ * config.toml gives them, each with its agent's config dir. `agentEnv` starts agents with these dirs.
+ */
 export function loginsOf(subs: SubscriptionConfig[], config: Config): Login[] {
   const out: Login[] = [];
   for (const s of subs) {
     const harness = s.harness === 'manual' ? config.subscriptions[s.name]?.harness : s.harness;
     if (!(AGENT_HARNESSES as readonly string[]).includes(harness ?? '')) continue;
     const login: Login = { name: s.name, harness: harness as Harness };
-    if (s.harness === 'claude' && s.configDir) login.configDir = s.configDir;
-    if (s.harness === 'codex' && s.codexHome) login.codexHome = s.codexHome;
+    const dirs = s as { configDir?: string; codexHome?: string };
+    if (harness === 'claude' && dirs.configDir) login.configDir = dirs.configDir;
+    if (harness === 'codex' && dirs.codexHome) login.codexHome = dirs.codexHome;
     out.push(login);
   }
   return out;

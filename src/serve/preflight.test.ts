@@ -159,8 +159,8 @@ test('loginsOf: claude and codex logins with their dirs, manual ones by their de
   assert.deepEqual(loginsOf([
     { name: 'max', harness: 'claude', configDir: '/c' },
     { name: 'pro', harness: 'codex', codexHome: '/x' },
-    { name: 'pool', harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: { percent: 100 } },
-    { name: 'other', harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: { percent: 100 } },
+    { name: 'pool', harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: { usd: 100 } },
+    { name: 'other', harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: { usd: 100 } },
   ], config), [
     { name: 'max', harness: 'claude', configDir: '/c' },
     { name: 'pro', harness: 'codex', codexHome: '/x' },
@@ -168,21 +168,28 @@ test('loginsOf: claude and codex logins with their dirs, manual ones by their de
   ]);
 });
 
-test('a manual login is checked against the config dir its agent runs with', () => {
+test('a manual login runs its agent, and is preflighted, with its own config dir', () => {
   const dir = tmp();
   writeFileSync(join(dir, 'subscriptions.json'), JSON.stringify([
-    { name: 'pool', harness: 'manual', configDir: '/elsewhere/claude', reset: { every: 'weekly', day: 0 }, budget: { percent: 100 } },
+    { name: 'work', harness: 'manual', configDir: '/elsewhere/claude', reset: { every: 'weekly', day: 0 }, budget: { usd: 100 } },
+    { name: 'pool', harness: 'manual', codexHome: '/elsewhere/codex', reset: { every: 'weekly', day: 0 }, budget: { usd: 100 } },
   ]));
-  const config = parseConfig('[subscriptions.pool]\nharness = "claude"\n', '/home/u');
+  const config = parseConfig('[subscriptions.work]\nharness = "claude"\n[subscriptions.pool]\nharness = "codex"\n', '/home/u');
   const saved = { config: process.env.AIR_CONFIG_DIR, state: process.env.AIR_STATE_DIR };
   process.env.AIR_CONFIG_DIR = dir;
   process.env.AIR_STATE_DIR = join(dir, 'state');
   try {
     const ctx = serveContext(config, 'o/requests');
-    const [login] = loginsOf(loadSubscriptions(subscriptionsFile()), config);
-    // serve starts this login's agent without CLAUDE_CONFIG_DIR, so the preflight checks the default state.
-    assert.deepEqual(ctx.agentEnv('pool'), {});
-    assert.deepEqual(login, { name: 'pool', harness: 'claude' });
+    assert.deepEqual(ctx.agentEnv('work'), { CLAUDE_CONFIG_DIR: '/elsewhere/claude' });
+    assert.deepEqual(ctx.agentEnv('pool'), { CODEX_HOME: '/elsewhere/codex' });
+    const logins = loginsOf(loadSubscriptions(subscriptionsFile()), config);
+    assert.deepEqual(logins, [
+      { name: 'work', harness: 'claude', configDir: '/elsewhere/claude' },
+      { name: 'pool', harness: 'codex', codexHome: '/elsewhere/codex' },
+    ]);
+    const m = machine();
+    const [claudeCheck] = preflight(m.config, logins, m.deps);
+    assert.match(claudeCheck!.logins.work![0]!.what, /^Claude Code has not been set up with this config: \/elsewhere\/claude\/\.claude\.json does not exist/);
   } finally {
     for (const [k, v] of [['AIR_CONFIG_DIR', saved.config], ['AIR_STATE_DIR', saved.state]] as const) {
       if (v === undefined) delete process.env[k];

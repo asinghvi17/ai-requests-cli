@@ -40,33 +40,28 @@ const jobRow = (issue: string, nonce: string, w: string, p: string, dead = '0', 
   row(issue, nonce, w, p, `#${issue}`, '1', dead, status, 'running');
 
 describe('env', () => {
-  test('jobEnv keeps only the allowlist and refuses secrets', () => {
-    const env = jobEnv({ FOO: 'bar' }, { PATH: '/bin', HOME: '/h', GH_TOKEN: 'x', AWS_SECRET_ACCESS_KEY: 'y', SSH_AUTH_SOCK: 's', CODEX_HOME: '/c' });
-    assert.deepEqual(env, { PATH: '/bin', HOME: '/h', CODEX_HOME: '/c', FOO: 'bar' });
-    assert.throws(() => jobEnv({ GH_TOKEN: 'x' }, {}), /refusing to pass GH_TOKEN/);
-    assert.throws(() => jobEnv({ GITHUB_TOKEN: 'x' }, {}), /refusing/);
+  test('jobEnv passes the whole environment through, with the extras on top', () => {
+    const base = { PATH: '/bin', HOME: '/h', GH_TOKEN: 'x', HTTPS_PROXY: 'http://p', CODEX_HOME: '/c', AIR_OUT: '/old', TMUX: '/other,1,0', TMUX_PANE: '%9' };
+    assert.deepEqual(jobEnv({ FOO: 'bar', AIR_OUT: '/w/out' }, base), { PATH: '/bin', HOME: '/h', GH_TOKEN: 'x', HTTPS_PROXY: 'http://p', CODEX_HOME: '/c', AIR_OUT: '/w/out', FOO: 'bar' });
     assert.throws(() => jobEnv({ 'A B': 'x' }, {}), /bad environment variable/);
-    assert.throws(() => jobEnv({ BASH_ENV: '/x' }, {}), /refusing/);
-    assert.throws(() => jobEnv({ ENV: '/x' }, {}), /refusing/);
-    assert.deepEqual(jobEnv({}, { HOME: '/h', BASH_ENV: '/x', ENV: '/y' }), { HOME: '/h' });
   });
-  test('checkJob rejects bad argv and denied variables', () => {
-    checkJob(['claude', '--x'], { PATH: '/bin' });
-    assert.throws(() => checkJob(['x'], { BASH_ENV: '/x' }), /refusing/);
-    assert.throws(() => checkJob(['A=b'], {}), /may not contain/);
-    assert.throws(() => checkJob([], {}), /empty/);
+  test('checkJob rejects bad argv', () => {
+    checkJob(['claude', '--x']);
+    assert.throws(() => checkJob(['A=b']), /may not contain/);
+    assert.throws(() => checkJob([]), /empty/);
   });
 
-  test('launcher runs exactly the given argv with exactly the given env, from cwd', () => {
+  test('launcher runs exactly the given argv with the given env added to the inherited one, from cwd', () => {
     const weird = [`it's`, ';', 'x;', 'a\\;', '$(touch /nope)', '`id`', '{', '"q"', 'new\nline', ''];
-    const l = writeLauncher({ argv: ['/bin/sh', '-c', 'pwd; env; printf "<%s>\\n" "$@"', 'sh', ...weird], env: { PATH: '/usr/bin:/bin', FOO: `b'ar;` }, cwd: ws, clearEnv: true });
+    const l = writeLauncher({ argv: ['/bin/sh', '-c', 'pwd; env; printf "<%s>\\n" "$@"', 'sh', ...weird], env: { PATH: '/usr/bin:/bin', FOO: `b'ar;` }, cwd: ws });
     assert.equal(l.argv[0], '/bin/sh');
     assert.ok(!l.argv[1]!.endsWith(';'));
-    const r = spawnSync(l.argv[0]!, l.argv.slice(1), { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', GH_TOKEN: 'leak' } });
+    const r = spawnSync(l.argv[0]!, l.argv.slice(1), { encoding: 'utf8', env: { PATH: '/usr/bin:/bin', INHERITED: 'yes', FOO: 'old' } });
     const out = r.stdout.split('\n');
-    assert.equal(out[0], realpathSync(ws)); // macOS: /var is /private/var
+    assert.equal(realpathSync(out[0]!), realpathSync(ws)); // macOS: /var is /private/var
     assert.ok(out.includes(`FOO=b'ar;`));
-    assert.ok(!r.stdout.includes('GH_TOKEN'));
+    assert.ok(!out.includes('FOO=old'));
+    assert.ok(out.includes('INHERITED=yes'));
     assert.ok(r.stdout.endsWith(weird.map(w => `<${w}>`).join('\n') + '\n'));
     assert.ok(!existsSync(l.argv[1]!), 'launcher deletes itself');
     assert.equal(shQuote(`a'b`), `'a'\\''b'`);
@@ -91,7 +86,7 @@ describe('tmux (fake runner)', () => {
   });
 
   test('a status launcher records the exit status, also of a child killed by C-c', async () => {
-    const l = writeLauncher({ argv: ['/bin/sh', '-c', 'exit 3'], cwd: ws, clearEnv: true, status: true });
+    const l = writeLauncher({ argv: ['/bin/sh', '-c', 'exit 3'], cwd: ws, status: true });
     const r = spawnSync(l.argv[0]!, l.argv.slice(1), { encoding: 'utf8' });
     assert.equal(r.status, 3);
     assert.ok(!existsSync(l.argv[1]!), 'the script deletes itself');
@@ -100,7 +95,7 @@ describe('tmux (fake runner)', () => {
     assert.equal(launcherStatus(l.dir), null);
 
     // C-c reaches the whole foreground process group: the agent dies of it, the launcher outlives it.
-    const m = writeLauncher({ argv: ['sleep', '30'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, clearEnv: true, status: true });
+    const m = writeLauncher({ argv: ['sleep', '30'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' }, status: true });
     const child = spawn(m.argv[0]!, m.argv.slice(1), { detached: true, stdio: 'ignore' });
     const exited = new Promise<number | null>((res) => child.on('exit', (code) => res(code)));
     await sleep(300);
@@ -299,10 +294,12 @@ describe('tmux (fake runner)', () => {
     const script = readFileSync(argv[1]!, 'utf8');
     rmSync(join(argv[1]!, '..'), { recursive: true });
     // Run as a child (in the foreground), behind a tiny sh that records its pid, so the launcher can record its exit status.
-    assert.match(script, /^'\/bin\/sh' '-c' 'printf "%s\\n" "\$\$" > "\$1"; shift; exec "\$@"' 'air-agent' '[^']+\/pid' 'env' '-i' .* 9>&-$/m);
-    assert.match(script, /^trap : INT QUIT TERM$/m); // not HUP: a hangup must kill the launcher, so its reaper runs
-    assert.match(script, /^air_exit "\$\?"$/m);
-    assert.ok(script.includes(`'FOO=1'`) && script.includes(`'TERM=tmux-256color'`) && !script.includes('GH_TOKEN'));
+    // The script holds the caller's whole environment: check it without printing it.
+    const has = (re: RegExp, what: string) => assert.ok(re.test(script), `the launcher has ${what}`);
+    has(/^'\/bin\/sh' '-c' 'printf "%s\\n" "\$\$" > "\$1"; shift; exec "\$@"' 'air-agent' '[^']+\/pid' 'env' '(?!-i')[^\n]* 'claude' '[^']+' 9>&-$/m, 'the agent line');
+    has(/^trap : INT QUIT TERM$/m, 'the trap'); // not HUP: a hangup must kill the launcher, so its reaper runs
+    has(/^air_exit "\$\?"$/m, 'air_exit');
+    assert.ok(script.includes(`'FOO=1'`) && script.includes(`'TERM=tmux-256color'`) && script.includes(`'HOME=${process.env.HOME}'`), 'the launcher sets the env');
     assert.ok(script.includes(`cd -- '${ws}'`));
     assert.ok(script.includes(`'claude' '${TASK_INSTRUCTION}'`));
     // The task lives in the workspace, not in argv.

@@ -55,7 +55,7 @@ test('usage is wired to usageCommand and prints its own help', async () => {
     const r = await call('usage', flag);
     assert.equal(r.code, 0);
     assert.match(r.out, /^usage: air usage \[--refresh\] \[--json\] \[--config FILE\]/);
-    assert.match(r.out, /air usage spend NAME AMOUNT[^\n]*\n[^\n]*reset-ledger[^\n]*\n$/);
+    assert.match(r.out, /air usage spend NAME USD[^\n]*\n[^\n]*reset-ledger[^\n]*\n$/);
     assert.equal(r.err, '');
   }
   assert.equal((await call('usage', '--bogus')).code, 2);

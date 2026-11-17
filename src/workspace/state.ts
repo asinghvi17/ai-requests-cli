@@ -50,10 +50,12 @@ export interface JobRecord {
   /** The local subscription it runs on, and the concrete model for the requested tier. */
   subscription: string;
   model: string;
-  /** The matched cost in percent points of the subscription's primary window (match `costOf`). */
+  /** The effort's cost in US dollars at API prices (spec §2), as matched. */
   expectedCost?: number;
   /** The agent's own session id, for `claude --resume` / `codex resume`. */
   sessionId?: string;
+  /** Every Claude Code session id the job started, for reading what it spent. */
+  sessions?: string[];
   /** `@air_nonce` of the job's tmux pane, so a different pane for the same issue is never adopted. */
   paneNonce?: string;
   /** Start of the current run; agent time before it is in `runMs`. */
@@ -81,6 +83,12 @@ export interface JobRecord {
   deliveryAttempts?: number;
   /** Why the job is `failing`, so a retried failure posts the same reason. */
   failure?: { step: string; detail: string };
+  /**
+   * What the ended job cost at API prices (US dollars), from its agent's records, with the models the price
+   * table doesn't cover; for a manual subscription, whether that was charged to the budget, or why not.
+   * Recorded so the job is settled once.
+   */
+  spend?: { usd?: number; unpriced?: string[]; charged: boolean; why?: string };
   /**
    * The running agent seems to wait on a person (a prompt on its screen, or a screen that stopped changing):
    * what for, the fix, since when, and whether the issue was told. Cleared when its screen moves on.
