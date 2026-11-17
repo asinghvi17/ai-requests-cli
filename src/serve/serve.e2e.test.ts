@@ -457,6 +457,21 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     await until(w, 'delivered', () => status(w, 24) === 'done');
   });
 
+  test('regression: a claim that throws is tried again as soon as its body changes', async () => {
+    const w = world();
+    w.store.addIssue({ number: 28, body: body('comment x') });
+    const assign = w.store.assign;
+    w.store.assign = async () => { throw new GhError('other', 'unsupported API write route/method'); };
+    await w.server.tick();
+    await w.server.idle();
+    assert.equal(w.logs.filter((l) => /^#28: claim failed/.test(l)).length, 1, w.logs.join('\n'));
+    w.store.assign = assign;
+    w.store.issues.get(28)!.body = body('comment y');
+    await w.server.tick();
+    await w.server.idle();
+    assert.ok(job(w, 28)?.state.job, w.logs.join('\n'));
+  });
+
   test('artifact: zips regular files of out/ to a release asset; an empty out/ fails', async () => {
     const w = world();
     w.store.addIssue({ number: 5, body: body('artifact', ['deliver: artifact']) });

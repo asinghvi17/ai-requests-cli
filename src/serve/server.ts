@@ -91,8 +91,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   const skip = new Map<number, string>();
   /** Last "no fit" reason logged per issue, so an unchanged one isn't logged every tick. */
   const noFit = new Map<number, string>();
-  /** Issue -> when to try it again, after a claim attempt that threw. */
-  const claimFailed = new Map<number, number>();
+  /** Issue -> when to try it again (unless its body changes), after a claim attempt that threw. */
+  const claimFailed = new Map<number, { hash: string; until: number }>();
   /** Issue -> why its last claim was refused, for refusals checked again every tick (logged once per reason). */
   const refused = new Map<number, string>();
   let adopting = true;
@@ -347,7 +347,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       candidates++;
       const hash = bodyHash(issue.body);
       if (skip.get(n) === hash) continue;
-      if ((claimFailed.get(n) ?? 0) > ctx.now().getTime()) continue;
+      const failed = claimFailed.get(n);
+      if (failed?.hash === hash && failed.until > ctx.now().getTime()) continue;
       const linted = lint(issue.body);
       if (!linted.ok || !linted.request) {
         // claim() checks trust, then posts the lint or unsupported-version comment once, and claims nothing.
@@ -379,7 +380,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         });
       } catch (e) {
         // claim() withdrew its claim. Trying again every tick would post (and withdraw) a claim every tick.
-        claimFailed.set(n, ctx.now().getTime() + CLAIM_RETRY_MS);
+        claimFailed.set(n, { hash, until: ctx.now().getTime() + CLAIM_RETRY_MS });
         ctx.log(`#${n}: claim failed: ${err(e)}; trying it again in ${CLAIM_RETRY_MS / 60_000} min`);
         continue;
       }
