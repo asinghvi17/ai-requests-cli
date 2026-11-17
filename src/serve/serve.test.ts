@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { parseMarkers, parseResult } from '../spec/markers.ts';
 import type { Subscription } from '../usage/types.ts';
 import { extractZip } from '../workspace/zip.ts';
-import { agentArgv, findCodexSession, restartInstruction } from './agent.ts';
+import { agentArgv, codexTrust, findCodexSession, restartInstruction } from './agent.ts';
 import { COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
 import { exitDetail } from './jobs.ts';
 import { committedUsage, exhausted } from './server.ts';
@@ -23,14 +23,18 @@ after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true });
 
 const agent = { command: ['claude'], args: ['--permission-mode', 'acceptEdits'] };
 
-test('agent argv: Claude Code with a chosen session id, resume, and Codex', () => {
-  assert.deepEqual(agentArgv({ harness: 'claude', agent, model: 'opus', sessionId: 'u-1', instruction: 'go' }),
+test('agent argv: Claude Code with a chosen session id, resume, and Codex, which trusts the job dir', () => {
+  const dir = '/home/u/air/o__r/12-abc';
+  assert.deepEqual(agentArgv({ harness: 'claude', agent, model: 'opus', sessionId: 'u-1', instruction: 'go', dir }),
     ['claude', '--session-id', 'u-1', '--model', 'opus', '--permission-mode', 'acceptEdits', 'go']);
-  assert.deepEqual(agentArgv({ harness: 'claude', agent, model: 'opus', resume: 'u-1', instruction: 'go on' }),
+  assert.deepEqual(agentArgv({ harness: 'claude', agent, model: 'opus', resume: 'u-1', instruction: 'go on', dir }),
     ['claude', '--resume', 'u-1', '--model', 'opus', '--permission-mode', 'acceptEdits', 'go on']);
-  const codex = { command: ['codex'], args: [] };
-  assert.deepEqual(agentArgv({ harness: 'codex', agent: codex, model: 'gpt-5', instruction: 'go' }), ['codex', '--model', 'gpt-5', 'go']);
-  assert.deepEqual(agentArgv({ harness: 'codex', agent: codex, model: 'gpt-5', resume: 's-9', instruction: 'go on' }), ['codex', 'resume', 's-9', 'go on']);
+  const codex = { command: ['codex'], args: ['-a', 'never'] };
+  const trust = ['-c', 'projects={"/home/u/air/o__r/12-abc"={trust_level="trusted"}}'];
+  assert.deepEqual(agentArgv({ harness: 'codex', agent: codex, model: 'gpt-5', instruction: 'go', dir }), ['codex', '--model', 'gpt-5', ...trust, '-a', 'never', 'go']);
+  assert.deepEqual(agentArgv({ harness: 'codex', agent: codex, model: 'gpt-5', resume: 's-9', instruction: 'go on', dir }), ['codex', 'resume', 's-9', ...trust, '-a', 'never', 'go on']);
+  // A path that needs escaping stays one TOML string.
+  assert.deepEqual(codexTrust('/a "b"\\c'), ['-c', 'projects={"/a \\"b\\"\\\\c"={trust_level="trusted"}}']);
   assert.match(restartInstruction(true), /^Read AIR_TASK\.md .*read out\/PROGRESS\.md and the git log of each repo under repo\//);
   assert.doesNotMatch(restartInstruction(false), /git log/);
 });

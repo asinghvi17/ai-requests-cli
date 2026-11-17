@@ -38,7 +38,9 @@ test('a prompt wrapped by a narrow pane still matches', () => {
 
 test('fixes: config prompts name the setting or command; others say how to attach', () => {
   const trust = waitingFor(matchPrompt('claude', pane('claude-trust'))!, fix);
-  assert.equal(trust.fix, 'run `mkdir -p /home/u/air && cd /home/u/air && claude`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)');
+  assert.equal(trust.fix, 'attach with `air attach 12` and answer it ("Yes, I trust this folder"); if it recurs, run `air doctor`: jobs under workspace_root /home/u/air inherit its trust, unless the job dir is itself a git repo');
+  const codexTrust = waitingFor(matchPrompt('codex', pane('codex-trust'))!, fix);
+  assert.match(codexTrust.fix, /^attach with `air attach 12` and answer it \("Trust and continue"\); air trusts the job dir with `-c projects=\{\.\.\.\}` at launch/);
   const bypass = waitingFor(matchPrompt('claude', pane('claude-bypass'))!, fix);
   assert.match(bypass.fix, /^use auto mode: args = \["--permission-mode", "auto"\] under \[agents.claude\] in \/home\/u\/.config\/air\/config.toml/);
   const perm = waitingFor(matchPrompt('claude', pane('claude-permission'))!, fix);

@@ -427,3 +427,42 @@ Alternatives considered:
   `idle` when the screen changes; a restart keeps it until then. A prompt, never `idle`, posts an issue
   comment: once per episode, at most 3 per job (`waitingComments`), so one false match can't silence the
   real prompts after it. None of this stops the job: the timeout and cut-off rules do.
+
+## 2026-11-17: folder trust is settled at launch, never at a prompt
+
+Replaces the Codex trust check and refines the Claude Code one in the entry above. Each job runs in a fresh
+directory under `workspace_root` (`<owner>__<repo>/<N>-<nonce>`), with clones in `repo/<path>/`, and the agent
+always starts in that job dir, never in a clone. Tested in tmux with Claude Code 2.1.311 and Codex CLI 0.164.0,
+throwaway config dirs, a fake API key and no prompt (so nothing reached a model), `workspace_root` trusted in
+Claude Code:
+
+| Agent's cwd | Claude Code | Codex (`-a never -s workspace-write`) | Codex, with air's `-c` |
+| --- | --- | --- | --- |
+| a new job dir | no prompt | no prompt | no prompt |
+| a job dir holding a fresh clone in `repo/o/r` | no prompt | no prompt | no prompt |
+| the same job dir again (resume, restart) | no prompt | no prompt | no prompt |
+| the clone itself (serve never does this) | prompts | prompts | no prompt |
+| a job dir that is a git repo (an agent's `git init`, then a restart) | prompts | prompts, `codex resume` too | no prompt, `codex resume` too |
+| a job dir in a git repo that holds `workspace_root` | no prompt | prompts | no prompt |
+| the same, with only a folder above that repo trusted | prompts | | |
+
+- Codex: every launch and resume gets `-c 'projects={"<job dir>"={trust_level="trusted"}}'` (`codexTrust`,
+  src/serve/agent.ts), keyed on the job dir's real path: Codex resolves symlinks before it looks, and a key with
+  the symlinked path still prompted. The dotted form, `-c 'projects."<dir>".trust_level="trusted"'`, does not
+  work: Codex splits the key at every `.`, those inside the quoted path included, and `~/.anything` paths have
+  them. The override lasts for that session only: nothing is written to the volunteer's `config.toml`. So
+  `air doctor` no longer checks Codex trust at all.
+- Claude Code (from its 2.1.311 binary, matching the table): it looks for `projects[dir].hasTrustDialogAccepted`
+  from the cwd upwards, skipping entries saved as false, and stops at the cwd's git root. So a job dir inherits
+  `workspace_root`'s trust, a clone or a job dir that is a git repo does not, and neither does a job dir below a
+  git repo whose trusted folder is above that repo. `air doctor` now checks exactly that: a trusted folder at or
+  above `workspace_root`'s real path, and not above the git repo `workspace_root` is in, if any. Before, a trusted
+  home directory passed even when `workspace_root` sat inside a repo under it, and each job would have prompted.
+- No flag or job-scoped setting makes Claude Code trust a folder. Project trust lives only in the login's
+  `.claude.json`, next to its account state, and air doesn't write it. The one case left is a job dir the agent
+  made a git repo itself, met on a restart or resume. Stuck-prompt detection catches it (`claude-trust`, whose fix
+  now says to attach and answer, then run `air doctor`); `codex-trust` stays too, as a backstop for a Codex that
+  ignores the override.
+- `src/serve/trust.e2e.test.ts` runs the installed CLIs through air's tmux layer with `agentArgv`'s argv for
+  these cases, including Codex without the override as a control, and checks each first screen with
+  `matchPrompt`. It is skipped for a CLI that isn't installed (as in CI).

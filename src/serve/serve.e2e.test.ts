@@ -733,8 +733,8 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     await until(w, 'waiting', () => job(w, 40)!.state.job!.waiting?.prompt === 'claude-trust');
     const waiting = job(w, 40)!.state.job!.waiting!;
     assert.equal(waiting.what, 'Claude Code folder trust ("Quick safety check")');
-    assert.match(waiting.fix, new RegExp(`^run \`mkdir -p ${w.root} && cd ${w.root} && claude\`, answer "Yes, I trust this folder"`));
-    assert.equal(w.logs.filter((l) => l.startsWith('#40: claude is waiting on you: Claude Code folder trust ("Quick safety check"). Fix: run `mkdir -p')).length, 1);
+    assert.match(waiting.fix, new RegExp(`^attach with \`air attach 40\` .* and answer it \\("Yes, I trust this folder"\\); if it recurs, run \`air doctor\`: jobs under workspace_root ${w.root} inherit its trust`));
+    assert.equal(w.logs.filter((l) => l.startsWith('#40: claude is waiting on you: Claude Code folder trust ("Quick safety check"). Fix: attach with `air attach 40`')).length, 1);
     const bar = () => spawnSync('tmux', ['-L', socket, 'show-options', '-v', '-t', '=air:', 'status-right'], { encoding: 'utf8' }).stdout;
     assert.equal(bar().trim(), '##40 claude waits on you: Claude Code folder trust ("Quick safety check"); see air status 40');
     const st = await statusViaCli(w, 40);

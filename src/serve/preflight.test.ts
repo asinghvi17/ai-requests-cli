@@ -1,9 +1,9 @@
 // The unattended preflight against fake agents: stand-in binaries on PATH and hand-written agent state.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseConfig, type Config } from '../config.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions } from '../usage/index.ts';
@@ -137,21 +137,36 @@ test('bypass mode needs the Bypass Permissions warning accepted once', () => {
   assert.deepEqual(refusals(preflight(m.config, [claude], m.deps)), {});
 });
 
-test('Codex: a workspace_root inside a git repo needs that repo trusted in config.toml', () => {
+test('Claude Code in a git repo: trust from above the repo does not count, from inside it does', () => {
+  // Real paths: Claude Code keys trust on them (macOS tmpdir is a symlink).
+  const repo = realpathSync(tmp());
+  execFileSync('git', ['init', '-q', repo]);
+  const root = join(repo, 'air');
+  mkdirSync(root);
+  const m = machine({ config: `workspace_root = "${root}"\n` });
+  claudeState(m.home, { trusted: [dirname(repo)] });
+  const [c] = preflight(m.config, [claude], m.deps);
+  assert.deepEqual(c!.logins.claude!.map((p) => p.what), [
+    `workspace_root ${root} is inside the git repo ${repo}, and Claude Code does not carry the trust of ${dirname(repo)} into a git repo below it, so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`,
+  ]);
+  for (const trusted of [repo, root]) {
+    claudeState(m.home, { trusted: [dirname(repo), trusted] });
+    assert.deepEqual(refusals(preflight(m.config, [claude], m.deps)), {}, trusted);
+  }
+  // A workspace_root reached through a symlink is checked at its real path.
+  const link = join(tmp(), 'link');
+  symlinkSync(root, link);
+  const viaLink = machine({ config: `workspace_root = "${link}"\n` });
+  claudeState(viaLink.home, { trusted: [root] });
+  assert.deepEqual(refusals(preflight(viaLink.config, [claude], viaLink.deps)), {});
+});
+
+test('Codex needs no trust set up, in a git repo or not: each launch trusts its job dir', () => {
   const repo = tmp();
   execFileSync('git', ['init', '-q', repo]);
-  const m = machine({ config: `workspace_root = "${join(repo, 'air')}"\n` });
-  const codexHome = join(m.home, 'codex-home');
-  const login: Login = { name: 'codex', harness: 'codex', codexHome };
-  const [c] = preflight(m.config, [login], m.deps);
-  assert.match(c!.logins.codex![0]!.what, new RegExp(`is inside the git repo ${repo}, which Codex does not trust`));
-  assert.equal(c!.logins.codex![0]!.fix.split('\n').slice(0, 3).join('\n'), `add to ${codexHome}/config.toml:\n[projects."${repo}"]\ntrust_level = "trusted"`);
-  mkdirSync(codexHome);
-  writeFileSync(join(codexHome, 'config.toml'), `[tui]\nx = 1\n\n[projects."${repo}"]\ntrust_level = "trusted"\n`);
-  assert.deepEqual(refusals(preflight(m.config, [login], m.deps)), {});
-  // Outside any git repo Codex asks nothing.
-  const plain = machine();
-  assert.deepEqual(refusals(preflight(plain.config, [codex], plain.deps)), {});
+  for (const m of [machine(), machine({ config: `workspace_root = "${join(repo, 'air')}"\n` })]) {
+    assert.deepEqual(preflight(m.config, [codex], m.deps)[0]!.logins, { codex: [] });
+  }
 });
 
 test('loginsOf: claude and codex logins with their dirs, manual ones by their declared harness', () => {
