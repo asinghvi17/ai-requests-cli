@@ -368,6 +368,22 @@ test('the claim is recorded as a `claiming` workspace before it is posted, so a 
   assert.equal(readState(ws!.dir).phase, 'released');
 });
 
+test('regression: a claim comment that was never posted leaves no workspace; one that may have been posted is kept', async () => {
+  const { gh, opts } = setup();
+  gh.comment = async () => { throw new GhError('validation', 'Validation Failed (HTTP 422)', 422); };
+  await assert.rejects(claim(opts), /422/);
+  assert.deepEqual(findWorkspaces(opts.root, gh.repo, 7), []);
+  // A timeout that posted it all the same: the `claiming` workspace stays, so the claim is given back later.
+  const { gh: gh2, opts: opts2 } = setup();
+  const post = gh2.comment.bind(gh2);
+  gh2.comment = async (n, body) => {
+    await post(n, body);
+    throw new GhError('timeout', 'gh api timed out');
+  };
+  await assert.rejects(claim(opts2), /timed out/);
+  assert.deepEqual(findWorkspaces(opts2.root, gh2.repo, 7).map((w) => w.state.phase), ['claiming']);
+});
+
 test('a claim that fails after posting and cannot be deleted is released instead', async () => {
   // Seen live: a gh that refused both the self-assign and the comment delete left the claim holding the issue.
   const { gh, opts } = setup();

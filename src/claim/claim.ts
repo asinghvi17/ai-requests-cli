@@ -1,7 +1,7 @@
 // Claiming and releasing requests (spec/v0.md §8, §9). A claim is a comment with an `air-claim` marker;
 // after a wait, the earliest counted unreleased claim holds the issue and every other claimant backs off.
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -183,7 +183,17 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     repos, phase: 'claiming', createdAt: t, updatedAt: t,
   }, body);
   const listed = repos.length === 0 ? '' : `\n\nRepos, checked out at:\n\n${repos.map((r) => `- ${code(r.path)}: \`${r.sha}\``).join('\n')}`;
-  const mine = await gh.comment(n, `Claimed by ${code(host)} with air.${listed}\n\n${formatMarker({ kind: 'claim', version: SPEC_VERSION, host, nonce })}\n`);
+  const marker = formatMarker({ kind: 'claim', version: SPEC_VERSION, host, nonce });
+  let mine;
+  try {
+    mine = await gh.comment(n, `Claimed by ${code(host)} with air.${listed}\n\n${marker}\n`);
+  } catch (e) {
+    // A claim that is not on the issue was never made: drop its workspace. If the comment may be up all the
+    // same (a timeout) or that can't be told, the workspace stays `claiming` and `air serve` gives it back later.
+    const posted = await gh.comments(n).then((cs) => cs.some((c) => c.author === viewer && c.body.includes(marker)), () => true);
+    if (!posted) rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
   updateState(dir, { claimCommentId: mine.id }, now());
   let comments, holder;
   try {
