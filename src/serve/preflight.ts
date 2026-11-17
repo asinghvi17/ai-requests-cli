@@ -17,9 +17,12 @@ export type Harness = (typeof AGENT_HARNESSES)[number];
 export interface Problem {
   /** What is wrong, in one sentence. */
   what: string;
-  /** The exact command or setting that fixes it. */
+  /** The exact command or setting that fixes it by hand. */
   fix: string;
-  /** Folder trust `air doctor --fix` can write: Claude Code's state file, and the folder to trust in it. */
+  /**
+   * Folder trust `air doctor --fix` can write: Claude Code's state file, and the folder to trust in it.
+   * The report offers `air doctor --fix` before `fix`, except to `air doctor --fix` itself.
+   */
   trust?: { stateFile: string; dir: string };
 }
 
@@ -208,7 +211,7 @@ function claudeChecks(login: Login, mode: 'auto' | 'bypass', config: Config, dep
       what: outside
         ? `workspace_root ${root} is inside the git repo ${repo}, and Claude Code does not carry the trust of ${outside} into a git repo below it, so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`
         : `Claude Code does not trust workspace_root ${root} (nor a folder above it), so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`,
-      fix: `run \`air doctor --fix\`, or run \`${startThere}\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
+      fix: `run \`${startThere}\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
       trust: { stateFile, dir: real },
     });
   }
@@ -276,13 +279,13 @@ export function refusals(checks: AgentCheck[]): Record<string, string> {
   return out;
 }
 
-/** The report `air doctor` and `air serve` print. */
-export function formatPreflight(checks: AgentCheck[]): string {
+/** The report `air doctor` and `air serve` print; `fixing` when it is `air doctor --fix` that prints it. */
+export function formatPreflight(checks: AgentCheck[], fixing = false): string {
   if (!checks.length) return 'no claude or codex logins to check (see subscriptions.json)\n';
   const lines: string[] = [];
   const problem = (p: Problem) => {
     lines.push(`    problem: ${p.what}`);
-    const [head, ...rest] = p.fix.split('\n');
+    const [head, ...rest] = (p.trust && !fixing ? `run \`air doctor --fix\`, or ${p.fix}` : p.fix).split('\n');
     lines.push(`    fix:     ${head}`, ...rest.map((l) => `             ${l}`));
   };
   for (const c of checks) {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { GhError } from '../gh/gh.ts';
 import { formatResult } from '../spec/markers.ts';
 import { claim, NONCE, requestIssue, result, SHA } from './fixture.ts';
-import { formatStatus, readStatus, statusJson, waitForResult } from './status.ts';
+import { formatStatus, readStatus, SETTLE_MS, statusJson, waitForResult } from './status.ts';
 
 const PR = 'https://github.com/acme/service/pull/7';
 
@@ -81,20 +81,51 @@ test('waitForResult polls until a current result, retrying transient errors', as
   const gh = requestIssue({ labels: ['air:running'] });
   const slept: number[] = [];
   let polls = 0;
+  let state = 'air:running';
+  const issue = gh.issue.bind(gh);
+  gh.issue = async (n) => ({ ...(await issue(n)), labels: ['ai-request', state] });
   const real = gh.comments.bind(gh);
   gh.comments = async (n) => {
     polls++;
     if (polls === 2) throw new GhError('server', 'Bad Gateway (HTTP 502)', 502);
-    if (polls === 3) gh.post(1, 'srv', 'OWNER', `Report.\n\n${formatResult(result({ status: 'partial' }))}\n`);
+    if (polls === 3) {
+      gh.post(1, 'srv', 'OWNER', `Report.\n\n${formatResult(result({ status: 'partial' }))}\n`);
+      state = 'air:partial';
+    }
     return real(n);
   };
   const retried: string[] = [];
   const r = await waitForResult(gh, 1, { intervalMs: 1000, sleep: async (ms) => void slept.push(ms), onRetry: (e) => retried.push(e.message) });
   assert.equal(r.timedOut, false);
   assert.equal(r.status.latest?.result.status, 'partial');
+  assert.equal(r.status.state, 'air:partial');
   assert.deepEqual(slept, [1000, 1000]);
   assert.deepEqual(retried, ['Bad Gateway (HTTP 502)']);
   assert.equal(r.status.latest?.result.nonce, NONCE);
+});
+
+test('waitForResult reads the labels after the comments, and once more while the label still says held', async () => {
+  // A server posts the result comment, then moves air:running to air:done (serve/jobs.ts finishJob).
+  const gh = requestIssue({ labels: ['air:running'] });
+  const order: string[] = [];
+  let state = 'air:running';
+  const issue = gh.issue.bind(gh);
+  gh.issue = async (n) => (order.push('issue'), { ...(await issue(n)), labels: ['ai-request', state] });
+  const comments = gh.comments.bind(gh);
+  gh.comments = async (n) => (order.push('comments'), comments(n));
+  gh.post(1, 'srv', 'OWNER', `Report.\n\n${formatResult(result())}\n`);
+  const slept: number[] = [];
+  const r = await waitForResult(gh, 1, { intervalMs: 1000, sleep: async (ms) => { slept.push(ms); state = 'air:done'; } });
+  assert.deepEqual(order, ['comments', 'issue', 'comments', 'issue']);
+  assert.deepEqual(slept, [SETTLE_MS]);
+  assert.equal(r.timedOut, false);
+  assert.match(formatStatus(r.status), /^state: {2}air:done\b.*\nresult: done /m);
+  // A server that never moves the label: wait still ends, after one more read.
+  state = 'air:running';
+  slept.length = 0;
+  const stuck = await waitForResult(gh, 1, { intervalMs: 1000, sleep: async (ms) => void slept.push(ms) });
+  assert.deepEqual(slept, [SETTLE_MS]);
+  assert.equal(stuck.status.state, 'air:running');
 });
 
 test('waitForResult times out with the last status; a missing issue is an error', async () => {

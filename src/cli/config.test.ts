@@ -81,10 +81,10 @@ test('doctor prints the preflight and exits 1 when an agent is not ready', async
 const untrusted = (dir: string): AgentCheck[] => [{
   harness: 'claude', version: '2.1.311 (Claude Code)', problems: [],
   logins: {
-    claude: [{ what: 'Claude Code does not trust workspace_root.', fix: 'run `air doctor --fix`', trust: { stateFile: '/home/u/.claude.json', dir } }],
+    claude: [{ what: 'Claude Code does not trust workspace_root.', fix: 'trust it by hand', trust: { stateFile: '/home/u/.claude.json', dir } }],
     // A second login on the same state file: asked once.
-    same: [{ what: 'Claude Code does not trust workspace_root.', fix: 'run `air doctor --fix`', trust: { stateFile: '/home/u/.claude.json', dir } }],
-    max2: [{ what: 'Claude Code does not trust workspace_root.', fix: 'run `air doctor --fix`', trust: { stateFile: '/home/u/c2/.claude.json', dir } }],
+    same: [{ what: 'Claude Code does not trust workspace_root.', fix: 'trust it by hand', trust: { stateFile: '/home/u/.claude.json', dir } }],
+    max2: [{ what: 'Claude Code does not trust workspace_root.', fix: 'trust it by hand', trust: { stateFile: '/home/u/c2/.claude.json', dir } }],
   },
 }];
 
@@ -97,8 +97,10 @@ test('doctor --fix asks before writing each missing folder trust, then checks ag
   jobDeps.preflight = () => (fixed ? [{ harness: 'claude', version: '2.1.311 (Claude Code)', problems: [], logins: { claude: [], same: [], max2: [] } }] : untrusted('/home/u/air'));
 
   const asked = terminal(['y']);
-  assert.equal((await call('doctor')).code, 1);
+  const plain = await call('doctor');
+  assert.equal(plain.code, 1);
   assert.equal(asked.length + written.length, 0);
+  assert.match(plain.out, /\n {4}fix: {5}run `air doctor --fix`, or trust it by hand\n/);
 
   jobDeps.isTTY = () => false;
   const r = await call('doctor', '--fix');
@@ -115,6 +117,9 @@ test('doctor --fix asks before writing each missing folder trust, then checks ag
   ]);
   assert.deepEqual(written, ['/home/u/c2/.claude.json /home/u/air']);
   assert.equal(out.code, 0);
+  // Already running --fix, the hint before each question is the manual way only.
+  assert.match(out.out, /\n {4}fix: {5}trust it by hand\n/);
+  assert.doesNotMatch(out.out, /air doctor --fix/);
   assert.match(out.out, /NOT READY[^]*wrote projects\["\/home\/u\/air"\]\.hasTrustDialogAccepted = true in \/home\/u\/c2\/\.claude\.json\n\nclaude: 2\.1\.311 \(Claude Code\): ready \(logins claude, same, max2\)\n$/);
 
   // A write that fails (say, Claude Code kept rewriting the file) is reported as doctor's error.

@@ -1,7 +1,7 @@
 // What a requester sees of a request (spec/v0.md §12): the state label, the holding claim and the latest
 // result, read with the requester's own gh credentials and trusting only counted markers and results.
 import { setTimeout as sleep } from 'node:timers/promises';
-import { CANCEL_LABEL, STATE_LABELS } from '../claim/claim.ts';
+import { CANCEL_LABEL, HELD_LABELS, STATE_LABELS } from '../claim/claim.ts';
 import { createTrust, type Trust } from '../claim/trust.ts';
 import { GhError } from '../gh/gh.ts';
 import type { RequestsRepo } from '../gh/issues.ts';
@@ -35,8 +35,10 @@ export interface RequestStatus {
 
 /** Reads issue `n` and its comments and works out its status. */
 export async function readStatus(gh: RequestsRepo, n: number, trust: Trust = createTrust(gh)): Promise<RequestStatus> {
-  const issue = await gh.issue(n);
+  // Comments first: a server posts the result comment before it moves the state label, so labels read after
+  // the comments are at least as new as the result they show.
   const raw = await gh.comments(n);
+  const issue = await gh.issue(n);
   const comments: AuthoredComment[] = await Promise.all(raw.map(async (c) => ({
     id: c.id, body: c.body, author: c.author, createdAt: c.createdAt, updatedAt: c.updatedAt, trusted: await trust(c.author, c.authorAssociation),
   })));
@@ -110,12 +112,16 @@ export interface WaitOptions {
   onRetry?: (e: GhError) => void;
 }
 
+/** How long `air wait` gives a server to move the state label once its result is posted. */
+export const SETTLE_MS = 5_000;
+
 /** GitHub errors worth another poll; anything else means the issue can't be read. */
 const TRANSIENT: readonly string[] = ['server', 'timeout', 'rate_limited'];
 
 /**
  * Polls issue `n` until it has a current latest result, or until the timeout passes. Returns the last
- * status read; `timedOut` tells which. Errors other than transient ones propagate.
+ * status read; `timedOut` tells which. Errors other than transient ones propagate. A result that still
+ * carries a held label (the server has not moved it yet) is read once more after SETTLE_MS.
  */
 export async function waitForResult(gh: RequestsRepo, n: number, opts: WaitOptions = {}): Promise<{ status: RequestStatus; timedOut: boolean }> {
   const now = opts.now ?? Date.now;
@@ -124,10 +130,16 @@ export async function waitForResult(gh: RequestsRepo, n: number, opts: WaitOptio
   const trust = opts.trust ?? createTrust(gh);
   const deadline = opts.timeoutMs === undefined ? Infinity : now() + opts.timeoutMs;
   let last: RequestStatus | undefined;
+  let settling = false;
   for (;;) {
     try {
       last = await readStatus(gh, n, trust);
-      if (last.latest?.current) return { status: last, timedOut: false };
+      if (last.latest?.current) {
+        if (settling || !(HELD_LABELS as readonly (string | undefined)[]).includes(last.state)) return { status: last, timedOut: false };
+        settling = true;
+        await pause(SETTLE_MS);
+        continue;
+      }
     } catch (e) {
       if (!(e instanceof GhError && TRANSIENT.includes(e.kind))) throw e;
       opts.onRetry?.(e);
