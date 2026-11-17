@@ -2,7 +2,7 @@
 // write, maintain or admin on the requests repo. `OWNER` is trusted outright; `MEMBER` and `COLLABORATOR`
 // are confirmed with the permission API; anything else is untrusted.
 import type { IssueComment, RequestsRepo } from '../gh/issues.ts';
-import { associationTrust, type MarkedComment } from '../spec/markers.ts';
+import { associationTrust, type AuthoredComment } from '../spec/markers.ts';
 
 export const WRITE_ROLES = ['admin', 'maintain', 'write'] as const;
 
@@ -30,9 +30,9 @@ export function createTrust(gh: RequestsRepo, ttlMs = 5 * 60_000, now = () => Da
   };
 }
 
-/** Comments in the shape `currentClaim` reads, with each author's trust resolved. */
-export async function markedComments(comments: IssueComment[], trust: Trust): Promise<MarkedComment[]> {
+/** Comments in the shape `currentClaim` and `countedResults` read, with each author's trust resolved. */
+export async function markedComments(comments: IssueComment[], trust: Trust): Promise<AuthoredComment[]> {
   return Promise.all(comments.map(async (c) => ({
-    id: c.id, body: c.body, createdAt: c.createdAt, updatedAt: c.updatedAt, trusted: await trust(c.author, c.authorAssociation),
+    id: c.id, body: c.body, author: c.author, createdAt: c.createdAt, updatedAt: c.updatedAt, trusted: await trust(c.author, c.authorAssociation),
   })));
 }

@@ -2,10 +2,10 @@
 // result, read with the requester's own gh credentials and trusting only counted markers and results.
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CANCEL_LABEL, HELD_LABELS, STATE_LABELS } from '../claim/claim.ts';
-import { createTrust, type Trust } from '../claim/trust.ts';
+import { createTrust, markedComments, type Trust } from '../claim/trust.ts';
 import { GhError } from '../gh/gh.ts';
 import type { RequestsRepo } from '../gh/issues.ts';
-import { countedMarkers, countedResults, currentClaim, type AirResult, type AuthoredComment, type ResultStatus } from '../spec/markers.ts';
+import { countedMarkers, countedResults, currentClaim, type AirResult, type ResultStatus } from '../spec/markers.ts';
 
 export interface LatestResult {
   /** Id of the final comment that carries it. */
@@ -39,10 +39,7 @@ export async function readStatus(gh: RequestsRepo, n: number, trust: Trust = cre
   // comments read after the held label is gone hold the result that replaced it. The other mix, a result next
   // to a held label, is the gap between the server's two writes (`waitForResult` reads again for it).
   const issue = await gh.issue(n);
-  const raw = await gh.comments(n);
-  const comments: AuthoredComment[] = await Promise.all(raw.map(async (c) => ({
-    id: c.id, body: c.body, author: c.author, createdAt: c.createdAt, updatedAt: c.updatedAt, trusted: await trust(c.author, c.authorAssociation),
-  })));
+  const comments = await markedComments(await gh.comments(n), trust);
   const status: RequestStatus = {
     repo: gh.repo, issue: n, title: issue.title, url: issue.url, body: issue.body, open: issue.state === 'open', cancel: issue.labels.includes(CANCEL_LABEL),
   };

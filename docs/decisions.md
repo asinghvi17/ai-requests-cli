@@ -530,3 +530,13 @@ Claude Code:
   comments first gave no such guarantee: both mixes were possible.
 - `air wait`'s one extra read after `SETTLE_MS` stays: a read between the server's comment and its label change
   still sees a current result next to a held label. No write order closes that gap.
+- A release cut off after its comment (a label write or the unassign failed) is finished, not wedged. Before,
+  the retry saw our own release marker, found no holder, was refused ("no claim to release") and marked the job
+  lost with `air:running` and the assignment left on the issue (review finding). Now `postResult` checks the
+  issue: if the claim's counted result is already there, it skips the comment and does only the writes left.
+  That replaces finishJob's `delivery.commented` flag, so there is one way to tell. `release()` finishes a
+  release when nothing holds, the latest claim or release marker is our own release, and its workspace hasn't
+  recorded the release, using the result it posted. `loseJob` tries that first, so `ensureHeld` and the server
+  tick finish the release too.
+- `spawn.test.ts` accepts ENOTCONN as well as EPIPE from a gh that exits without reading its input. On macOS
+  node's stdio pipes are socket pairs, and that write can fail with either (it failed one macOS CI run).

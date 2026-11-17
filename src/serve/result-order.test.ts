@@ -69,7 +69,7 @@ test('done, retried after the label change failed: the comment is not posted twi
   const add = gh.addLabels.bind(gh);
   gh.addLabels = async () => { throw new GhError('server', 'Bad Gateway (HTTP 502)', 502); };
   await finishJob(ctx, dir);
-  assert.equal(readState(dir).job!.delivery?.commented, true);
+  assert.equal(writes(gh, from)[0], 'comment 7');
   gh.addLabels = add;
   await finishJob(ctx, dir);
   const w = writes(gh, from);
@@ -131,4 +131,54 @@ test('a won claim that cannot be labelled: release comment, then unassign', asyn
   const w = writes(gh, 0);
   // The claim comment, then the giving up: its comment before any label or assignment change.
   assert.deepEqual(w.slice(w.lastIndexOf('comment 7')), ['comment 7', 'unassign 7 bot']);
+});
+
+/** Makes the next `method` call fail with a 502, after which it works again. */
+function failOnce(gh: FakeGitHub, method: 'addLabels' | 'removeLabel' | 'unassign'): void {
+  const real = gh[method].bind(gh) as (...a: unknown[]) => Promise<void>;
+  let failed = false;
+  (gh as unknown as Record<string, unknown>)[method] = async (...a: unknown[]) => {
+    if (!failed) {
+      failed = true;
+      throw new GhError('server', 'Bad Gateway (HTTP 502)', 502);
+    }
+    return real(...a);
+  };
+}
+
+const finals = (gh: FakeGitHub) => gh.issues.get(7)!.comments.filter((c) => c.body.includes('air-result'));
+
+test('a release whose label write failed after its comment is finished by the retry, with one comment', async () => {
+  for (const [method, run, label] of [
+    ['addLabels', (ctx: ServeContext, dir: string) => failJob(ctx, dir, 'the agent', 'It broke.'), 'air:failed'],
+    ['addLabels', (ctx: ServeContext, dir: string) => partialJob(ctx, dir, { why: 'subscription `max` ran out of quota.' }), 'air:partial'],
+    ['removeLabel', (ctx: ServeContext, dir: string) => cancelJob(ctx, dir, 'the requester added `air:cancel`'), undefined],
+    ['unassign', (ctx: ServeContext, dir: string) => expirePause(ctx, dir), undefined],
+    ['unassign', (ctx: ServeContext, dir: string) => failJob(ctx, dir, 'the agent', 'It broke.'), 'air:failed'],
+  ] as const) {
+    const { gh, ctx, dir } = await held('air:running');
+    failOnce(gh, method);
+    await assert.rejects(run(ctx, dir), /Bad Gateway/);
+    assert.equal(finals(gh).length, 1, method);
+    // Our own release is now the latest marker: nothing holds the issue, yet the retry finishes the release.
+    await run(ctx, dir);
+    assert.equal(finals(gh).length, 1, method);
+    assert.deepEqual(gh.issues.get(7)!.labels, ['ai-request', ...(label ? [label] : [])], method);
+    assert.deepEqual(gh.issues.get(7)!.assignees, [], method);
+    assert.ok(['failed', 'released'].includes(readState(dir).phase), method);
+    // Once finished, there is nothing left to release.
+    assert.equal((await release({ gh, issue: 7, root: ctx.root, host: 'box' })).status, 'refused', method);
+  }
+});
+
+test('a finished release of ours is not taken up again once another server claims the issue', async () => {
+  const { gh, ctx, dir } = await held('air:running');
+  failOnce(gh, 'addLabels');
+  await assert.rejects(failJob(ctx, dir, 'the agent', 'It broke.'));
+  // Another server claims it meanwhile: the retry must leave its labels alone.
+  gh.post(7, 'other', 'OWNER', `Claimed.\n\n<!-- air-claim v0 host=rival nonce=bbbbbbbbbbbb -->\n`);
+  const from = gh.log.length;
+  await failJob(ctx, dir, 'the agent', 'It broke.');
+  assert.deepEqual(writes(gh, from), []);
+  assert.equal(readState(dir).phase, 'lost');
 });

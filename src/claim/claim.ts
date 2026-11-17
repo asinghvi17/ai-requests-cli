@@ -9,8 +9,8 @@ import { GhError } from '../gh/gh.ts';
 import type { Issue, IssueComment, LabelSpec, RequestsRepo } from '../gh/issues.ts';
 import { lint } from '../spec/lint.ts';
 import { SPEC_VERSION, type Deliver, type Request } from '../spec/frontmatter.ts';
-import { countedMarkers, currentClaim, formatMarker, formatResult, type AirResult, type Marker } from '../spec/markers.ts';
-import { createWorkspace, findWorkspaces, REQUEST_FILE, updateState, type State } from '../workspace/state.ts';
+import { countedMarkers, countedResults, currentClaim, formatMarker, formatResult, type AirResult, type AuthoredComment, type Marker } from '../spec/markers.ts';
+import { createWorkspace, findWorkspaces, REQUEST_FILE, updateState, type Phase, type State } from '../workspace/state.ts';
 import { checkRepos, type RepoCheckOptions } from './repos.ts';
 import { createTrust, markedComments, type Trust } from './trust.ts';
 import { code, fenced } from './text.ts';
@@ -232,7 +232,7 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
   try {
     await gh.addLabels(n, ['air:claimed']);
   } catch (e) {
-    await giveUp(gh, n, viewer, host, nonce, { message: `Released by ${code(host)}: it could not start work on this request.`, result: { status: 'released', deliver: request.deliver, prs: [], host, nonce } })
+    await giveUp(gh, n, viewer, trust, host, nonce, { message: `Released by ${code(host)}: it could not start work on this request.`, result: { status: 'released', deliver: request.deliver, prs: [], host, nonce } })
       .then(() => updateState(dir, { phase: 'released' }, now()), () => {});
     throw e;
   }
@@ -256,16 +256,15 @@ export async function backOff(
  * The one way a server ends its part in an issue (spec §8): the final comment, with its `air-result` block,
  * first; then the labels: `final` (if any) added before the held labels in `labels` are removed, so the issue
  * never looks claimable in between; then the assignment. A reader that sees the new labels thus sees the
- * result too. `comment` is undefined when an earlier attempt already posted it; `posted` records that it is up.
+ * result too. A retry after a later write failed finds the comment up (the claim `host`/`nonce`'s counted
+ * result) and does only the writes left.
  */
 export async function postResult(
-  gh: RequestsRepo, n: number, viewer: string,
-  opts: { comment: string | undefined; posted?: () => void; labels: readonly string[]; final?: string },
+  gh: RequestsRepo, n: number, viewer: string, trust: Trust,
+  opts: { comment: string; host: string; nonce: string; labels: readonly string[]; final?: string },
 ): Promise<void> {
-  if (opts.comment !== undefined) {
-    await gh.comment(n, opts.comment);
-    opts.posted?.();
-  }
+  const comments = await markedComments(await gh.comments(n), trust);
+  if (!countedResults(comments).some((r) => r.result.host === opts.host && r.result.nonce === opts.nonce)) await gh.comment(n, opts.comment);
   if (opts.final && !opts.labels.includes(opts.final)) await gh.addLabels(n, [opts.final]);
   for (const l of HELD_LABELS) if (l !== opts.final && opts.labels.includes(l)) await gh.removeLabel(n, l);
   await gh.unassign(n, viewer);
@@ -276,13 +275,13 @@ export async function postResult(
  * block (spec §9 step 4, §10). A `failed` or `partial` result gets its label (`air:failed`, `air:partial`).
  */
 async function giveUp(
-  gh: RequestsRepo, n: number, viewer: string, host: string, nonce: string,
+  gh: RequestsRepo, n: number, viewer: string, trust: Trust, host: string, nonce: string,
   opts: { message: string; result: AirResult; labels?: string[] },
 ): Promise<void> {
   const labels = opts.labels ?? (await gh.issue(n)).labels;
   const final = opts.result.status === 'failed' || opts.result.status === 'partial' ? `air:${opts.result.status}` : undefined;
   const comment = `${opts.message}\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n${formatResult(opts.result)}\n`;
-  await postResult(gh, n, viewer, { comment, labels, ...(final ? { final } : {}) });
+  await postResult(gh, n, viewer, trust, { comment, host, nonce, labels, ...(final ? { final } : {}) });
 }
 
 /** The `deliver` of a request body, if it lints. */
@@ -312,11 +311,15 @@ export interface ReleaseOptions {
   result?: Partial<Pick<AirResult, 'status' | 'deliver' | 'usage' | 'resume' | 'report'>>;
 }
 
-export type ReleaseResult = { status: 'released'; nonce: string } | { status: 'refused'; message: string };
+export type ReleaseResult = { status: 'released'; nonce: string; result: AirResult } | { status: 'refused'; message: string };
+
+/** Workspace phases past the claim: `release` finishes no earlier release for one of these. */
+const ENDED_PHASES: readonly Phase[] = ['failed', 'released', 'lost', 'done'];
 
 /**
  * Gives a claim back (§9 step 4): posts an `air-release` marker for this host's holding claim, then removes
- * the held state label (adding `air:failed` for a failure), unassigns, and marks the local workspace.
+ * the held state label (adding `air:failed` for a failure), unassigns, and marks the local workspace. A
+ * release of this host's that posted its comment but not the rest is finished instead.
  */
 export async function release(opts: ReleaseOptions): Promise<ReleaseResult> {
   const { gh, issue: n } = opts;
@@ -326,36 +329,58 @@ export async function release(opts: ReleaseOptions): Promise<ReleaseResult> {
   const issue = await gh.issue(n);
   if (issue.labels.includes('air:done')) return { status: 'refused', message: `#${n} is done; delivered requests are not released` };
 
-  const holder = currentClaim(await markedComments(await gh.comments(n), trust));
+  const comments = await markedComments(await gh.comments(n), trust);
+  const workspaces = findWorkspaces(opts.root, gh.repo, n);
+  const held = currentClaim(comments);
+  // Nothing holds, but the latest marker is our own release and its workspace never recorded it: that release
+  // posted its comment, then failed on a label or the unassign. It is finished, not refused (`postResult`
+  // skips the comment), with the result it posted.
+  const left = held ? undefined : workspaces.filter((w) => !ENDED_PHASES.includes(w.state.phase)).map((w) => ownRelease(comments, host, w.state.nonce)).find((r) => r !== undefined);
+  const holder = held ?? left;
   if (!holder || holder.host !== host) {
     return { status: 'refused', message: holder ? `#${n} is held by ${holder.host}, not ${host}` : `#${n} has no claim to release` };
   }
   // Hosts can share a name: only release a claim we can prove is ours by its nonce.
-  const ws = findWorkspaces(opts.root, gh.repo, n).find((w) => w.state.nonce === holder.nonce);
+  const ws = workspaces.find((w) => w.state.nonce === holder.nonce);
   const nonce = opts.nonce ?? ws?.state.nonce;
   if (nonce === undefined || nonce !== holder.nonce) {
     return { status: 'refused', message: `#${n} is held by a claim from ${host} that this machine has no workspace for (another machine with the same name?)` };
   }
-  let deliver = opts.result?.deliver;
-  if (deliver === undefined && ws) {
-    try {
-      deliver = deliverOf(readFileSync(join(ws.dir, REQUEST_FILE), 'utf8'));
-    } catch {
-      // no snapshot: fall back to the issue
+  let result: AirResult | undefined = left;
+  let message = '';
+  if (!result) {
+    let deliver = opts.result?.deliver;
+    if (deliver === undefined && ws) {
+      try {
+        deliver = deliverOf(readFileSync(join(ws.dir, REQUEST_FILE), 'utf8'));
+      } catch {
+        // no snapshot: fall back to the issue
+      }
     }
+    deliver ??= deliverOf(issue.body);
+    if (deliver === undefined) return { status: 'refused', message: `#${n}: neither the claimed body nor the issue says how to deliver, so no \`air-result\` can be written` };
+    const status = opts.result?.status ?? (opts.failure ? 'failed' : 'released');
+    message = opts.failure
+      ? `air on ${code(host)} failed at ${opts.failure.step} and released this request.\n\n${opts.failure.detail}\n\nRun \`air retry ${n}\` to offer it again.`
+      : opts.message ?? `Released by ${code(host)}.`;
+    result = { prs: [], ...opts.result, status, deliver, host, nonce };
   }
-  deliver ??= deliverOf(issue.body);
-  if (deliver === undefined) return { status: 'refused', message: `#${n}: neither the claimed body nor the issue says how to deliver, so no \`air-result\` can be written` };
-  const status = opts.result?.status ?? (opts.failure ? 'failed' : 'released');
-  const viewer = await gh.viewer();
-  const message = opts.failure
-    ? `air on ${code(host)} failed at ${opts.failure.step} and released this request.\n\n${opts.failure.detail}\n\nRun \`air retry ${n}\` to offer it again.`
-    : opts.message ?? `Released by ${code(host)}.`;
-  const result: AirResult = { prs: [], ...opts.result, status, deliver, host, nonce };
-  await giveUp(gh, n, viewer, host, nonce, { message, result, labels: issue.labels });
+  await giveUp(gh, n, await gh.viewer(), trust, host, nonce, { message, result, labels: issue.labels });
 
   if (ws) {
-    updateState(ws.dir, opts.failure ? { phase: 'failed', failure: opts.failure.step } : { phase: 'released' }, now());
+    const step = opts.failure?.step ?? ws.state.failure;
+    const failed = left ? left.status === 'failed' : opts.failure !== undefined;
+    updateState(ws.dir, failed ? { phase: 'failed', ...(step ? { failure: step } : {}) } : { phase: 'released' }, now());
   }
-  return { status: 'released', nonce };
+  return { status: 'released', nonce, result };
+}
+
+/**
+ * The result of claim `host`/`nonce`'s release, when that release is the issue's latest counted claim or
+ * release marker.
+ */
+function ownRelease(comments: AuthoredComment[], host: string, nonce: string): AirResult | undefined {
+  const last = [...comments].sort((a, b) => a.id - b.id).filter((c) => countedMarkers(c).some((m) => m.kind === 'claim' || m.kind === 'release')).at(-1);
+  if (!last || !countedMarkers(last).some((m) => m.kind === 'release' && m.host === host && m.nonce === nonce)) return undefined;
+  return countedResults(comments).find((r) => r.commentId === last.id && r.result.host === host && r.result.nonce === nonce)?.result;
 }
