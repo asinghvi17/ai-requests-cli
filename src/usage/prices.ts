@@ -6,8 +6,10 @@
 //   cache writes, cache hits, output), "Long context pricing" (Claude Haiku 5.5 above 100,000 prompt tokens),
 //   "Fast mode pricing" and "Data residency pricing" (`inference_geo: "us"`: 1.1x).
 // - OPENAI: https://developers.openai.com/api/docs/pricing, standard tier (input, cached input, output) and its
-//   long-context rows (above 272K input tokens). OpenAI bills no cache writes. gpt-5.6-sol is left out: its
-//   listed price is promotional until 2026-11-30.
+//   long-context rows (above 272K input tokens), "Flagship models" > "Standard". OpenAI bills no cache writes.
+//   The models are those `codex debug models` lists (Codex 0.164.0). gpt-5.6-sol is left out: its listed price
+//   is promotional until 2026-11-30. Codex's fast mode (OpenAI's "Fast" tier, formerly priority) costs twice
+//   these rates; rollouts don't say which tier a call used, so a fast-mode job is priced at the standard rates.
 // A model that isn't here is not priced: a job's calls on it are not charged, and serve logs a warning naming it.
 
 export interface Rates {
@@ -50,6 +52,10 @@ export const PRICES: Readonly<Record<string, ModelPrice>> = {
   'claude-sonnet-4-5': claude(3, 3.75, 6, 0.3, 15),
   'claude-haiku-5-5': claude(0.1, 0.125, 0.2, 0.01, 0.5, { over: { tokens: 100_000, rates: { input: 0.5, cacheWrite5m: 0.625, cacheWrite1h: 1, cacheRead: 0.05, output: 2.5 } } }),
   'claude-haiku-4-5': claude(1, 1.25, 2, 0.1, 5),
+  'gpt-6-astra': openai(10, 1, 50, [20, 2, 75]),
+  'gpt-6.1-sol': openai(2, 0.1, 10, [4, 0.2, 15]),
+  'gpt-6-sol': openai(2, 0.2, 10, [4, 0.4, 15]),
+  'gpt-6-luna': openai(0.1, 0.01, 0.5, [0.2, 0.02, 0.75]),
   'gpt-5.6-terra': openai(2, 0.2, 12, [4, 0.4, 18]),
   'gpt-5.6-luna': openai(0.2, 0.02, 1.2, [0.4, 0.04, 1.8]),
   'gpt-5.5': openai(5, 0.5, 30, [10, 1, 45]),

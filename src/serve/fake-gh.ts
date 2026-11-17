@@ -112,6 +112,13 @@ export function fakeGh(gh: FakeGitHub): FakeGh {
         return page(cs.map((c) => ({ id: c.id, body: c.body, user: { login: c.author }, author_association: c.authorAssociation, created_at: c.createdAt, updated_at: c.updatedAt })));
       }
       if ((m = /^issues\/comments\/(\d+)$/.exec(rest)) && method === 'DELETE') return ok(await gh.deleteComment(Number(m[1])));
+      if (rest === 'labels?per_page=100' && method === 'GET') return page([...gh.labels].map((name) => ({ name })));
+      if (rest === 'labels' && method === 'POST') {
+        const { name } = body as { name: string };
+        if (gh.labels.has(name)) return fail(422, 'Validation Failed');
+        gh.labels.add(name);
+        return ok({ name });
+      }
       if ((m = /^issues\/(\d+)\/labels$/.exec(rest)) && method === 'POST') return ok(await gh.addLabels(Number(m[1]), (body as { labels: string[] }).labels));
       if ((m = /^issues\/(\d+)\/labels\/(.+)$/.exec(rest)) && method === 'DELETE') {
         const i = gh.issues.get(Number(m[1]));

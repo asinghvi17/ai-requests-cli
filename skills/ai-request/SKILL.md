@@ -54,7 +54,8 @@ Write it to a file outside the user's repos, such as `"$(mktemp -d)/request.md"`
 - front matter: `air: 0`, `effort`, `deliver`, `repos`, and the optional fields chosen above;
 - setup: `setup:` commands that install dependencies (they run with `sh -c` in the workspace root, so start
   each with `cd repo/<path> &&`), and a `check:` command that exits 0 when setup worked;
-- `## Task`: its first line is a one-line summary that becomes the issue title. Then the full
+- `## Task`: its first line is a one-line summary that becomes the issue title, at most 80 characters
+  (`air lint` warns about a longer one, which `air submit` would cut at a word boundary). Then the full
   instructions, written for someone who has never met the user. Name files, functions and constraints;
 - `## Done when`: a list of checkable criteria, such as tests passing, files produced, or what
   `out/REPORT.md` must say;
@@ -94,5 +95,7 @@ Offer these for the issue number `N`:
   failed or released, and 4 on timeout.
 - `air fetch N [DIR]`: downloads the report, the PR branches, the artifact and any checkpoint into
   `./air-N/`.
+- `air cancel N`: cancels the request. It adds the `air:cancel` label, and the server holding it stops its
+  agent and gives it back.
 
-After a failed or partial result, `air retry N` offers the request again (`--effort` raises the estimate).
+After a cancel, or a failed or partial result, `air retry N` offers the request again (`--effort` raises the estimate).

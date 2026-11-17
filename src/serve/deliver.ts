@@ -10,6 +10,7 @@ import type { Asset, RepoEntry, Request, Resume } from '../spec/frontmatter.ts';
 import { formatResult, type AirResult, type ResultUsage } from '../spec/markers.ts';
 import { sha256File } from '../workspace/context.ts';
 import { githubRepo, gitOut } from '../workspace/git.ts';
+import { PROGRESS_FILE } from '../workspace/task.ts';
 import { readState, updateState, type JobRecord, type RepoDelivery, type State, type UploadedAsset } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import { ARTIFACTS_TAG } from './github.ts';
@@ -154,10 +155,10 @@ async function deliverComment(ctx: ServeContext, dir: string, state: State, foot
 }
 
 /**
- * Zips the regular files of `out/` and uploads the zip once as asset `name`. Resolves to the asset, or to
- * why there is none: `out/` missing, unzippable, or without a regular file.
+ * Zips the regular files of `out/`, less its top-level entries in `skip`, and uploads the zip once as asset
+ * `name`. Resolves to the asset, or to why there is none: `out/` missing, unzippable, or without a regular file.
  */
-async function uploadOut(ctx: ServeContext, dir: string, name: string): Promise<UploadedAsset | { none: string }> {
+async function uploadOut(ctx: ServeContext, dir: string, name: string, skip: readonly string[] = []): Promise<UploadedAsset | { none: string }> {
   const done = readState(dir).job?.delivery?.asset;
   if (done?.name === name) return done;
   const zip = join(dir, `.${name}`);
@@ -173,11 +174,11 @@ async function uploadOut(ctx: ServeContext, dir: string, name: string): Promise<
     if (!isDir) return { none: '`out/` is missing or not a directory' };
     let summary;
     try {
-      summary = zipDir(out, zip);
+      summary = zipDir(out, zip, skip);
     } catch (e) {
       return { none: `\`out/\` could not be zipped: ${(e as Error).message}` };
     }
-    if (summary.files === 0) return { none: 'the agent left no regular file in `out/`' };
+    if (summary.files === 0) return { none: `the agent left no regular file in \`out/\`${skip.length ? ` besides ${skip.map((f) => `\`${f}\``).join(', ')}` : ''}` };
     return await uploadOnce(ctx, dir, name, () => zip, 'application/zip', summary.files);
   } finally {
     rmSync(zip, { force: true });
@@ -187,7 +188,8 @@ async function uploadOut(ctx: ServeContext, dir: string, name: string): Promise<
 const files = (n: number | undefined) => `${n} file${n === 1 ? '' : 's'}`;
 
 async function deliverArtifact(ctx: ServeContext, dir: string, state: State, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
-  const a = await uploadOut(ctx, dir, `air-${state.issue}-${state.nonce}.zip`);
+  // out/PROGRESS.md is the agent's notes for resuming (§5): a checkpoint keeps it, a finished artifact doesn't.
+  const a = await uploadOut(ctx, dir, `air-${state.issue}-${state.nonce}.zip`, [PROGRESS_FILE]);
   if ('none' in a) return { ok: false, step: 'delivery', detail: `There is no artifact to deliver: ${a.none}.` };
   return { ok: true, comment: `The result is a zip of ${files(a.files)} from \`out/\`: ${a.url}\n\n${footer}\n\n${doneResult(state, 'artifact', usage, { artifact: assetOf(a) })}` };
 }

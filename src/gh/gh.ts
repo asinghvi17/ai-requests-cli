@@ -13,7 +13,7 @@ export type OutFile = { path: string; maxBytes: number };
  */
 export type Runner = (args: string[], input?: string, signal?: AbortSignal, out?: OutFile) => Promise<RunResult>;
 
-export type GhErrorKind = 'missing_gh' | 'auth' | 'not_found' | 'rate_limited' | 'validation' | 'server' | 'timeout' | 'other';
+export type GhErrorKind = 'missing_gh' | 'auth' | 'not_found' | 'rate_limited' | 'forbidden' | 'validation' | 'server' | 'timeout' | 'other';
 
 /** Default limit for one gh call; uploads pass a longer one. */
 export const GH_TIMEOUT_MS = 2 * 60_000;
@@ -137,6 +137,7 @@ function mapError(r: RunResult): GhError {
     /gh auth login|not logged in|authentication/i.test(stderr) || status === 401 ? 'auth'
     : status === 404 ? 'not_found'
     : status === 429 || (status === 403 && /rate limit/i.test(message)) ? 'rate_limited'
+    : status === 403 ? 'forbidden'
     : status === 422 ? 'validation'
     : status !== undefined && status >= 500 ? 'server'
     : 'other';

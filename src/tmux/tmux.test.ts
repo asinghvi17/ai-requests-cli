@@ -6,7 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTmux, parseJobs, quoteTmux, signalName, signalOf, tmuxVersionProblem, socketPath, TASK_FILE, TASK_INSTRUCTION, type RunResult } from './tmux.ts';
-import { checkJob, clientEnv, jobEnv } from './env.ts';
+import { checkJob, clientEnv, jobEnv, SESSION_MARKERS } from './env.ts';
 import { launcherPid, launcherStatus, shQuote, writeLauncher } from './launcher.ts';
 
 const ws = mkdtempSync(join(tmpdir(), 'air-tmux-unit-'));
@@ -44,6 +44,13 @@ describe('env', () => {
     const base = { PATH: '/bin', HOME: '/h', GH_TOKEN: 'x', HTTPS_PROXY: 'http://p', CODEX_HOME: '/c', AIR_OUT: '/old', TMUX: '/other,1,0', TMUX_PANE: '%9' };
     assert.deepEqual(jobEnv({ FOO: 'bar', AIR_OUT: '/w/out' }, base), { PATH: '/bin', HOME: '/h', GH_TOKEN: 'x', HTTPS_PROXY: 'http://p', CODEX_HOME: '/c', AIR_OUT: '/w/out', FOO: 'bar' });
     assert.throws(() => jobEnv({ 'A B': 'x' }, {}), /bad environment variable/);
+  });
+
+  test('jobEnv drops the markers of a parent Claude Code or Codex session, and only those', () => {
+    const markers = Object.fromEntries(SESSION_MARKERS.map((n) => [n, '1']));
+    const base = { ...markers, PATH: '/bin', CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', CODEX_HOME: '/x', ANTHROPIC_API_KEY: 'k' };
+    assert.deepEqual(jobEnv({}, base), { PATH: '/bin', CLAUDE_CONFIG_DIR: '/c', CLAUDE_CODE_USE_BEDROCK: '1', CODEX_HOME: '/x', ANTHROPIC_API_KEY: 'k' });
+    for (const n of ['CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT', 'CODEX_THREAD_ID', 'CODEX_SANDBOX']) assert.ok(SESSION_MARKERS.includes(n), n);
   });
   test('checkJob rejects bad argv', () => {
     checkJob(['claude', '--x']);

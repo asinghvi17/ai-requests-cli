@@ -12,9 +12,9 @@ async function call(...argv: string[]) {
   return { code, out, err };
 }
 
-test('--version prints the package.json version', async () => {
+test('--version prints the package.json version (from source: no build stamp)', async () => {
   const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
-  assert.equal(VERSION, pkg.version);
+  assert.equal(VERSION, `${pkg.version}+source`);
   assert.deepEqual(await call('--version'), { code: 0, out: `${VERSION}\n`, err: '' });
 });
 
@@ -29,7 +29,7 @@ test('--help lists every command; no args prints help to stderr and fails', asyn
 
 test('routes the full command set', () => {
   assert.deepEqual(Object.keys(COMMANDS).sort(), [
-    'attach', 'claim', 'config', 'doctor', 'fetch', 'lint', 'pause', 'release', 'resume', 'retry', 'run', 'serve', 'setup', 'skill', 'start', 'status', 'stop', 'submit',
+    'attach', 'cancel', 'claim', 'config', 'doctor', 'fetch', 'lint', 'pause', 'release', 'resume', 'retry', 'run', 'serve', 'setup', 'skill', 'start', 'status', 'stop', 'submit',
     'sweep', 'usage', 'wait',
   ]);
 });

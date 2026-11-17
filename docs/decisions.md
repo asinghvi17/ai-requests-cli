@@ -427,3 +427,32 @@ Alternatives considered:
   `idle` when the screen changes; a restart keeps it until then. A prompt, never `idle`, posts an issue
   comment: once per episode, at most 3 per job (`waitingComments`), so one false match can't silence the
   real prompts after it. None of this stops the job: the timeout and cut-off rules do.
+
+## 2026-11-17: fixes from the first real-GitHub run
+
+- Labels: `LABELS` (`src/claim/claim.ts`) lists every air label. `air serve` creates the ones the requests repo
+  lacks when it starts, `air:cancel`, `air:failed` and `air:partial` included. Before, labels appeared only
+  when serve first added one, so `air:cancel` never existed on a fresh repo. `air cancel N` is the one way
+  to cancel: it adds `air:cancel` (creating the label if needed). Like `air retry`, it is for the author or
+  an account with write access.
+- GitHub answers a caller without push access with 403 on the collaborator-permission endpoint, and needs
+  triage to label an issue (push to create a label). `permission()` reads a 403 as `none` only for the
+  caller's own role: for another's it says nothing, so it still throws, and trust never takes a server's
+  marker for forged. The repo check asks for the server's own access first, so a server without push never
+  blames the requester. `air cancel` and `air retry` turn a 403 on a label write into a message saying the
+  account may not label issues, since an author passes their role check without triage. The fake follows
+  these rules (its viewer is admin unless a test records a role).
+- The agent's environment drops the variables Claude Code and Codex set for the commands they run
+  (`SESSION_MARKERS`, `src/tmux/env.ts`; names read from Claude Code 2.1.311 and Codex 0.164.0). Cause of the
+  missing Claude costs: `air serve` was started from a Claude Code session, the agent inherited
+  `CLAUDE_CODE_CHILD_SESSION=1`, and Claude Code then saves no transcript ("Transcript saving is off —
+  inherited CLAUDE_CODE_CHILD_SESSION marker"), so the job had no usage record to price.
+- A cost with no priced call (every call on a model the table lacks) reads "unknown", not `$0.00`. The
+  Codex job priced at $0.00 ran on gpt-6-luna, which had no price. The table now has every API model
+  `codex debug models` lists, gpt-5.6-sol's promotional price still excepted.
+- `air usage` shows only the subscriptions config.toml names.
+- A build stamps its version (`scripts/version.ts`, `bun build --define AIR_BUILD_VERSION`): package.json's
+  version, plus `+<short sha>` unless HEAD carries the tag `v<version>`. Run from source, it is `<version>+source`.
+- A Task summary over 80 characters is a lint warning, and `air submit` cuts a derived title at a word
+  boundary.
+- A `done` artifact zip leaves out `out/PROGRESS.md`. A partial checkpoint's zip keeps it, since resuming reads it.

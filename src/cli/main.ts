@@ -5,7 +5,7 @@ import { ArgError, parseArgs, type FlagSpecs } from './args.ts';
 import { GhError } from '../gh/gh.ts';
 import { VERSION } from '../version.ts';
 import { usageCommand } from '../usage/index.ts';
-import { loadConfig, type Config } from '../config.ts';
+import { loadConfig } from '../config.ts';
 import { claimCommand } from './claim.ts';
 import { releaseCommand } from './release.ts';
 import { CommandError, UsageError } from './requests.ts';
@@ -17,6 +17,7 @@ import { statusCommand } from './status.ts';
 import { waitCommand } from './wait.ts';
 import { fetchCommand } from './fetch.ts';
 import { retryCommand } from './retry.ts';
+import { cancelCommand } from './cancel.ts';
 import { skillCommand } from './skill.ts';
 import { configCommand } from './config.ts';
 import { attachCommand, debugCommand, doctorCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
@@ -32,21 +33,6 @@ type Command = {
   run?: (inv: Invocation) => Promise<number> | number;
 };
 
-
-/** config.toml's `window_usd` per subscription, for `air usage` to show windows in dollars; none if config.toml is unreadable. */
-function windowUsdFromConfig(): (name: string) => number | undefined {
-  let config: Config | null | undefined;
-  return (name) => {
-    if (config === undefined) {
-      try {
-        config = loadConfig();
-      } catch {
-        config = null;
-      }
-    }
-    return config?.subscriptions[name]?.window_usd;
-  };
-}
 
 const HELP: FlagSpecs = { help: { type: 'boolean', short: 'h' } };
 const REPO: FlagSpecs = { repo: { type: 'string' } };
@@ -83,6 +69,13 @@ export const COMMANDS: Record<string, Command> = {
     args: ['ISSUE'],
     flags: REPO,
     run: fetchCommand,
+  },
+  cancel: {
+    usage: 'cancel [--repo OWNER/NAME] ISSUE',
+    summary: 'cancel a request: adds `air:cancel`, so the server holding it stops its agent and releases it',
+    args: ['ISSUE'],
+    flags: REPO,
+    run: cancelCommand,
   },
   retry: {
     usage: 'retry [--repo OWNER/NAME] [--effort XS|S|M|L|XL] ISSUE',
@@ -126,7 +119,7 @@ export const COMMANDS: Record<string, Command> = {
     args: [],
     flags: {},
     raw: true,
-    run: ({ argv, io }) => usageCommand(argv, { out: (s) => io.out(`${s}\n`), err: (s) => io.err(`${s}\n`), windowUsd: windowUsdFromConfig() }),
+    run: ({ argv, io }) => usageCommand(argv, { out: (s) => io.out(`${s}\n`), err: (s) => io.err(`${s}\n`), configured: () => loadConfig().subscriptions }),
   },
   release: { usage: 'release [--repo OWNER/NAME] ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: REPO, run: releaseCommand },
   lint: { usage: 'lint [FILE|-]', summary: 'check a request body against the spec', args: [], flags: {}, run: lintCommand },

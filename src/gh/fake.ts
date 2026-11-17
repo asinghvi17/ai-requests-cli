@@ -9,10 +9,16 @@ export interface FakeIssue extends Issue {
 
 export interface FakeGitHub extends RequestsRepo {
   issues: Map<number, FakeIssue>;
-  /** `owner/name` -> login -> role. Missing entries are `none`. */
+  /**
+   * `owner/name` -> login -> role. Missing entries are `none`, but the viewer's own on the fake's repo: admin.
+   * Roles act as on GitHub: labelling needs triage, creating a label or reading a role needs push (without
+   * it, `permission()` says `none` for the viewer's own role and throws a 403 for another's, as the real one).
+   */
   permissions: Map<string, Map<string, Permission>>;
   /** `owner/name#n` -> head, for `pullHead`. */
   pulls: Map<string, PullHead>;
+  /** The repo's labels. Adding a label to an issue creates it, as GitHub does. */
+  labels: Set<string>;
   /** Every call, as `method arg...`, for asserting on order. */
   log: string[];
   /** Runs after `comments()` takes its snapshot: lets a test post a rival's comment mid-race. */
@@ -30,13 +36,14 @@ interface Store {
   issues: Map<number, FakeIssue>;
   permissions: Map<string, Map<string, Permission>>;
   pulls: Map<string, PullHead>;
+  labels: Set<string>;
   log: string[];
 }
 
 export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssociation?: string } = {}, store?: Store): FakeGitHub {
   const repo = opts.repo ?? 'o/requests';
   const me = opts.viewer ?? 'bot';
-  const st: Store = store ?? { nextId: 1000, issues: new Map(), permissions: new Map(), pulls: new Map(), log: [] };
+  const st: Store = store ?? { nextId: 1000, issues: new Map(), permissions: new Map(), pulls: new Map(), labels: new Set(['ai-request']), log: [] };
   const clock = () => new Date(Date.UTC(2026, 10, 7, 12, 0, 0) + st.nextId * 1000).toISOString();
   const { issues, permissions, pulls } = st;
   const log = { push: (s: string) => st.log.push(me === 'bot' ? s : `${me}: ${s}`) };
@@ -45,8 +52,17 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
     if (!i) throw new GhError('not_found', 'Not Found (HTTP 404)', 404);
     return i;
   };
+  /** `login`'s role on `r`. The viewer owns the fake's repo (admin) unless a test records another role. */
+  const role = (r: string, login: string): Permission => permissions.get(r)?.get(login) ?? (r === repo && login === me ? 'admin' : 'none');
+  const forbidden = () => new GhError('forbidden', 'Resource not accessible by integration (HTTP 403)', 403);
+  /** Whether the viewer has push access to `r`: needed to create a label or read others' roles. */
+  const push = (r: string) => ['admin', 'maintain', 'write'].includes(role(r, me));
+  /** As GitHub: labelling an issue needs triage access or more, the issue's author included. */
+  const mayLabel = () => {
+    if (!['admin', 'maintain', 'write', 'triage'].includes(role(repo, me))) throw forbidden();
+  };
   const gh: FakeGitHub = {
-    repo, issues, permissions, pulls, log: st.log,
+    repo, issues, permissions, pulls, labels: st.labels, log: st.log,
     as(viewer, association) {
       return fakeGitHub({ repo, viewer, viewerAssociation: association ?? 'OWNER' }, st);
     },
@@ -57,6 +73,7 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
         url: `https://github.com/${repo}/issues/${number}`, isPullRequest: false, assignees: [], comments: [], ...i,
       };
       issues.set(number, issue);
+      for (const l of issue.labels) st.labels.add(l);
       return issue;
     },
     post(n, author, association, body) {
@@ -105,12 +122,25 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
     async addLabels(n, labels) {
       log.push(`addLabels ${n} ${labels.join(',')}`);
       const i = get(n);
-      for (const l of labels) if (!i.labels.includes(l)) i.labels.push(l);
+      mayLabel();
+      if (labels.some((l) => !st.labels.has(l)) && !push(repo)) throw forbidden();
+      for (const l of labels) {
+        if (!i.labels.includes(l)) i.labels.push(l);
+        st.labels.add(l);
+      }
     },
     async removeLabel(n, label) {
       log.push(`removeLabel ${n} ${label}`);
       const i = get(n);
+      mayLabel();
       i.labels = i.labels.filter((l) => l !== label);
+    },
+    async ensureLabels(want) {
+      const created = want.map((l) => l.name).filter((name) => !st.labels.has(name));
+      log.push(`ensureLabels ${created.join(',')}`);
+      if (created.length && !push(repo)) throw forbidden();
+      for (const name of created) st.labels.add(name);
+      return created;
     },
     async assign(n, login) {
       log.push(`assign ${n} ${login}`);
@@ -124,7 +154,11 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
     },
     async permission(r, login) {
       log.push(`permission ${r} ${login}`);
-      return permissions.get(r)?.get(login) ?? 'none';
+      // GitHub answers 403 to a caller without push access to `r`: `permission()` reads that as none for the
+      // caller's own role and throws for anyone else's.
+      if (push(r)) return role(r, login);
+      if (login === me) return 'none';
+      throw forbidden();
     },
     async pullHead(r, n) {
       log.push(`pullHead ${r} ${n}`);
