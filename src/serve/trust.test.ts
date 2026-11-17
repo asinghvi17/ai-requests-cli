@@ -5,7 +5,7 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../config.ts';
-import { defaultPreflightDeps, preflight, refusals } from './preflight.ts';
+import { defaultPreflightDeps, formatPreflight, preflight, refusals } from './preflight.ts';
 import { writeClaudeTrust } from './trust.ts';
 
 const dirs: string[] = [];
@@ -138,7 +138,11 @@ test('the problem doctor reports names what --fix writes, and writing it makes t
   const [c] = preflight(config, [{ name: 'claude', harness: 'claude' }], deps);
   const [problem] = c!.logins.claude!;
   assert.deepEqual(problem!.trust, { stateFile: file, dir: config.workspace_root });
-  assert.match(problem!.fix, /^run `air doctor --fix`, or run `mkdir -p /);
+  assert.match(problem!.fix, /^run `mkdir -p /);
+  // `air doctor` offers --fix first; `air doctor --fix`, about to ask, gives only the manual way.
+  assert.match(formatPreflight([c!]), /\n {4}fix: {5}run `air doctor --fix`, or run `mkdir -p /);
+  assert.match(formatPreflight([c!], true), /\n {4}fix: {5}run `mkdir -p /);
+  assert.doesNotMatch(formatPreflight([c!], true), /air doctor --fix/);
   writeClaudeTrust(problem!.trust!.stateFile, problem!.trust!.dir);
   assert.deepEqual(refusals(preflight(config, [{ name: 'claude', harness: 'claude' }], deps)), {});
 });

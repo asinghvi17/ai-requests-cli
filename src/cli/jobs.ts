@@ -113,11 +113,12 @@ async function tmuxUsable(ctx: ServeContext, inv: Invocation): Promise<boolean> 
  */
 export async function doctorCommand(inv: Invocation): Promise<number> {
   const config = jobDeps.loadConfig();
+  const fixing = inv.flags.fix === true;
   let checks = jobDeps.preflight(config);
-  inv.io.out(formatPreflight(checks));
-  if (inv.flags.fix === true && (await fixTrust(inv, checks))) {
+  inv.io.out(formatPreflight(checks, fixing));
+  if (fixing && (await fixTrust(inv, checks))) {
     checks = jobDeps.preflight(config);
-    inv.io.out(`\n${formatPreflight(checks)}`);
+    inv.io.out(`\n${formatPreflight(checks, fixing)}`);
   }
   return Object.keys(refusals(checks)).length ? 1 : 0;
 }
