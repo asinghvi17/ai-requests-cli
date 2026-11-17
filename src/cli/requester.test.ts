@@ -1,4 +1,4 @@
-// `air status`, `air wait`, `air fetch` and `air retry` through the router: flags, output and exit codes.
+// `air status`, `air wait`, `air fetch`, `air retry` and `air cancel` through the router: flags, output and exit codes.
 import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -126,7 +126,27 @@ test('air retry edits the body and labels; --effort is checked; refusals exit 1'
   assert.equal(bad.code, 2);
   assert.match(bad.err, /--effort must be one of XS, S, M, L, XL/);
   gh = requestIssue({ labels: ['air:running'] });
-  assert.deepEqual(await call('retry', '1'), { code: 1, out: '', err: 'air retry: #1 is held by box; add `air:cancel` and wait for its release first\n' });
+  assert.deepEqual(await call('retry', '1'), { code: 1, out: '', err: 'air retry: #1 is held by box; run `air cancel 1` and wait for its release first\n' });
+});
+
+test('air cancel adds air:cancel, creating the label on a fresh repo; author or write access only', async () => {
+  gh = requestIssue({ labels: ['air:running'] });
+  assert.ok(!gh.labels.has('air:cancel'), 'a fresh repo has no air:cancel label');
+  assert.deepEqual(await call('cancel', '1'), { code: 0, out: 'cancelled o/requests#1: the server holding it stops its agent and releases it on its next tick; `air retry 1` offers it again\n', err: '' });
+  assert.deepEqual(gh.issues.get(1)!.labels, ['ai-request', 'air:running', 'air:cancel']);
+  assert.deepEqual(gh.log.filter((l) => /ensureLabels|addLabels/.test(l)), ['alice: ensureLabels air:cancel', 'alice: addLabels 1 air:cancel']);
+  assert.deepEqual(await call('cancel', '1'), { code: 0, out: 'o/requests#1 already has `air:cancel`\n', err: '' });
+
+  gh = requestIssue();
+  gh.issues.get(1)!.author = 'bob';
+  assert.deepEqual(await call('cancel', '1'), { code: 1, out: '', err: "air cancel: only the issue's author (bob) or someone with write access to o/requests can cancel #1; alice has none\n" });
+  gh.setPermission('o/requests', 'alice', 'write');
+  assert.equal((await call('cancel', '1')).code, 0);
+  gh.issues.get(1)!.state = 'closed';
+  gh.issues.get(1)!.labels = ['ai-request'];
+  assert.deepEqual(await call('cancel', '1'), { code: 1, out: '', err: 'air cancel: #1 is closed, which cancels it already\n' });
+  gh.issues.get(1)!.labels = [];
+  assert.match((await call('cancel', '1')).err, /not a request/);
 });
 
 test('air fetch: hostile repo paths never leave DIR', async () => {

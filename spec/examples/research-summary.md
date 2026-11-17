@@ -13,6 +13,8 @@ timeout: 90m
 
 ## Task
 
+Summarise the October 2026 onboarding interviews.
+
 Read the twelve customer-interview transcripts in the context zip and write a findings summary about our
 onboarding flow for the product team. The interviews were run in October 2026 with admins at companies that
 signed up in the previous quarter; each transcript is a conversation between one interviewer (lines prefixed

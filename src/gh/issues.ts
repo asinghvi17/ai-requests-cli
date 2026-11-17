@@ -33,6 +33,14 @@ export interface PullHead {
   cloneUrl: string;
 }
 
+/** A repo label as `ensureLabels` creates it. */
+export interface LabelSpec {
+  name: string;
+  /** Six hex digits, no `#`. */
+  color: string;
+  description: string;
+}
+
 /** A role from `collaborators/{login}/permission`, or `none`. */
 export type Permission = 'admin' | 'maintain' | 'write' | 'triage' | 'read' | 'none';
 
@@ -50,6 +58,8 @@ export interface RequestsRepo {
   addLabels(n: number, labels: string[]): Promise<void>;
   /** Removing a label the issue doesn't carry is not an error. */
   removeLabel(n: number, label: string): Promise<void>;
+  /** Creates each of `labels` the repo lacks (one created meanwhile is not an error); returns the names it created. */
+  ensureLabels(labels: readonly LabelSpec[]): Promise<string[]>;
   assign(n: number, login: string): Promise<void>;
   unassign(n: number, login: string): Promise<void>;
   /** `login`'s role on any repo (`owner/name`) on the same host; `none` when GitHub says it has none. */
@@ -128,6 +138,21 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
       } catch (e) {
         if (!(e instanceof GhError && e.kind === 'not_found')) throw e;
       }
+    },
+    async ensureLabels(labels) {
+      const have = new Set((await gh.paginate<{ name: string }>(`${base}/labels?per_page=100`)).map((l) => l.name.toLowerCase()));
+      const created: string[] = [];
+      for (const l of labels) {
+        if (have.has(l.name.toLowerCase())) continue;
+        try {
+          await gh.api(`${base}/labels`, { method: 'POST', body: { name: l.name, color: l.color, description: l.description } });
+          created.push(l.name);
+        } catch (e) {
+          // 422 `already_exists`: another server or requester created it since the list.
+          if (!(e instanceof GhError && e.kind === 'validation')) throw e;
+        }
+      }
+      return created;
     },
     async assign(n, login) {
       checkLogin(login);

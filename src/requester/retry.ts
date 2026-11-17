@@ -74,7 +74,7 @@ export async function retry(opts: RetryOptions): Promise<Retried> {
   }
 
   const status = await readStatus(gh, n, trust);
-  if (status.holder) throw new RetryError(`#${n} is held by ${status.holder}; add \`air:cancel\` and wait for its release first`);
+  if (status.holder) throw new RetryError(`#${n} is held by ${status.holder}; run \`air cancel ${n}\` and wait for its release first`);
   const linted = lint(status.body);
   if (!linted.ok) throw new RetryError(`#${n}'s body doesn't pass lint; fix it first:\n${linted.errors.map((e) => `  line ${e.line}: ${e.message}`).join('\n')}`);
 

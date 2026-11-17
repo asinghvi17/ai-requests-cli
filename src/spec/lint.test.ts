@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { lint } from './lint.ts';
+import { fitTitle, lint, taskSummary, TITLE_LIMIT } from './lint.ts';
 import type { DiagnosticCode } from './frontmatter.ts';
 
 const root = new URL('../../', import.meta.url);
@@ -488,4 +488,20 @@ test('resume: checkpoint branches and the out/ zip', () => {
   oneError(fm('  branches:', '    - repo: a', '      branch: air/7', `      sha: ${SHA}`, '    - repo: a', '      branch: air/7-2', `      sha: ${SHA}`), /lists `a` twice/);
   oneError(fm(...zip.slice(0, 3)), /`resume.out` is missing `bytes`/);
   oneError(fm(...zip, '    expires: 2026-12-31'), /unknown key `resume.out.expires`/);
+});
+
+test('a Task summary over the title limit warns; fitTitle cuts it at a word boundary', () => {
+  const long = 'Port the CSV summariser to streaming reads so that multi-gigabyte inputs fit in memory on small laptops';
+  const r = lint(body(MIN, `\n## Task\n\n${long}\n\nMore.\n\n## Done when\n\n- x\n`));
+  assert.equal(r.ok, true);
+  assert.equal(r.warnings.length, 1);
+  assert.match(r.warnings[0]!.message, /becomes the issue title and is 103 characters, over 80; without --title it is cut to "Port the CSV summariser to streaming reads so that multi-gigabyte inputs fit\.\.\."/);
+  assert.equal(taskSummary(r.sections), long);
+  const t = fitTitle(long);
+  assert.ok(t.length <= TITLE_LIMIT && long.startsWith(t.slice(0, -3)) && long[t.length - 3] === ' ', t);
+  assert.equal(fitTitle('x'.repeat(80)), 'x'.repeat(80));
+  assert.equal(fitTitle('x'.repeat(81)), `${'x'.repeat(77)}...`, 'one word: a hard cut');
+  assert.equal(fitTitle(`${'a'.repeat(77)} bcd`), `${'a'.repeat(77)}...`, 'a space right after the room ends a whole word');
+  assert.equal(fitTitle(`${'a'.repeat(70)}, bcdefghijk`), `${'a'.repeat(70)}...`, 'trailing punctuation goes');
+  assert.deepEqual(lint(body(MIN, `\n## Task\n\n${'a '.repeat(40)}\n\n## Done when\n\n- x\n`)).warnings, []);
 });

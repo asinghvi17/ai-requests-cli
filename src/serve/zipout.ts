@@ -1,4 +1,4 @@
-// Zips `out/` for `deliver: artifact` (spec/v0.md §6): regular files and directories only. Symlinks and
+// Zips `out/` for `deliver: artifact` (spec/v0.md §6) and checkpoints (§11): regular files and directories only. Symlinks and
 // special files are neither followed nor included. Each file is read, deflated and written in turn; no
 // zip64, so the archive and every entry must stay under 4 GiB.
 import { closeSync, lstatSync, openSync, readdirSync, readFileSync, writeSync } from 'node:fs';
@@ -14,11 +14,12 @@ export interface ZipSummary {
   bytes: number;
 }
 
-/** Relative paths under `dir`, directories with a trailing `/`, depth first in name order. */
-export function listTree(dir: string): { name: string; dir: boolean }[] {
+/** Relative paths under `dir`, directories with a trailing `/`, depth first in name order; `skip` names top-level entries to leave out. */
+export function listTree(dir: string, skip: readonly string[] = []): { name: string; dir: boolean }[] {
   const out: { name: string; dir: boolean }[] = [];
   const walk = (rel: string) => {
     for (const entry of readdirSync(join(dir, rel)).sort()) {
+      if (!rel && skip.includes(entry)) continue;
       const name = rel ? `${rel}/${entry}` : entry;
       const st = lstatSync(join(dir, name));
       if (st.isDirectory()) {
@@ -33,9 +34,9 @@ export function listTree(dir: string): { name: string; dir: boolean }[] {
   return out;
 }
 
-/** Writes the zip of `dir` to `dest` (a new file). */
-export function zipDir(dir: string, dest: string): ZipSummary {
-  const entries = listTree(dir);
+/** Writes the zip of `dir`, less its top-level entries named in `skip`, to `dest` (a new file). */
+export function zipDir(dir: string, dest: string, skip: readonly string[] = []): ZipSummary {
+  const entries = listTree(dir, skip);
   const fd = openSync(dest, 'wx', 0o600);
   const central: Buffer[] = [];
   let offset = 0;

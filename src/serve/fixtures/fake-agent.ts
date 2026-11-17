@@ -5,7 +5,8 @@
 //   pr [PATH...]   commit a change in repo/PATH (default: every repo under repo/)
 //   nopr           commit nothing                   prbig N   commit as `pr`, and write an N-character report
 //   prhostile URL  commit, and plant a pre-push hook and a pushurl elsewhere in each repo's .git/config
-//   artifact       write files to out/              empty     write nothing to out/
+//   artifact       write files to out/ (and PROGRESS.md)
+//   empty          write nothing to out/            notes     write only out/PROGRESS.md
 //   wait           wait for the file `go`, then report "resumed"
 //   exit N         exit N at once                   hang      never finish
 //   exitdone       wait for the file `go`, then report "finished", create AIR_DONE and exit 0 at once
@@ -19,7 +20,8 @@
 // A start with --resume (or `resume`) exits 3 at once if the file `resume-fails` exists.
 // With FAKE_TRANSCRIPT set, each start with a Claude session id writes a Claude Code transcript of one API call
 // on claude-sonnet-5-5 ($0.500325 at API prices, its line repeated as Claude Code does per content block) and
-// one subagent call on claude-haiku-4-5 ($0.00003) under $CLAUDE_CONFIG_DIR/projects.
+// one subagent call on claude-haiku-4-5 ($0.00003) under $CLAUDE_CONFIG_DIR/projects. As Claude Code does, it
+// writes none when it inherits CLAUDE_CODE_CHILD_SESSION (it takes itself for a child of another session).
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -30,7 +32,7 @@ appendFileSync(join(ws, 'agent-argv.log'), `${JSON.stringify(argv)}\n`);
 if ((argv.includes('--resume') || argv[0] === 'resume') && existsSync(join(ws, 'resume-fails'))) process.exit(3);
 
 const session = argv[argv.indexOf('--session-id') + 1 || argv.indexOf('--resume') + 1 || -1];
-if (process.env.FAKE_TRANSCRIPT && process.env.CLAUDE_CONFIG_DIR && session) {
+if (process.env.FAKE_TRANSCRIPT && process.env.CLAUDE_CONFIG_DIR && session && !process.env.CLAUDE_CODE_CHILD_SESSION) {
   const project = join(process.env.CLAUDE_CONFIG_DIR, 'projects', ws.replace(/[^A-Za-z0-9]/g, '-'));
   mkdirSync(join(project, session, 'subagents'), { recursive: true });
   const call = (id: string, model: string, usage: object) => `${JSON.stringify({ type: 'assistant', sessionId: session, uuid: `${id}-${Math.random()}`, message: { id, model, usage } })}\n`;
@@ -139,7 +141,9 @@ else if (mode === 'wait') {
     writeFileSync(join(out, 'a.txt'), 'alpha\n');
     writeFileSync(join(out, 'sub', 'b.txt'), 'beta\n');
     symlinkSync('/etc/passwd', join(out, 'link'));
+    writeFileSync(join(out, 'PROGRESS.md'), 'all done\n');
   }
+  if (mode === 'notes') writeFileSync(join(out, 'PROGRESS.md'), 'all done\n');
   if (mode === 'empty') symlinkSync('/etc/passwd', join(out, 'only-a-link'));
   done();
   idle();

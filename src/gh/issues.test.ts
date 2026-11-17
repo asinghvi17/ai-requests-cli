@@ -72,3 +72,23 @@ test('editBody PATCHes the issue; pullHead reads the head ref, sha and clone URL
   await assert.rejects(repo.pullHead('../x', 1), /bad repo/);
   assert.deepEqual(calls.slice(0, 2), ['api repos/o/r/issues/5 --method PATCH --input - {"body":"new body"}', 'api repos/acme/svc/pulls/7 --method GET']);
 });
+
+test('ensureLabels creates only the missing labels; one created meanwhile (422) is not an error', async () => {
+  const calls: string[] = [];
+  const gh = createGh(async (args, input) => {
+    calls.push([...args, ...(input ? [input] : [])].join(' '));
+    if (args[1] === 'repos/o/r/labels?per_page=100') return { code: 0, stdout: JSON.stringify([[{ name: 'ai-request' }, { name: 'AIR:Done' }]]), stderr: '' };
+    if (input?.includes('air:cancel')) return { code: 1, stdout: '', stderr: 'gh: Validation Failed (HTTP 422)' };
+    return { code: 0, stdout: '{}', stderr: '' };
+  });
+  const spec = (name: string) => ({ name, color: 'ffffff', description: name });
+  const created = await requestsRepo('o/r', gh).ensureLabels(['ai-request', 'air:done', 'air:failed', 'air:cancel'].map(spec));
+  assert.deepEqual(created, ['air:failed']);
+  assert.deepEqual(calls, [
+    'api repos/o/r/labels?per_page=100 --paginate --slurp',
+    'api repos/o/r/labels --method POST --input - {"name":"air:failed","color":"ffffff","description":"air:failed"}',
+    'api repos/o/r/labels --method POST --input - {"name":"air:cancel","color":"ffffff","description":"air:cancel"}',
+  ]);
+  const denied = createGh(async (args) => (args[1] === 'repos/o/r/labels' ? { code: 1, stdout: '', stderr: 'gh: Must have admin rights (HTTP 403)' } : { code: 0, stdout: '[[]]', stderr: '' }));
+  await assert.rejects(requestsRepo('o/r', denied).ensureLabels([spec('air:cancel')]), /admin rights/);
+});

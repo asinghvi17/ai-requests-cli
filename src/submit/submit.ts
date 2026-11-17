@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { CONTEXT_TAG, releases as releasesApi, type Releases } from '../gh/releases.ts';
-import { lint, type LintResult } from '../spec/lint.ts';
+import { fitTitle, lint, taskSummary, type LintResult } from '../spec/lint.ts';
 import { splitLines, type Diagnostic } from '../spec/frontmatter.ts';
 import { sha256File } from '../workspace/context.ts';
 import { DEFAULT_EXCLUDES, collectFiles } from './collect.ts';
@@ -109,10 +109,8 @@ function hasContextKey(body: string): boolean {
 
 /** A title from the first line of `## Task`, for bodies submitted without `--title`. */
 export function titleFromTask(result: LintResult): string | undefined {
-  const text = (result.sections.Task?.text ?? '').replace(/<!--[\s\S]*?(?:-->|$)/g, '');
-  const line = text.split('\n').map((l) => l.replace(/^[#>*\-\s]+/, '').trim()).find((l) => l !== '');
-  if (!line) return undefined;
-  return line.length > 80 ? `${line.slice(0, 77).trimEnd()}...` : line;
+  const line = taskSummary(result.sections);
+  return line === undefined ? undefined : fitTitle(line);
 }
 
 function assetName(dir: string, now: Date): string {

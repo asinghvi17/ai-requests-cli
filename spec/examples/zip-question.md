@@ -12,6 +12,8 @@ timeout: 30m
 
 ## Task
 
+Find why the nightly import job crashed on 2026-11-03 to 2026-11-05.
+
 Our nightly import job crashed three nights in a row (2026-11-03 to 2026-11-05). Using only the logs in the
 context zip, answer: what is the first error that leads to each crash, and is it the same cause each night?
 

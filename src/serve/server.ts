@@ -4,7 +4,7 @@
 // delivery) is tracked per issue, so one bad issue or one failing gh call only costs a log line.
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { backOff, claim, claimable, deadlineTime, release } from '../claim/claim.ts';
+import { backOff, claim, claimable, deadlineTime, LABELS, release } from '../claim/claim.ts';
 import { markedComments } from '../claim/trust.ts';
 import { currentClaim } from '../spec/markers.ts';
 import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig } from '../match/match.ts';
@@ -561,6 +561,13 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   async function run(o: { once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number } = {}): Promise<void> {
     const tickMs = o.tickMs ?? ctx.config.tick_seconds * 1000;
     ctx.log(`air serve on ${ctx.host}: ${repo}, ${opts.manual ? 'manual' : 'auto'} start, max ${ctx.config.max_jobs} job(s), tick ${tickMs / 1000} s`);
+    // Every air label exists from the start, `air:cancel` included, so a requester can always add one.
+    try {
+      const created = await ctx.gh.ensureLabels(LABELS);
+      if (created.length) ctx.log(`created labels ${created.join(', ')} on ${repo}`);
+    } catch (e) {
+      ctx.log(`labels: can't create the missing air labels on ${repo}: ${err(e)}`);
+    }
     let found = await tick();
     if (o.once) {
       const waitMs = o.onceWaitMs ?? ONCE_WAIT_MS;

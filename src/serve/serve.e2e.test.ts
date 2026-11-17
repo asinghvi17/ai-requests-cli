@@ -24,7 +24,7 @@ import { ledgerFile, loadLedger } from '../usage/index.ts';
 import type { ManualConfig, Subscription } from '../usage/types.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
 import { allWorkspaces, readState, updateState } from '../workspace/state.ts';
-import { claim } from '../claim/claim.ts';
+import { CANCEL_LABEL, claim, LABELS, STATE_LABELS } from '../claim/claim.ts';
 import { extractZip } from '../workspace/zip.ts';
 import type { ServeContext } from './context.ts';
 import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';
@@ -229,6 +229,24 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     w.store.issues.get(82)!.labels.push('air:cancel');
     await until(w, 'cancelled', () => status(w, 82) === 'cancelled');
     near(spent(), 4 * start);
+  });
+
+  test('a server started inside a Claude Code session still gets a transcript and a cost from its Claude jobs', async () => {
+    // What a Claude Code session exports to the commands it runs, `air serve` among them.
+    const parent = { CLAUDECODE: '1', CLAUDE_CODE_CHILD_SESSION: '1', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_SESSION_ID: 'parent' };
+    const saved = Object.fromEntries(Object.keys(parent).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, parent);
+    try {
+      const w = world({ budget: { usd: 100 } });
+      w.store.addIssue({ number: 86, body: body('comment Done.') });
+      await until(w, 'delivered', () => status(w, 86) === 'done');
+      const projects = join(w.ctx.agentEnv('max').CLAUDE_CONFIG_DIR!, 'projects');
+      assert.ok(readdirSync(projects).some((d) => existsSync(join(projects, d, `${job(w, 86)!.state.job!.sessionId}.jsonl`))), 'the session has a transcript');
+      assert.deepEqual(job(w, 86)!.state.job!.spend, { usd: 0.500355, charged: true });
+      assert.match(comments(w, 86).at(-1)!, /Cost at API prices: \$0\.50; effort XS expects \$1\.00\./);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
   });
 
   test('a model the price table lacks is not charged, with a warning naming it', async () => {
@@ -542,11 +560,13 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.ok(job(w, 28)?.state.job, w.logs.join('\n'));
   });
 
-  test('artifact: zips regular files of out/ to a release asset; an empty out/ fails', async () => {
+  test('artifact: zips regular files of out/ but PROGRESS.md to a release asset; an out/ without one fails', async () => {
     const w = world();
+    w.ctx.config.max_jobs = 3;
     w.store.addIssue({ number: 5, body: body('artifact', ['deliver: artifact']) });
     w.store.addIssue({ number: 6, body: body('empty', ['deliver: artifact']) });
-    await until(w, 'both finished', () => status(w, 5) === 'done' && status(w, 6) === 'failed');
+    w.store.addIssue({ number: 9, body: body('notes', ['deliver: artifact']) });
+    await until(w, 'all finished', () => status(w, 5) === 'done' && status(w, 6) === 'failed' && status(w, 9) === 'failed');
     const nonce = job(w, 5)!.state.nonce;
     const asset = w.fg.releases[0]!.assets.find((a) => a.name === `air-5-${nonce}.zip`)!;
     assert.equal(asset.contentType, 'application/zip');
@@ -562,8 +582,11 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(readFileSync(join(d, 'x', 'a.txt'), 'utf8'), 'alpha\n');
     assert.equal(readFileSync(join(d, 'x', 'sub', 'b.txt'), 'utf8'), 'beta\n');
     assert.equal(existsSync(join(d, 'x', 'link')), false);
-    assert.match(comments(w, 6).at(-1)!, /no regular file in `out\/`/);
+    assert.equal(existsSync(join(d, 'x', 'PROGRESS.md')), false, 'a done artifact leaves out PROGRESS.md');
+    assert.deepEqual(readdirSync(join(d, 'x')).sort(), ['a.txt', 'sub']);
+    assert.match(comments(w, 6).at(-1)!, /no regular file in `out\/` besides `PROGRESS\.md`/);
     assert.deepEqual(stateLabels(w, 6), ['air:failed']);
+    assert.match(comments(w, 9).at(-1)!, /no regular file in `out\/` besides `PROGRESS\.md`/);
   });
 
   test('restart: a new server re-adopts a live job and resumes one whose window is gone', async () => {
@@ -929,7 +952,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
         resume: { branches: [], out: { url: `https://github.com/o/requests/releases/download/air-artifacts/air-${n}-${ws.state.nonce}-out.zip`, sha256: sha256(asset.data), bytes: asset.data.length } },
         usage: { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 2 },
       });
-      assert.equal(readFileSync(join(await unzip(asset.data), 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
+      assert.equal(readFileSync(join(await unzip(asset.data), 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n', 'a checkpoint keeps PROGRESS.md');
     }
   });
 
@@ -1278,6 +1301,19 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.ok(Date.now() - t0 >= 600);
     assert.ok(idle.logs.filter((l) => /^--once: no open requests to claim yet/.test(l)).length >= 2, idle.logs.join('\n'));
     assert.match(idle.logs.at(-1)!, /^--once: no open requests to claim after waiting 0\.6 s; exiting$/);
+  });
+
+  test('serve creates every air label a fresh requests repo lacks, air:cancel included, once', async () => {
+    const w = world();
+    assert.deepEqual([...w.store.labels], ['ai-request']);
+    await w.server.run({ once: true, onceWaitMs: 0 });
+    assert.deepEqual([...w.store.labels].sort(), LABELS.map((l) => l.name).sort());
+    for (const l of [...STATE_LABELS, CANCEL_LABEL]) assert.ok(w.store.labels.has(l), l);
+    assert.ok(w.logs.includes('created labels air:claimed, air:running, air:paused, air:done, air:partial, air:failed, air:cancel on o/requests'), w.logs.join('\n'));
+    const again = world();
+    again.store.labels.add('air:cancel');
+    await again.server.run({ once: true, onceWaitMs: 0 });
+    assert.ok(again.logs.some((l) => /^created labels air:claimed, .*air:failed on o\/requests$/.test(l)), again.logs.join('\n'));
   });
 });
 

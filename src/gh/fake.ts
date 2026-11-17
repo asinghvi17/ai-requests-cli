@@ -13,6 +13,8 @@ export interface FakeGitHub extends RequestsRepo {
   permissions: Map<string, Map<string, Permission>>;
   /** `owner/name#n` -> head, for `pullHead`. */
   pulls: Map<string, PullHead>;
+  /** The repo's labels. Adding a label to an issue creates it, as GitHub does. */
+  labels: Set<string>;
   /** Every call, as `method arg...`, for asserting on order. */
   log: string[];
   /** Runs after `comments()` takes its snapshot: lets a test post a rival's comment mid-race. */
@@ -30,13 +32,14 @@ interface Store {
   issues: Map<number, FakeIssue>;
   permissions: Map<string, Map<string, Permission>>;
   pulls: Map<string, PullHead>;
+  labels: Set<string>;
   log: string[];
 }
 
 export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssociation?: string } = {}, store?: Store): FakeGitHub {
   const repo = opts.repo ?? 'o/requests';
   const me = opts.viewer ?? 'bot';
-  const st: Store = store ?? { nextId: 1000, issues: new Map(), permissions: new Map(), pulls: new Map(), log: [] };
+  const st: Store = store ?? { nextId: 1000, issues: new Map(), permissions: new Map(), pulls: new Map(), labels: new Set(['ai-request']), log: [] };
   const clock = () => new Date(Date.UTC(2026, 10, 7, 12, 0, 0) + st.nextId * 1000).toISOString();
   const { issues, permissions, pulls } = st;
   const log = { push: (s: string) => st.log.push(me === 'bot' ? s : `${me}: ${s}`) };
@@ -46,7 +49,7 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
     return i;
   };
   const gh: FakeGitHub = {
-    repo, issues, permissions, pulls, log: st.log,
+    repo, issues, permissions, pulls, labels: st.labels, log: st.log,
     as(viewer, association) {
       return fakeGitHub({ repo, viewer, viewerAssociation: association ?? 'OWNER' }, st);
     },
@@ -57,6 +60,7 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
         url: `https://github.com/${repo}/issues/${number}`, isPullRequest: false, assignees: [], comments: [], ...i,
       };
       issues.set(number, issue);
+      for (const l of issue.labels) st.labels.add(l);
       return issue;
     },
     post(n, author, association, body) {
@@ -105,12 +109,21 @@ export function fakeGitHub(opts: { repo?: string; viewer?: string; viewerAssocia
     async addLabels(n, labels) {
       log.push(`addLabels ${n} ${labels.join(',')}`);
       const i = get(n);
-      for (const l of labels) if (!i.labels.includes(l)) i.labels.push(l);
+      for (const l of labels) {
+        if (!i.labels.includes(l)) i.labels.push(l);
+        st.labels.add(l);
+      }
     },
     async removeLabel(n, label) {
       log.push(`removeLabel ${n} ${label}`);
       const i = get(n);
       i.labels = i.labels.filter((l) => l !== label);
+    },
+    async ensureLabels(want) {
+      const created = want.map((l) => l.name).filter((name) => !st.labels.has(name));
+      log.push(`ensureLabels ${created.join(',')}`);
+      for (const name of created) st.labels.add(name);
+      return created;
     },
     async assign(n, login) {
       log.push(`assign ${n} ${login}`);
