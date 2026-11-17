@@ -3,7 +3,7 @@
 // state.json (`job`), so the server, a restarted server and the `air run/stop/start` commands all act on the
 // same record.
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -134,14 +134,15 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   const agent = ctx.config.agents[job.harness] ?? DEFAULT_AGENTS[job.harness];
   const resume = !opts.fresh && job.starts > 0 ? job.sessionId : undefined;
   let sessionId = resume;
+  const real = realpathSync(dir);
   let argv: string[];
   if (resume !== undefined) {
     const instruction = job.pauseReason === 'exit' ? exitResumeInstruction(request.repos.length > 0) : RESUME_INSTRUCTION;
-    argv = agentArgv({ harness: job.harness, agent, model: job.model, resume, instruction });
+    argv = agentArgv({ harness: job.harness, agent, model: job.model, resume, instruction, dir: real });
   } else {
     sessionId = job.harness === 'claude' ? randomUUID() : undefined;
     argv = agentArgv({
-      harness: job.harness, agent, model: job.model, sessionId,
+      harness: job.harness, agent, model: job.model, sessionId, dir: real,
       instruction: job.starts > 0 ? restartInstruction(request.repos.length > 0) : TASK_INSTRUCTION,
     });
   }

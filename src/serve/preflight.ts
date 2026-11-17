@@ -1,13 +1,14 @@
 // Can each configured agent run unattended? `air doctor` prints the answer and `air serve` checks it at
 // startup, refusing new work for any login that fails. Checks: the binary runs and reports a version; its
 // launch args carry an unattended mode (Claude Code `--permission-mode auto`, Codex `--ask-for-approval
-// never`, or either one's bypass); Claude Code finished first-run onboarding and trusts `workspace_root`;
-// Codex trusts the git repo `workspace_root` lies in, if any. Agent state is read from the agents' own files
-// (`.claude.json`, `settings.json`, Codex `config.toml`), reading only the keys named here; credential files
-// are never opened, and nothing read is printed.
+// never`, or either one's bypass); Claude Code finished first-run onboarding and trusts `workspace_root`
+// through a folder it inherits from. Codex trust needs no check: each launch trusts its job dir with a config
+// override (`codexTrust` in agent.ts). Agent state is read from the agents' own files (`.claude.json`,
+// `settings.json`), reading only the keys named here; credential files are never opened, and nothing read is
+// printed.
 import { spawnSync } from 'node:child_process';
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { AGENT_HARNESSES, DEFAULT_AGENTS, type Agent, type Config } from '../config.ts';
 import type { SubscriptionConfig } from '../usage/types.ts';
 
@@ -18,6 +19,8 @@ export interface Problem {
   what: string;
   /** The exact command or setting that fixes it. */
   fix: string;
+  /** Folder trust `air doctor --fix` can write: Claude Code's state file, and the folder to trust in it. */
+  trust?: { stateFile: string; dir: string };
 }
 
 /** One local login an agent can run on: a subscription and the agent config dir it selects. */
@@ -150,6 +153,17 @@ function within(dir: string, base: string): boolean {
   return dir === base || dir.startsWith(base.endsWith('/') ? base : `${base}/`);
 }
 
+/**
+ * `path` as Claude Code will see it once it exists: its nearest existing ancestor with symlinks resolved, and
+ * the missing rest joined back on. Claude Code keys trust on real paths, and a symlink can lead into a git repo.
+ */
+export function canonicalPath(path: string): string {
+  const abs = resolve(path);
+  let d = abs;
+  while (!existsSync(d) && dirname(d) !== d) d = dirname(d);
+  return join(realpathSync(d), relative(d, abs));
+}
+
 /** The git work tree `dir` (or its nearest existing ancestor) lies in, if any. */
 export function gitRootOf(dir: string): string | undefined {
   let d = dir;
@@ -182,13 +196,20 @@ function claudeChecks(login: Login, mode: 'auto' | 'bypass', config: Config, dep
       fix: `run \`${startThere}\`, finish the first-run screens and log in, answer "Yes, I trust this folder", then /exit`,
     });
   }
+  // Claude Code looks for a trusted folder from the job dir upwards, but not above the git repo the job dir is in.
+  const real = canonicalPath(root);
+  const repo = gitRootOf(real);
   const projects = state.projects !== null && typeof state.projects === 'object' ? (state.projects as Record<string, unknown>) : {};
-  const trusted = Object.entries(projects).some(([path, p]) => isAbsolute(path) && within(root, path) &&
-    p !== null && typeof p === 'object' && (p as Record<string, unknown>).hasTrustDialogAccepted === true);
-  if (!trusted) {
+  const trustedAbove = Object.entries(projects).filter(([path, p]) => isAbsolute(path) && within(real, path) &&
+    p !== null && typeof p === 'object' && (p as Record<string, unknown>).hasTrustDialogAccepted === true).map(([path]) => path);
+  if (!trustedAbove.some((path) => !repo || within(path, repo))) {
+    const outside = repo ? trustedAbove.find((path) => !within(path, repo)) : undefined;
     problems.push({
-      what: `Claude Code does not trust workspace_root ${root} (nor a folder above it), so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`,
-      fix: `run \`${startThere}\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
+      what: outside
+        ? `workspace_root ${root} is inside the git repo ${repo}, and Claude Code does not carry the trust of ${outside} into a git repo below it, so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`
+        : `Claude Code does not trust workspace_root ${root} (nor a folder above it), so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`,
+      fix: `run \`air doctor --fix\`, or run \`${startThere}\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
+      trust: { stateFile, dir: real },
     });
   }
   if (mode === 'bypass') {
@@ -201,27 +222,6 @@ function claudeChecks(login: Login, mode: 'auto' | 'bypass', config: Config, dep
     }
   }
   return problems;
-}
-
-function codexChecks(login: Login, config: Config, deps: PreflightDeps): Problem[] {
-  // Codex asks to trust a folder only inside a git repo, and saves the answer under that repo's root.
-  const repo = gitRootOf(config.workspace_root);
-  if (!repo) return [];
-  const home = login.codexHome ?? deps.env.CODEX_HOME ?? join(deps.home, '.codex');
-  const file = join(home, 'config.toml');
-  const text = deps.readFile(file) ?? '';
-  let inTable = false;
-  let trusted = false;
-  for (const line of text.split('\n')) {
-    const t = line.trim();
-    if (t.startsWith('[')) inTable = t === `[projects.${JSON.stringify(repo)}]` || t === `[projects.'${repo}']`;
-    else if (inTable && /^trust_level\s*=\s*["']trusted["']\s*(#.*)?$/.test(t)) trusted = true;
-  }
-  if (trusted) return [];
-  return [{
-    what: `workspace_root ${config.workspace_root} is inside the git repo ${repo}, which Codex does not trust (${file}), so each job would stop at "Trust this folder?".`,
-    fix: `add to ${file}:\n[projects.${JSON.stringify(repo)}]\ntrust_level = "trusted"\n(or run \`cd ${sh(repo)} && ${login.codexHome ? `CODEX_HOME=${sh(login.codexHome)} ` : ''}codex\` once and choose "Trust and continue")`,
-  }];
 }
 
 /** Checks every harness that has a login. */
@@ -259,9 +259,7 @@ export function preflight(config: Config, logins: Login[], deps: PreflightDeps):
       });
       continue;
     }
-    for (const login of mine) {
-      check.logins[login.name] = harness === 'codex' ? codexChecks(login, config, deps) : claudeChecks(login, mode as 'auto' | 'bypass', config, deps);
-    }
+    if (harness === 'claude') for (const login of mine) check.logins[login.name] = claudeChecks(login, mode as 'auto' | 'bypass', config, deps);
   }
   return out;
 }

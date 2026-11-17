@@ -66,7 +66,9 @@ export const PROMPTS: PromptPattern[] = [
   {
     harness: 'claude', id: 'claude-trust', what: 'Claude Code folder trust ("Quick safety check")',
     match: [/Is this a project you created or one you trust\?/i, /Yes, I trust this folder/], footer: /Esc to cancel/,
-    fix: (c) => `run \`mkdir -p ${c.workspaceRoot} && cd ${c.workspaceRoot} && claude\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
+    // `air doctor` makes every job dir inherit trust; a job dir the agent made a git repo doesn't (a git root is
+    // a boundary), and then only answering helps.
+    fix: (c) => `attach and answer it ("Yes, I trust this folder"); if it recurs, run \`air doctor\`: jobs under workspace_root ${c.workspaceRoot} inherit its trust, unless the job dir is itself a git repo`,
     source: `${CLAUDE}, captured: claude-trust.txt (onboarded config, untrusted folder)`,
   },
   {
@@ -96,7 +98,8 @@ export const PROMPTS: PromptPattern[] = [
   {
     harness: 'codex', id: 'codex-trust', what: 'Codex folder trust ("Trust this folder?")',
     match: [/Trust this folder\?/, /Trust and continue/], footer: /enter continue/,
-    fix: (c) => `run \`air doctor\`: it names the repo to trust in Codex's config.toml (workspace_root ${c.workspaceRoot} is inside a git repo)`,
+    // air trusts each job dir at launch (`codexTrust`), so this means the installed Codex ignored the override.
+    fix: () => 'attach and answer it ("Trust and continue"); air trusts the job dir with `-c projects={...}` at launch, which this Codex version ignored',
     source: `${CODEX}, captured: codex-trust.txt (a git repo, with and without -a never -s workspace-write)`,
   },
   {

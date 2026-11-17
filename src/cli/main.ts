@@ -99,10 +99,10 @@ export const COMMANDS: Record<string, Command> = {
     run: configCommand,
   },
   doctor: {
-    usage: 'doctor',
-    summary: 'check that each configured agent can run unattended (binary, version, launch flags, onboarding, folder trust); `air serve` runs it at startup',
+    usage: 'doctor [--fix]',
+    summary: 'check that each configured agent can run unattended (binary, version, launch flags, onboarding, folder trust); `air serve` runs it at startup. --fix offers to write each missing folder trust',
     args: [],
-    flags: {},
+    flags: { fix: { type: 'boolean' } },
     run: doctorCommand,
   },
   claim: { usage: 'claim [--repo OWNER/NAME] ISSUE', summary: 'claim a request', args: ['ISSUE'], flags: REPO, run: claimCommand },

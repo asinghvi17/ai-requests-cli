@@ -1,6 +1,12 @@
 // Agent command lines. Claude Code runs interactively with the model for the matched tier and a session id
 // air picks (`--session-id`), so it can be resumed with `--resume`. Codex CLI runs interactively too; its
 // session id is found afterwards in its rollout files, for `codex resume`.
+//
+// Neither may stop at a folder-trust prompt. Claude Code inherits the trust of a folder above the job dir,
+// which `air doctor` checks (a git root is a boundary: it doesn't inherit across one). Codex asks whenever the
+// job dir is in a git repo or is one, and also when a job's agent made it one before a restart. So every
+// Codex launch and resume trusts the job dir for that session only, with a config override (`codexTrust`):
+// nothing is written to the volunteer's Codex config.
 import { closeSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +38,16 @@ export interface AgentArgs {
   sessionId?: string;
   /** Last word: the prompt. */
   instruction: string;
+  /** The job dir the agent starts in, symlinks resolved (Codex keys trust on the real path). */
+  dir: string;
+}
+
+/**
+ * `-c` override that makes Codex trust `dir` for this session. The value is an inline table: the dotted form
+ * (`projects."<dir>".trust_level`) is split at every `.`, including those inside the quoted path.
+ */
+export function codexTrust(dir: string): string[] {
+  return ['-c', `projects={${JSON.stringify(dir)}={trust_level="trusted"}}`];
 }
 
 export function agentArgv(a: AgentArgs): string[] {
@@ -40,8 +56,8 @@ export function agentArgv(a: AgentArgs): string[] {
     const session = a.resume !== undefined ? ['--resume', a.resume] : a.sessionId !== undefined ? ['--session-id', a.sessionId] : [];
     return [...command, ...session, '--model', a.model, ...args, a.instruction];
   }
-  if (a.resume !== undefined) return [...command, 'resume', a.resume, ...args, a.instruction];
-  return [...command, '--model', a.model, ...args, a.instruction];
+  if (a.resume !== undefined) return [...command, 'resume', a.resume, ...codexTrust(a.dir), ...args, a.instruction];
+  return [...command, '--model', a.model, ...codexTrust(a.dir), ...args, a.instruction];
 }
 
 /**
