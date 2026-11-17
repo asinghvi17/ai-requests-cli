@@ -108,9 +108,9 @@ export function claimable(issue: Issue): { ok: true } | { ok: false; reason: Ref
 }
 
 /**
- * Claims a request: checks it, posts a claim marker, self-assigns, waits, then re-reads the comments to
- * see whose claim holds. The winner adds `air:claimed` and gets a fresh workspace holding the body as
- * claimed; a loser deletes its comment and unassigns itself.
+ * Claims a request: checks it, records a `claiming` workspace holding the body, posts a claim marker,
+ * self-assigns, waits, then re-reads the comments to see whose claim holds. The winner adds `air:claimed`
+ * and its workspace becomes `claimed`; a loser deletes its comment, unassigns itself and marks it `lost`.
  */
 export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
   const { gh, issue: n } = opts;
@@ -174,8 +174,16 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
   const repos = checked.repos;
 
   const nonce = opts.nonce ?? newNonce();
+  const t = now().toISOString();
+  // Recorded before the claim is posted: a claim cut off part way (a crash, a restart) is then found by the
+  // next `air serve`, which gives it back, instead of holding the issue with no server acting on it.
+  const dir = createWorkspace(opts.root, {
+    version: 1, repo: gh.repo, issue: n, title: issue.title, author: issue.author, url: issue.url, host, nonce,
+    repos, phase: 'claiming', createdAt: t, updatedAt: t,
+  }, body);
   const listed = repos.length === 0 ? '' : `\n\nRepos, checked out at:\n\n${repos.map((r) => `- ${code(r.path)}: \`${r.sha}\``).join('\n')}`;
   const mine = await gh.comment(n, `Claimed by ${code(host)} with air.${listed}\n\n${formatMarker({ kind: 'claim', version: SPEC_VERSION, host, nonce })}\n`);
+  updateState(dir, { claimCommentId: mine.id }, now());
   let comments, holder;
   try {
     await gh.assign(n, viewer);
@@ -184,33 +192,32 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     holder = currentClaim(await markedComments(comments, trust));
   } catch (e) {
     // We never learned whether we hold it: withdraw the claim rather than leave one nobody acts on. If the
-    // comment can't be deleted, a release marker for it ends the claim just the same.
-    await gh.deleteComment(mine.id).catch(() =>
-      gh.comment(n, `Withdrawn by ${code(host)}: it could not complete the claim.\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n${formatResult({ status: 'released', deliver: request.deliver, prs: [], host, nonce })}\n`)).catch(() => {});
+    // comment can't be deleted, a release marker for it ends the claim just the same. If neither works, the
+    // workspace stays `claiming` and `air serve` gives the claim back later.
+    const withdrawn = await gh.deleteComment(mine.id).then(() => true, () =>
+      gh.comment(n, `Withdrawn by ${code(host)}: it could not complete the claim.\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n${formatResult({ status: 'released', deliver: request.deliver, prs: [], host, nonce })}\n`)
+        .then(() => true, () => false));
+    if (withdrawn) updateState(dir, { phase: 'released' }, now());
     await gh.unassign(n, viewer).catch(() => {});
     throw e;
   }
   if (!holder || holder.commentId !== mine.id || holder.nonce !== nonce || holder.host !== host) {
     await gh.deleteComment(mine.id);
+    updateState(dir, { phase: 'lost' }, now());
     // Another server on the same account shares our assignment: leave it.
     const holderAuthor = holder && comments.find((c) => c.id === holder.commentId)?.author;
     if (holderAuthor !== viewer) await gh.unassign(n, viewer);
     return { status: 'lost', holder: holder ? holder.host : 'nobody (our claim did not count)' };
   }
 
-  const t = now().toISOString();
-  const state: State = {
-    version: 1, repo: gh.repo, issue: n, title: issue.title, author: issue.author, url: issue.url, host, nonce,
-    claimCommentId: mine.id, repos, phase: 'claimed', createdAt: t, updatedAt: t,
-  };
-  let dir: string;
   try {
     await gh.addLabels(n, ['air:claimed']);
-    dir = createWorkspace(opts.root, state, body);
   } catch (e) {
-    await giveUp(gh, n, viewer, host, nonce, { message: `Released by ${code(host)}: it could not start work on this request.`, result: { status: 'released', deliver: request.deliver, prs: [], host, nonce } }).catch(() => {});
+    await giveUp(gh, n, viewer, host, nonce, { message: `Released by ${code(host)}: it could not start work on this request.`, result: { status: 'released', deliver: request.deliver, prs: [], host, nonce } })
+      .then(() => updateState(dir, { phase: 'released' }, now()), () => {});
     throw e;
   }
+  const state = updateState(dir, { phase: 'claimed' }, now());
   return { status: 'won', dir, state, request, body };
 }
 

@@ -14,7 +14,7 @@ import { main } from '../cli/main.ts';
 import { jobDeps } from '../cli/jobs.ts';
 import type { Config } from '../config.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
-import { createGh } from '../gh/gh.ts';
+import { createGh, GhError } from '../gh/gh.ts';
 import { releaseDownload } from '../workspace/context.ts';
 import { requestsRepo } from '../gh/issues.ts';
 import { currentClaim, formatMarker, parseResult } from '../spec/markers.ts';
@@ -29,7 +29,7 @@ import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';
 import { fakeGh, type FakeGh } from './fake-gh.ts';
 import { serveGitHub } from './github.ts';
 import { PAUSE_LIMIT_MS } from './jobs.ts';
-import { createServer, type Server } from './server.ts';
+import { CLAIM_RETRY_MS, createServer, type Server } from './server.ts';
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0;
 const socket = `air-serve-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -370,6 +370,40 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(job(w, 22)!.state.phase, 'failed');
     assert.deepEqual(stateLabels(w, 22), ['air:failed']);
     assert.equal(await holder(w, 22), undefined);
+  });
+
+  test('a claim cut off by a crash is released by the next server, and the request is served', async () => {
+    const w = world();
+    w.store.addIssue({ number: 23, body: body('comment x') });
+    // The process dies during the claim wait: the claim comment is up, and nothing will ever finish it.
+    void claim({ gh: w.ctx.gh, issue: 23, root: w.root, host: 'box', sleep: () => new Promise(() => {}) });
+    while (job(w, 23)?.state.claimCommentId === undefined) await sleep(10);
+    assert.equal(job(w, 23)!.state.phase, 'claiming');
+    const cut = await holder(w, 23);
+    assert.equal(cut?.host, 'box');
+    // The next server's first tick is the restart: it releases that claim, then claims the issue anew.
+    await until(w, 'delivered', () => status(w, 23) === 'done');
+    assert.equal(w.logs[0], '#23: interrupted claim released');
+    assert.match(comments(w, 23)[1]!, /^Released by `box`: its claim was cut off before work started\.[\s\S]*status: released/);
+    assert.notEqual((await holder(w, 23))?.nonce, cut!.nonce);
+    assert.deepEqual(allWorkspaces(w.root, 'o/requests').filter((x) => x.state.issue === 23).map((x) => x.state.phase).sort(), ['done', 'released']);
+  });
+
+  test('a claim that throws is withdrawn and left alone for a while, not claimed again every tick', async () => {
+    const w = world();
+    w.store.addIssue({ number: 24, body: body('comment x') });
+    const assign = w.store.assign;
+    w.store.assign = async () => { throw new GhError('other', 'unsupported API write route/method'); };
+    for (let i = 0; i < 3; i++) {
+      await w.server.tick();
+      await w.server.idle();
+    }
+    assert.equal(w.store.log.filter((l) => l === 'comment 24').length, 1, w.logs.join('\n'));
+    assert.deepEqual(comments(w, 24), []);
+    assert.equal(w.logs.filter((l) => /^#24: claim failed: .*unsupported API write route\/method.*; trying it again in 60 min$/.test(l)).length, 1, w.logs.join('\n'));
+    w.store.assign = assign;
+    w.clock.offset = CLAIM_RETRY_MS;
+    await until(w, 'delivered', () => status(w, 24) === 'done');
   });
 
   test('artifact: zips regular files of out/ to a release asset; an empty out/ fails', async () => {

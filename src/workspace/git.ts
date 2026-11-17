@@ -43,6 +43,15 @@ export interface CloneOptions {
   allowAnyUrl?: boolean;
 }
 
+/**
+ * Why a git command failed, in one line: its first `fatal:` or `error:` line (git follows it with more general
+ * lines and hints such as "and the repository exists."), else its last line, else its exit status.
+ */
+export function gitFailure(r: { code: number; stderr: string }): string {
+  const lines = r.stderr.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.find((l) => /^(?:fatal|error):/.test(l)) ?? lines.at(-1) ?? `exit ${r.code}`;
+}
+
 function describe(r: ExecResult): string {
   return r.timedOut ? 'timed out' : r.signal ? `killed by ${r.signal}` : `exited ${r.code}`;
 }
@@ -121,7 +130,7 @@ export async function resolveRepo(entry: RepoEntry, opts: ResolveOptions = {}): 
   try {
     const wanted = entry.pr !== undefined ? [`refs/pull/${entry.pr}/head`] : [`refs/heads/${entry.ref}`, `refs/tags/${entry.ref}`, `refs/tags/${entry.ref}^{}`];
     const ls = await g(['ls-remote', '--', entry.url, ...wanted]);
-    if (ls.code !== 0) return { error: `git ls-remote ${entry.url} failed: ${ls.stderr.trim().split('\n').at(-1) || `exit ${ls.code}`}` };
+    if (ls.code !== 0) return { error: `git ls-remote ${entry.url} failed: ${gitFailure(ls)}` };
     const refs = new Map(ls.stdout.split('\n').filter(Boolean).map((l) => {
       const [sha, ref] = l.split('\t');
       return [ref!, sha!] as const;
@@ -141,7 +150,7 @@ export async function resolveRepo(entry: RepoEntry, opts: ResolveOptions = {}): 
     // A commit, maybe abbreviated: look it up among the commits of every branch and tag.
     const bare = join(tmp, 'r.git');
     const clone = await g(['clone', '--quiet', '--bare', '--filter=tree:0', '--', entry.url, bare]);
-    if (clone.code !== 0) return { error: `git clone ${entry.url} failed: ${clone.stderr.trim().split('\n').at(-1) || `exit ${clone.code}`}` };
+    if (clone.code !== 0) return { error: `git clone ${entry.url} failed: ${gitFailure(clone)}` };
     const parse = async () => {
       const r = await g(['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`], bare);
       const sha = r.stdout.trim();

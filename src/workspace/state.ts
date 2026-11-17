@@ -12,12 +12,13 @@ export const REQUEST_FILE = 'request.md';
 export const TASK_FILE = 'AIR_TASK.md';
 
 /**
- * claimed: won the claim, body snapshotted. setting-up: setup started. ready: setup and check passed and
+ * claiming: the claim is being posted and checked; recorded first, so a claim cut off by a crash is found
+ * and given back. claimed: won the claim, body snapshotted. setting-up: setup started. ready: setup and check passed and
  * AIR_TASK.md is written. failed: setup failed and the claim was released. released: given back.
  * lost: another server holds the issue (found when setup re-checked the claim). done: delivered (`air:done`);
  * the claim is not released. While the agent runs, the phase stays `ready` and `job` tracks it.
  */
-export type Phase = 'claimed' | 'setting-up' | 'ready' | 'failed' | 'released' | 'lost' | 'done';
+export type Phase = 'claiming' | 'claimed' | 'setting-up' | 'ready' | 'failed' | 'released' | 'lost' | 'done';
 
 /**
  * The agent's lifecycle once setup passed (`air serve`, `air run/stop/start`). ready: waiting for a start
@@ -94,7 +95,8 @@ export interface State {
   url: string;
   host: string;
   nonce: string;
-  claimCommentId: number;
+  /** The claim comment, once it is posted. */
+  claimCommentId?: number;
   /** Every `repos` entry, in order, with the commit every checkout of this claim uses. */
   repos: ResolvedRepo[];
   phase: Phase;
@@ -116,7 +118,7 @@ export function workspaceDir(root: string, repo: string, issue: number, nonce: s
   return join(repoDir(root, repo), `${issue}-${nonce}`);
 }
 
-/** Creates the workspace (it must not exist yet) with `out/` and the claimed body, and writes state.json. */
+/** Creates the workspace (it must not exist yet) with `out/` and the body being claimed, and writes state.json. */
 export function createWorkspace(root: string, state: State, body: string): string {
   const dir = workspaceDir(root, state.repo, state.issue, state.nonce);
   mkdirSync(repoDir(root, state.repo), { recursive: true, mode: 0o700 });
