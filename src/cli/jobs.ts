@@ -175,7 +175,8 @@ export async function runCommand(inv: Invocation): Promise<number> {
   const job = await ensureJob(ctx, dir);
   if (job.status !== 'ready') throw new CommandError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
   if (!(await claimHolds(ctx, readState(dir)))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
-  if ((await startOrDeliver(ctx, dir)) === 'delivered') return delivered(inv, dir, n);
+  const how = await startOrDeliver(ctx, dir);
+  if (how !== 'started') return delivered(inv, dir, n, how);
   inv.io.out(`started #${n}; watch it with \`air attach ${n}\`\n`);
   return 0;
 }
@@ -204,13 +205,18 @@ export async function startCommand(inv: Invocation): Promise<number> {
   const job = jobOf(state);
   if (job.status !== 'paused') throw new CommandError(`#${n} is ${job.status}, not paused`);
   if (!(await claimHolds(ctx, state))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
-  if ((await startOrDeliver(ctx, dir)) === 'delivered') return delivered(inv, dir, n);
+  const how = await startOrDeliver(ctx, dir);
+  if (how !== 'started') return delivered(inv, dir, n, how);
   inv.io.out(`started #${n}\n`);
   return 0;
 }
 
-/** Reports a delivery `startOrDeliver` made in place of a start (AIR_DONE was already there). */
-function delivered(inv: Invocation, dir: string, n: number): number {
+/** Reports a delivery `startOrDeliver` made (or left to another process) in place of a start (AIR_DONE was already there). */
+function delivered(inv: Invocation, dir: string, n: number, how: 'delivered' | 'delivering-elsewhere'): number {
+  if (how === 'delivering-elsewhere') {
+    inv.io.out(`#${n} had already finished (AIR_DONE); another air process (such as \`air serve\`) is delivering it\n`);
+    return 0;
+  }
   const state = readState(dir);
   const job = state.job;
   if (job?.status === 'done') {

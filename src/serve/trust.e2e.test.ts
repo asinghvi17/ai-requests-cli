@@ -27,7 +27,7 @@ const installed: Record<Harness, boolean> = { claude: has('claude', '--version')
 
 const base = realpathSync(mkdtempSync(join(tmpdir(), 'air-trust-'))); // real path: both CLIs key trust on it
 const socket = `air-trust-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-const t = createTmux({ socket });
+const t = createTmux({ repo: 'o/requests', socket });
 after(async () => {
   await t.killServer().catch(() => {});
   rmSync(socketPath(socket), { force: true });

@@ -55,7 +55,7 @@ async function until(what: string, check: () => Promise<boolean> | boolean, ms =
 }
 
 describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, () => {
-  let t = createTmux({ socket });
+  let t = createTmux({ repo: 'o/requests', socket });
   let dir = '';
   const saved = process.env.AIR_TEST_INHERITED;
 
@@ -85,7 +85,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.equal(plain.status, 0, plain.stderr);
     assert.ok(plain.stdout.trim() && !plain.stdout.includes('\t'), `without -u, tmux replaces the tabs: ${JSON.stringify(plain.stdout)}`);
 
-    const c = createTmux({ socket, run: defaultRunner(socket, noLocale) });
+    const c = createTmux({ repo: 'o/requests', socket, run: defaultRunner(socket, noLocale) });
     await c.startJob({ issue: 77, cwd: dir, argv: ['sleep', '60'] });
     const jobs = (await c.listJobs()).filter((j) => j.issue === 77);
     assert.equal(jobs.length, 1);
@@ -130,7 +130,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
 
   test('ensureSession window 0 argv goes through a launcher too', async () => {
     const other = `${socket}-s0`, marker = join(dir, 'injected0'), out = join(dir, 'w0.txt');
-    const t0 = createTmux({ socket: other });
+    const t0 = createTmux({ repo: 'o/requests', socket: other });
     try {
       assert.equal(await t0.ensureSession({ argv: ['/bin/sh', '-c', `printf '%s|%s' "$1" "$AIR_W0" > ${out}`, 'sh', 'x;'], cwd: dir,
         env: { AIR_W0: `y; run-shell 'touch ${marker}'` } }), true);
@@ -168,6 +168,18 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     }
   });
 
+  test('two requests repos on one socket: each server sees and stops only its own job of the same issue number', async () => {
+    const other = createTmux({ repo: 'o/other', socket });
+    const ours = await t.startJob({ issue: 21, cwd: dir, argv: ['sleep', '60'] });
+    const theirs = await other.startJob({ issue: 21, cwd: dir, argv: ['sleep', '60'] });
+    assert.deepEqual((await t.listJobs()).filter(j => j.issue === 21).map(j => [j.windowId, j.repo]), [[ours, 'o/requests']]);
+    assert.deepEqual((await other.listJobs()).filter(j => j.issue === 21).map(j => [j.windowId, j.repo]), [[theirs, 'o/other']]);
+    await t.stopJob(21, { graceMs: 0 });
+    assert.equal(await t.isAlive(21), false);
+    assert.equal(await other.isAlive(21), true, "our stop left the other repo's job alone");
+    await other.stopJob(21, { graceMs: 0 });
+  });
+
   test('concurrent starts of one issue yield one window', async () => {
     const results = await Promise.allSettled([1, 2, 3].map(() => t.startJob({ issue: 13, cwd: dir, argv: ['sleep', '60'] })));
     assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
@@ -179,7 +191,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     const tag = async (issue: string, nonce: string, state: string) => {
       const r = await raw(['new-window', '-d', '-P', '-F', '#{window_id}', '-t', '=air:', 'sleep', '60']);
       const w = r.stdout.trim();
-      assert.equal((await raw(['set-option', '-p', '-t', w, '@air_job', issue, ';', 'set-option', '-p', '-t', w, '@air_nonce', nonce,
+      assert.equal((await raw(['set-option', '-p', '-t', w, '@air_repo', 'o/requests', ';', 'set-option', '-p', '-t', w, '@air_job', issue, ';', 'set-option', '-p', '-t', w, '@air_nonce', nonce,
         ';', 'set-option', '-p', '-t', w, '@air_state', state])).code, 0);
       return w;
     };
@@ -291,7 +303,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
   test('restart: a new wrapper re-adopts live jobs; a new tmux server has none', async () => {
     const id = await t.startJob({ issue: 100, cwd: dir, argv: ['sleep', '60'] });
     // Server process restart: throw the wrapper (and its locks) away and build a fresh one.
-    t = createTmux({ socket });
+    t = createTmux({ repo: 'o/requests', socket });
     const [job] = await t.listJobs();
     assert.equal(job?.issue, 100);
     assert.equal(job?.windowId, id);
@@ -299,12 +311,12 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.match(job!.nonce, /^[0-9a-f]{24}$/);
     // tmux server restart: jobs are gone, and concurrent ensureSession calls race safely.
     assert.equal((await raw(['kill-server'])).code, 0);
-    t = createTmux({ socket });
+    t = createTmux({ repo: 'o/requests', socket });
     assert.deepEqual(await t.listJobs(), []);
     assert.equal(await t.isAlive(100), false);
     assert.equal(await t.capture(100), null);
     assert.equal(await t.stopJob(100), undefined);
-    const created = await Promise.all([t.ensureSession(), createTmux({ socket }).ensureSession()]);
+    const created = await Promise.all([t.ensureSession(), createTmux({ repo: 'o/requests', socket }).ensureSession()]);
     assert.equal(created.filter(Boolean).length, 1);
     assert.deepEqual(await t.listJobs(), []);
   });

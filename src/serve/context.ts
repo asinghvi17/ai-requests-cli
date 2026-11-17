@@ -87,7 +87,7 @@ export function serveContext(config: Config, repo: string, opts: { echo?: (line:
     gh: issues,
     api: serveGitHub(repo, gh),
     releases: releases(repo, gh),
-    tmux: createTmux(),
+    tmux: createTmux({ repo }),
     config,
     configFile: configPath(),
     root: config.workspace_root,

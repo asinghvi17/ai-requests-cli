@@ -32,7 +32,7 @@ import { fakeGh, type FakeGh } from './fake-gh.ts';
 import { serveGitHub } from './github.ts';
 import { PAUSE_LIMIT_MS } from './jobs.ts';
 import { MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS } from './prompts.ts';
-import { CLAIM_RETRY_MS, createServer, type Server } from './server.ts';
+import { CLAIM_RETRY_MS, createServer, ONCE_POLL_TRIES, type Server } from './server.ts';
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0;
 const socket = `air-serve-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -76,7 +76,7 @@ interface World {
 }
 
 let bare: BareRepo, service: BareRepo, guide: BareRepo;
-const tmuxClient = createTmux({ socket });
+const tmuxClient = createTmux({ repo: 'o/requests', socket });
 
 function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig['budget']; transcripts?: boolean } = {}): World {
   const store = fakeGitHub();
@@ -1089,7 +1089,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const t0 = Date.now();
     await w.server.tick();
     assert.ok(Date.now() - t0 < 3000);
-    assert.ok(w.logs.some((l) => /tick failed: gh api repos\/o\/requests\/issues\?state=open.* timed out/.test(l)), w.logs.join('\n'));
+    assert.ok(w.logs.some((l) => /poll failed: gh api repos\/o\/requests\/issues\?state=open.* timed out/.test(l)), w.logs.join('\n'));
     assert.equal(job(w, 14), undefined);
     w.fg.hang = undefined;
     await until(w, 'delivered', () => status(w, 14) === 'done');
@@ -1275,7 +1275,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const w = world();
     jobDeps.loadConfig = () => w.ctx.config;
     jobDeps.context = () => w.ctx;
-    w.ctx.tmux = createTmux({ socket, run: async (a) => (a[0] === '-V' ? { code: 0, stdout: 'tmux 2.9a\n', stderr: '' } : { code: 1, stdout: '', stderr: 'unexpected' }) });
+    w.ctx.tmux = createTmux({ repo: 'o/requests', socket, run: async (a) => (a[0] === '-V' ? { code: 0, stdout: 'tmux 2.9a\n', stderr: '' } : { code: 1, stdout: '', stderr: 'unexpected' }) });
     for (const argv of [['serve', '--once'], ['run', '1'], ['start', '1']]) {
       let err = '';
       assert.equal(await main(argv, { out: () => {}, err: (s) => { err += s; } }), 1, argv.join(' '));
@@ -1302,6 +1302,30 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.ok(Date.now() - t0 >= 600);
     assert.ok(idle.logs.filter((l) => /^--once: no open requests to claim yet/.test(l)).length >= 2, idle.logs.join('\n'));
     assert.match(idle.logs.at(-1)!, /^--once: no open requests to claim after waiting 0\.6 s; exiting$/);
+  });
+
+  test('--once retries a poll that fails (a 5xx from gh), and fails after ONCE_POLL_TRIES', async () => {
+    const w = world();
+    w.store.addIssue({ number: 44, body: body('comment retried') });
+    w.fg.failOnce = (a) => a.includes('/issues?state=open');
+    await w.server.run({ once: true, onceWaitMs: 0, onceRetryMs: 50, watchMs: 100 });
+    assert.equal(w.fg.failOnce, undefined, 'the first issue list did fail');
+    assert.ok(w.logs.some((l) => /^poll failed: .*HTTP 502/.test(l)), w.logs.join('\n'));
+    assert.ok(w.logs.includes('--once: the poll failed; trying again in 0.05 s (attempt 2 of 3)'), w.logs.join('\n'));
+    assert.equal(status(w, 44), 'done', w.logs.join('\n'));
+
+    const down = world();
+    let lists = 0;
+    down.ctx.api.openRequests = async () => {
+      lists++;
+      throw new GhError('server', 'Bad Gateway (HTTP 502)', 502);
+    };
+    const t0 = Date.now();
+    await assert.rejects(down.server.run({ once: true, onceWaitMs: 0, onceRetryMs: 50 }), /^Error: --once: polling o\/requests for requests failed 3 times; giving up/);
+    assert.equal(lists, ONCE_POLL_TRIES);
+    assert.ok(Date.now() - t0 >= 50 + 100, 'backoff doubles: 50 ms, then 100 ms');
+    assert.deepEqual(down.logs.filter((l) => l.startsWith('--once: the poll failed')), [
+      '--once: the poll failed; trying again in 0.05 s (attempt 2 of 3)', '--once: the poll failed; trying again in 0.1 s (attempt 3 of 3)']);
   });
 
   test('serve creates every air label a fresh requests repo lacks, air:cancel included, once', async () => {
