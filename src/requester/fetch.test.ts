@@ -61,6 +61,21 @@ test('done with deliver: pr: the report and each PR head branch under repo/', as
   assert.equal(git(repo, 'rev-parse', 'HEAD'), bare.first);
 });
 
+test('a relative DIR (the default `air-N`) is taken from the current directory, PR branches included', async () => {
+  const gh = requestIssue({ labels: ['air:done'], results: [{ report: 'Done.', result: result({ prs: [{ repo: 'service', url: 'https://github.com/acme/service/pull/7' }] }) }] });
+  gh.pulls.set('acme/service#7', { ref: 'feature', sha: bare.first, cloneUrl: SERVICE });
+  const cwd = process.cwd();
+  const base = tmp();
+  process.chdir(base);
+  try {
+    assert.deepEqual((await fetchResult(opts(gh, 'air-1'))).written, ['REPORT.md', 'repo/service']);
+  } finally {
+    process.chdir(cwd);
+  }
+  assert.deepEqual(readdirSync(join(base, 'air-1')).sort(), ['REPORT.md', 'repo']);
+  assert.equal(git(join(base, 'air-1', 'repo', 'service'), 'rev-parse', 'HEAD'), bare.first);
+});
+
 test('done with deliver: artifact: verified and extracted into artifact/; a long report is downloaded', async () => {
   const zip = buildZip([{ name: 'out/' }, { name: 'out/data.csv', data: 'a,b\n1,2\n' }, { name: 'REPORT.md', data: 'r' }]);
   const art = asset('air-1-aaaaaaaa.zip', zip);

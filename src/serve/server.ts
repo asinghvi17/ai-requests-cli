@@ -4,9 +4,11 @@
 // delivery) is tracked per issue, so one bad issue or one failing gh call only costs a log line.
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { claim, claimable, deadlineTime, release } from '../claim/claim.ts';
+import { backOff, claim, claimable, deadlineTime, release } from '../claim/claim.ts';
+import { markedComments } from '../claim/trust.ts';
+import { currentClaim } from '../spec/markers.ts';
 import { canTakeMore, choose, primaryWindow, recordActual, type Effort } from '../match/match.ts';
-import { fenced } from '../claim/text.ts';
+import { code, fenced } from '../claim/text.ts';
 import { lint } from '../spec/lint.ts';
 import type { Subscription } from '../usage/types.ts';
 import { setup } from '../workspace/setup.ts';
@@ -24,7 +26,11 @@ export interface ServerOptions {
   manual?: boolean;
 }
 
-const HELD_PHASES = ['claimed', 'setting-up', 'ready'];
+const HELD_PHASES = ['claiming', 'claimed', 'setting-up', 'ready'];
+/** A `claiming` workspace this old was left by a claim that died (`claim()` takes seconds). */
+export const CLAIM_STALE_MS = 10 * 60_000;
+/** After a claim attempt throws (GitHub refused a step, an outage), the issue is left alone this long. */
+export const CLAIM_RETRY_MS = 60 * 60_000;
 /** `--once`: how long to keep polling when the first poll finds nothing, and how often. */
 export const ONCE_WAIT_MS = 60_000;
 export const ONCE_POLL_MS = 10_000;
@@ -85,10 +91,15 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   const skip = new Map<number, string>();
   /** Last "no fit" reason logged per issue, so an unchanged one isn't logged every tick. */
   const noFit = new Map<number, string>();
+  /** Issue -> when to try it again (unless its body changes), after a claim attempt that threw. */
+  const claimFailed = new Map<number, { hash: string; until: number }>();
   /** Issue -> why its last claim was refused, for refusals checked again every tick (logged once per reason). */
   const refused = new Map<number, string>();
   let adopting = true;
-  /** Workspaces left `setting-up` by a setup that died (a restart, or a release that failed): to release. */
+  /**
+   * Workspaces left `claiming` or `setting-up` by a claim or setup that died (a restart, or a release that
+   * failed): to give back, retried every tick until that works.
+   */
   const orphans = new Set<string>();
   /**
    * Running jobs whose window one tick could not find, and whether that tick was the restart. A single miss
@@ -134,6 +145,23 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   async function watch(ws: Workspace, jobs: Awaited<ReturnType<ServeContext['tmux']['listJobs']>>, usage: Subscription[], first: boolean): Promise<void> {
     const { dir, state } = ws;
     const n = state.issue;
+    if (state.phase === 'claiming') {
+      // This server's own claims finish inside `poll`. One found at startup, or long after it began, was cut
+      // off (a crash, a restart): give it back if it holds, so the issue isn't held with nobody acting on it.
+      if (first || ctx.now().getTime() - Date.parse(state.updatedAt) >= CLAIM_STALE_MS) orphans.add(dir);
+      if (!orphans.has(dir)) return;
+      const r = await release({ gh: ctx.gh, issue: n, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
+        message: `Released by ${code(state.host)}: its claim was cut off before work started.` });
+      if (r.status !== 'released') {
+        // It does not hold (a rival's claim does, or ours never counted): back off as a claim that lost does.
+        const comments = await ctx.gh.comments(n);
+        await backOff(ctx.gh, n, await ctx.gh.viewer(), state.claimCommentId, comments, currentClaim(await markedComments(comments, ctx.trust)));
+        updateState(dir, { phase: 'lost' }, ctx.now());
+      }
+      orphans.delete(dir);
+      ctx.log(`#${n}: interrupted claim ${r.status === 'released' ? 'released' : `dropped (${r.message})`}`);
+      return;
+    }
     if (state.phase === 'claimed') return track(n, 'setup', prepare(dir));
     if (state.phase === 'setting-up') {
       // Setups in progress are in `inflight`; at startup, any left behind died with the last server. (A setup
@@ -319,6 +347,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       candidates++;
       const hash = bodyHash(issue.body);
       if (skip.get(n) === hash) continue;
+      const failed = claimFailed.get(n);
+      if (failed?.hash === hash && failed.until > ctx.now().getTime()) continue;
       const linted = lint(issue.body);
       if (!linted.ok || !linted.request) {
         // claim() checks trust, then posts the lint or unsupported-version comment once, and claims nothing.
@@ -342,10 +372,19 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       }
       noFit.delete(n);
       ctx.log(`#${n}: fits ${choice.reason}; claiming`);
-      const r = await claim({
-        gh: ctx.gh, issue: n, root: ctx.root, host: ctx.host, trust: ctx.trust, now: ctx.now, ghHost: ctx.ghHost, env: ctx.env,
-        ...(ctx.claimWaitMs !== undefined ? { waitMs: ctx.claimWaitMs } : {}),
-      });
+      let r;
+      try {
+        r = await claim({
+          gh: ctx.gh, issue: n, root: ctx.root, host: ctx.host, trust: ctx.trust, now: ctx.now, ghHost: ctx.ghHost, env: ctx.env,
+          ...(ctx.claimWaitMs !== undefined ? { waitMs: ctx.claimWaitMs } : {}),
+        });
+      } catch (e) {
+        // claim() withdrew its claim. Trying again every tick would post (and withdraw) a claim every tick.
+        claimFailed.set(n, { hash, until: ctx.now().getTime() + CLAIM_RETRY_MS });
+        ctx.log(`#${n}: claim failed: ${err(e)}; trying it again in ${CLAIM_RETRY_MS / 60_000} min`);
+        continue;
+      }
+      claimFailed.delete(n);
       if (r.status === 'lost') {
         ctx.log(`#${n}: lost the claim to ${r.holder}`);
         continue;

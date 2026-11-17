@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { GhError } from '../gh/gh.ts';
 import { countedResults, currentClaim, formatMarker, parseMarkers, parseResult } from '../spec/markers.ts';
-import { readState } from '../workspace/state.ts';
+import { findWorkspaces, readState } from '../workspace/state.ts';
 import { claim, defaultHost, deadlineTime, newNonce, release, type ClaimOptions } from './claim.ts';
 import { createTrust, markedComments } from './trust.ts';
 
@@ -86,6 +86,7 @@ test('lose: an earlier rival claim holds, so ours is deleted and we unassign', a
   assert.deepEqual(issue.assignees, []);
   assert.deepEqual(issue.labels, ['ai-request']);
   assert.ok(gh.log.includes('unassign 7 bot'));
+  assert.deepEqual(findWorkspaces(opts.root, gh.repo, 7).map((w) => w.state.phase), ['lost']);
 });
 
 test('a rival that claims after us loses to us', async () => {
@@ -337,6 +338,50 @@ test('an error after posting withdraws the claim instead of leaving it to hold t
   await assert.rejects(claim(opts), /502/);
   assert.equal(gh.issues.get(7)!.comments.length, 0);
   assert.deepEqual(gh.issues.get(7)!.assignees, []);
+  assert.deepEqual(findWorkspaces(opts.root, gh.repo, 7).map((w) => w.state.phase), ['released']);
+});
+
+test('the claim is recorded as a `claiming` workspace before it is posted, so a crash mid-claim is found later', async () => {
+  const { gh, opts } = setup();
+  const seen: string[] = [];
+  const post = gh.comment.bind(gh);
+  gh.comment = async (n, body) => {
+    seen.push(...findWorkspaces(opts.root, gh.repo, 7).map((w) => w.state.phase));
+    return post(n, body);
+  };
+  // The server dies during the claim wait: the workspace stays `claiming`, with the claim comment's id.
+  await assert.rejects(claim({ ...opts, sleep: async () => { throw new Error('killed'); } }), /killed/);
+  assert.deepEqual(seen, ['claiming']);
+  // Here the withdrawal also could not be posted, so the claim still holds and the workspace says so.
+  const { gh: gh2, opts: opts2 } = setup();
+  gh2.deleteComment = async () => { throw new GhError('server', 'Server Error (HTTP 502)', 502); };
+  const comment = gh2.comment.bind(gh2);
+  gh2.comment = async (n, body) => (body.includes('Withdrawn') ? Promise.reject(new GhError('server', 'Server Error (HTTP 502)', 502)) : comment(n, body));
+  await assert.rejects(claim({ ...opts2, sleep: async () => { throw new Error('killed'); } }), /killed/);
+  const [ws] = findWorkspaces(opts2.root, gh2.repo, 7);
+  assert.equal(ws?.state.phase, 'claiming');
+  assert.equal(ws?.state.claimCommentId, gh2.issues.get(7)!.comments[0]!.id);
+  assert.equal((await holder(gh2))?.nonce, 'aaaaaaaaaaaa');
+  // ...and `release` (what a restarted `air serve` runs for it) gives it back.
+  assert.equal((await release({ gh: gh2, issue: 7, root: opts2.root, host: 'box-a' })).status, 'released');
+  assert.equal(await holder(gh2), undefined);
+  assert.equal(readState(ws!.dir).phase, 'released');
+});
+
+test('regression: a claim comment that was never posted leaves no workspace; one that may have been posted is kept', async () => {
+  const { gh, opts } = setup();
+  gh.comment = async () => { throw new GhError('validation', 'Validation Failed (HTTP 422)', 422); };
+  await assert.rejects(claim(opts), /422/);
+  assert.deepEqual(findWorkspaces(opts.root, gh.repo, 7), []);
+  // A timeout that posted it all the same: the `claiming` workspace stays, so the claim is given back later.
+  const { gh: gh2, opts: opts2 } = setup();
+  const post = gh2.comment.bind(gh2);
+  gh2.comment = async (n, body) => {
+    await post(n, body);
+    throw new GhError('timeout', 'gh api timed out');
+  };
+  await assert.rejects(claim(opts2), /timed out/);
+  assert.deepEqual(findWorkspaces(opts2.root, gh2.repo, 7).map((w) => w.state.phase), ['claiming']);
 });
 
 test('a claim that fails after posting and cannot be deleted is released instead', async () => {

@@ -39,6 +39,8 @@ test('the latest counted result, with PRs, checkpoint and usage', async () => {
   const p = await readStatus(requestIssue({ labels: ['air:partial'], results: [{ result: partial, release: true }] }), 1);
   assert.equal(p.holder, undefined);
   assert.match(formatStatus(p), new RegExp(`^ {2}checkpoint: service branch air/1 at ${SHA}$`, 'm'));
+  // --json holds the block's fields as it names them: a result without `prs` has none.
+  assert.equal('prs' in (statusJson(p) as { result: object }).result, false);
 
   // multi-repo: one line per PR and per checkpoint branch
   const two = result({ prs: [{ repo: 'service', url: PR }, { repo: 'client', url: 'https://github.com/acme/client/pull/3' }] });

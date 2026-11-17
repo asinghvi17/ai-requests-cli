@@ -4,7 +4,7 @@
 // server extracts a context zip; the first failure stops the fetch.
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { tail } from '../claim/text.ts';
 import type { Trust } from '../claim/trust.ts';
 import { createGh } from '../gh/gh.ts';
@@ -25,7 +25,7 @@ export const MAX_REPORT_BYTES = 64 * 1024 ** 2;
 export interface FetchOptions {
   gh: RequestsRepo;
   issue: number;
-  /** Must not exist, or be empty. */
+  /** Must not exist, or be empty. Relative to the current directory. */
   dir: string;
   /** The requests repo's GitHub host: pull requests must be on it. */
   ghHost?: string;
@@ -55,7 +55,9 @@ export function parsePullUrl(url: string, host: string): { repo: string; number:
 }
 
 export async function fetchResult(opts: FetchOptions): Promise<Fetched> {
-  const { gh, issue: n, dir } = opts;
+  const { gh, issue: n } = opts;
+  // Absolute: git runs in `dir` and in its subfolders, so a relative path would resolve twice.
+  const dir = resolve(opts.dir);
   const log = opts.log ?? (() => {});
   const env = opts.env ?? process.env;
   const host = opts.ghHost ?? (env.GH_HOST || 'github.com');

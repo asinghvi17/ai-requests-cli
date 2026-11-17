@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBareRepo, insteadOf, type BareRepo } from './git-fixture.ts';
 import type { RepoEntry } from '../spec/frontmatter.ts';
-import { checkoutCheckpoint, checkRef, cloneAt, GitError, resolveRepo, type ResolveOptions } from './git.ts';
+import { checkoutCheckpoint, checkRef, cloneAt, GitError, gitFailure, resolveRepo, type ResolveOptions } from './git.ts';
 
 let dir: string;
 let repo: BareRepo;
@@ -89,4 +89,13 @@ test('a checkpoint commit is fetched by SHA and checked out on its branch', asyn
   await assert.rejects(checkoutCheckpoint({ dir: c.dest, sha: 'f'.repeat(40), branch: 'air/12', log: join(dir, 'log') }), /could not fetch checkpoint commit f{40}/);
   await assert.rejects(checkoutCheckpoint({ dir: c.dest, sha: 'HEAD', branch: 'air/12', log: join(dir, 'log') }), /refusing checkpoint sha/);
   await assert.rejects(checkoutCheckpoint({ dir: c.dest, sha: repo.main, branch: '-f', log: join(dir, 'log') }), GitError);
+});
+
+test('a repo that cannot be read is reported by git\'s fatal line, not the hint after it', async () => {
+  const missing = join(mkdtempSync(join(tmpdir(), 'air-git-')), 'nope.git');
+  const r = await resolveRepo({ url: missing, ref: 'main', path: 'r' }, { allowAnyUrl: true });
+  assert.match((r as { error: string }).error, /failed: fatal: .*does not appear to be a git repository$/);
+  assert.equal(gitFailure({ code: 128, stderr: "fatal: 'x' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n" }), "fatal: 'x' does not appear to be a git repository");
+  assert.equal(gitFailure({ code: 1, stderr: 'something odd\n' }), 'something odd');
+  assert.equal(gitFailure({ code: 2, stderr: '' }), 'exit 2');
 });

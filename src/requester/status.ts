@@ -59,8 +59,14 @@ export async function readStatus(gh: RequestsRepo, n: number, trust: Trust = cre
 export function statusJson(s: RequestStatus): object {
   return {
     repo: s.repo, issue: s.issue, title: s.title, url: s.url, open: s.open, state: s.state ?? null, cancel: s.cancel, holder: s.holder ?? null,
-    result: s.latest ? { comment_id: s.latest.commentId, current: s.latest.current, ...s.latest.result } : null,
+    result: s.latest ? resultJson(s.latest) : null,
   };
+}
+
+/** The block's fields as it names them: `prs` only when the block has it (spec §10: absent unless `done` with `pr`). */
+function resultJson(l: LatestResult): object {
+  const { prs, ...rest } = l.result;
+  return { comment_id: l.commentId, current: l.current, ...rest, ...(prs.length ? { prs } : {}) };
 }
 
 /** The human-readable status. */

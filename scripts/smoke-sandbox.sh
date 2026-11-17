@@ -34,7 +34,7 @@
 #  issues-labels API, which creates a missing label on the repo as a side effect. Nothing here deletes them.
 #  Read-only calls: GET user, GET issue/comments, list open `ai-request` issues, the sandbox's default
 #  branch and its HEAD SHA, and, if the issue author is not the repo owner, GET collaborators/<login>/permission.
-#  `git clone` of the sandbox repo into the temp workspace (a read; `repo:` points at the sandbox itself).
+#  `git clone` of the sandbox repo into the temp workspace (a read; `repos:` points at the sandbox itself).
 #
 #  NOT HAPPENING with `deliver: comment`:
 #   - NO comment is deleted. (deleteComment is only called when a claim is lost to another server or the claim
@@ -191,9 +191,10 @@ air: 0
 effort: XS
 harness: [claude]
 model: small
-repo:
-  url: https://github.com/$REPO.git
-  ref: $SHA
+repos:
+  - url: https://github.com/$REPO.git
+    ref: "$SHA"
+    path: sandbox
 deliver: comment
 timeout: 10m
 ---
@@ -208,18 +209,11 @@ Smoke test. Reply with the word hello.
 
 ## Context
 
-\`repo/\` is a checkout of this sandbox repository. Nothing in it needs to be read or changed.
+\`repo/sandbox/\` is a checkout of this sandbox repository. Nothing in it needs to be read or changed.
 EOF
 
-say "air lint of the request body (the \`air lint\` command is not implemented on main, so this calls src/spec/lint.ts)"
-node --input-type=module -e '
-  import { readFileSync } from "node:fs";
-  const { lint } = await import(process.argv[1] + "/src/spec/lint.ts");
-  const r = lint(readFileSync(process.argv[2], "utf8"));
-  for (const d of r.warnings) console.log(`warning line ${d.line}: ${d.message}`);
-  if (!r.ok) { for (const d of r.errors) console.error(`error line ${d.line}: ${d.message}`); process.exit(1); }
-  console.log("lint ok:", JSON.stringify(r.request));
-' "$AIR_SRC" "$WORK/body.md"
+say "air lint of the request body"
+air lint "$WORK/body.md"
 
 say "making sure only our issue is open with the ai-request label"
 if ! gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' | grep -qx 'ai-request'; then

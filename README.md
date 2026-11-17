@@ -85,6 +85,20 @@ args = ["--permission-mode", "acceptEdits"]   # whatever lets it work unattended
 # Codex works the same way: [subscriptions.codex] with harness = "codex", [models.codex] and [agents.codex].
 ```
 
+air reads each subscription's quota from its CLI. For a login whose usage it can't read, give it a manual
+budget in `~/.config/air/subscriptions.json`, under the same name as in `config.toml`, and record spend
+with `air usage spend NAME AMOUNT`:
+
+```json
+[{ "name": "claude", "harness": "manual", "reset": { "every": "weekly", "day": 0 }, "budget": { "percent": 100 } }]
+```
+
+The agent runs unattended in a fresh workspace under `workspace_root`, so start Claude Code there once by
+hand: finish its first-run screens and trust `workspace_root` (subfolders inherit the trust). The agent gets
+an empty environment apart from basics such as `PATH`, `HOME` and `TMPDIR`, plus `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME`: its git identity comes from `~/.gitconfig`, and proxy variables such as `HTTPS_PROXY` don't
+reach it.
+
 Then check what quota air sees, and start serving:
 
 ```sh

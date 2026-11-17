@@ -49,6 +49,10 @@
   `finishJob` check it again (`ensureHeld`). A lost claim makes the workspace `lost` and stops our agent; we
   never relabel, comment on or resume an issue another server holds. Release paths rely on `release()`'s own
   holder check. Uploaded assets are recorded in `job.delivery.asset`, so a retry reuses them.
+- Claims in flight: `claim()` records a `claiming` workspace before it posts the claim comment. A server that
+  finds one at startup, or one older than `CLAIM_STALE_MS`, releases the claim if it still holds (else marks it
+  `lost`), so a crash during the claim wait never leaves an issue held by nobody. A claim attempt that throws
+  (withdrawn by `claim()`) leaves that issue alone for `CLAIM_RETRY_MS` instead of re-posting every tick.
 - Failure paths are retryable states: `delivering` (up to 5 attempts, then `air:failed`), `failing` (until the
   release posts), and orphaned `setting-up` workspaces (until released). Labels are repaired from the job state
   each tick. Report text is defused: marker-like lines (after any whitespace), including `air-result` lines,
