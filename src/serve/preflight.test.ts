@@ -22,7 +22,7 @@ const CONFIG_FILE = '/home/u/.config/air/config.toml';
 
 /** A machine: HOME, a bin dir with fake `claude` / `codex` that print a version, and the air config. */
 function machine(o: { bins?: Record<string, string>; config?: string } = {}) {
-  const home = tmp();
+  const home = realpathSync(tmp()); // Claude Code saves trust at real paths (macOS tmpdir is under a symlink)
   const bin = join(home, 'bin');
   mkdirSync(bin);
   const bins = o.bins ?? { claude: 'echo "2.1.311 (Claude Code)"', codex: 'echo "codex-cli 0.164.0"' };
