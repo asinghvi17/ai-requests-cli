@@ -151,7 +151,12 @@ async function fixTrust(inv: Invocation, checks: AgentCheck[]): Promise<boolean>
     for (const f of fixes.values()) {
       const answer = await p.ask(`Trust ${tilde(f.dir)} for Claude Code${many ? ` (login${f.logins.length > 1 ? 's' : ''} ${f.logins.join(', ')}, ${tilde(f.stateFile)})` : ''}? [y/N] `);
       if (!/^y(es)?$/i.test(answer.trim())) continue;
-      const key = jobDeps.writeClaudeTrust(f.stateFile, f.dir);
+      let key: string;
+      try {
+        key = jobDeps.writeClaudeTrust(f.stateFile, f.dir);
+      } catch (e) {
+        throw new CommandError((e as Error).message);
+      }
       inv.io.out(`wrote projects[${JSON.stringify(key)}].hasTrustDialogAccepted = true in ${f.stateFile}\n`);
       wrote = true;
     }

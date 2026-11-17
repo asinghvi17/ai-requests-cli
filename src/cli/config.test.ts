@@ -117,6 +117,14 @@ test('doctor --fix asks before writing each missing folder trust, then checks ag
   assert.equal(out.code, 0);
   assert.match(out.out, /NOT READY[^]*wrote projects\["\/home\/u\/air"\]\.hasTrustDialogAccepted = true in \/home\/u\/c2\/\.claude\.json\n\nclaude: 2\.1\.311 \(Claude Code\): ready \(logins claude, same, max2\)\n$/);
 
+  // A write that fails (say, Claude Code kept rewriting the file) is reported as doctor's error.
+  fixed = false;
+  terminal(['y']);
+  jobDeps.writeClaudeTrust = () => { throw new Error('/home/u/.claude.json kept changing while air wrote it: close Claude Code, then run `air doctor --fix` again'); };
+  const failed = await call('doctor', '--fix');
+  assert.equal(failed.code, 1);
+  assert.equal(failed.err, 'air doctor: /home/u/.claude.json kept changing while air wrote it: close Claude Code, then run `air doctor --fix` again\n');
+
   // Nothing to write: no question, and a note only when something else is wrong.
   const none = terminal([]);
   jobDeps.preflight = () => [{ harness: 'codex', problems: [{ what: '`codex` was not found on PATH (or is not executable).', fix: 'install it' }], logins: { codex: [] } }];

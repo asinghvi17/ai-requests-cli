@@ -84,6 +84,47 @@ test('a state file that is not a JSON object is left alone', () => {
   }
 });
 
+test('regression: a write Claude Code makes meanwhile is merged, not clobbered', () => {
+  // Review finding: the file was read, merged and renamed over, losing whatever Claude Code wrote in between.
+  const home = tmp();
+  const file = join(home, '.claude.json');
+  writeFileSync(file, JSON.stringify({ hasCompletedOnboarding: true, numStartups: 7 }, null, 2));
+  let writes = 0;
+  const key = writeClaudeTrust(file, join(home, 'air'), {
+    beforeRename: () => { if (writes++ === 0) writeFileSync(file, JSON.stringify({ hasCompletedOnboarding: true, numStartups: 8, tipsHistory: { a: 1 } }, null, 2)); },
+  });
+  assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { hasCompletedOnboarding: true, numStartups: 8, tipsHistory: { a: 1 }, projects: { [key]: { hasTrustDialogAccepted: true } } });
+  assert.deepEqual(readdirSync(home).sort(), ['.claude.json', 'air']);
+});
+
+test('regression: a state file that keeps changing is left alone, with a message to close Claude Code', () => {
+  const home = tmp();
+  const file = join(home, '.claude.json');
+  writeFileSync(file, '{"n": 0}');
+  let n = 0;
+  assert.throws(
+    () => writeClaudeTrust(file, join(home, 'air'), { beforeRename: () => writeFileSync(file, `{"n": ${++n}}`) }),
+    new RegExp(`^Error: ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} kept changing while air wrote it: close Claude Code, then run \`air doctor --fix\` again$`),
+  );
+  assert.equal(readFileSync(file, 'utf8'), `{"n": ${n}}`);
+  assert.deepEqual(readdirSync(home).sort(), ['.claude.json', 'air']);
+});
+
+test('regression: the file mode is kept under a umask that would mask it', () => {
+  // Review finding: the temp file was created with the mode, which the umask then cut down.
+  const home = tmp();
+  const file = join(home, '.claude.json');
+  writeFileSync(file, '{}');
+  chmodSync(file, 0o644);
+  const saved = process.umask(0o077);
+  try {
+    writeClaudeTrust(file, join(home, 'air'));
+  } finally {
+    process.umask(saved);
+  }
+  assert.equal(statSync(file).mode & 0o777, 0o644);
+});
+
 test('the problem doctor reports names what --fix writes, and writing it makes the login ready', () => {
   const home = tmp();
   const file = join(home, '.claude.json');

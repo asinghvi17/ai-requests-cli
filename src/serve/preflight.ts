@@ -8,7 +8,7 @@
 // printed.
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { AGENT_HARNESSES, DEFAULT_AGENTS, type Agent, type Config } from '../config.ts';
 import type { SubscriptionConfig } from '../usage/types.ts';
 
@@ -153,6 +153,17 @@ function within(dir: string, base: string): boolean {
   return dir === base || dir.startsWith(base.endsWith('/') ? base : `${base}/`);
 }
 
+/**
+ * `path` as Claude Code will see it once it exists: its nearest existing ancestor with symlinks resolved, and
+ * the missing rest joined back on. Claude Code keys trust on real paths, and a symlink can lead into a git repo.
+ */
+export function canonicalPath(path: string): string {
+  const abs = resolve(path);
+  let d = abs;
+  while (!existsSync(d) && dirname(d) !== d) d = dirname(d);
+  return join(realpathSync(d), relative(d, abs));
+}
+
 /** The git work tree `dir` (or its nearest existing ancestor) lies in, if any. */
 export function gitRootOf(dir: string): string | undefined {
   let d = dir;
@@ -186,7 +197,7 @@ function claudeChecks(login: Login, mode: 'auto' | 'bypass', config: Config, dep
     });
   }
   // Claude Code looks for a trusted folder from the job dir upwards, but not above the git repo the job dir is in.
-  const real = existsSync(root) ? realpathSync(root) : root;
+  const real = canonicalPath(root);
   const repo = gitRootOf(real);
   const projects = state.projects !== null && typeof state.projects === 'object' ? (state.projects as Record<string, unknown>) : {};
   const trustedAbove = Object.entries(projects).filter(([path, p]) => isAbsolute(path) && within(real, path) &&
@@ -198,7 +209,7 @@ function claudeChecks(login: Login, mode: 'auto' | 'bypass', config: Config, dep
         ? `workspace_root ${root} is inside the git repo ${repo}, and Claude Code does not carry the trust of ${outside} into a git repo below it, so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`
         : `Claude Code does not trust workspace_root ${root} (nor a folder above it), so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`,
       fix: `run \`air doctor --fix\`, or run \`${startThere}\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
-      trust: { stateFile, dir: root },
+      trust: { stateFile, dir: real },
     });
   }
   if (mode === 'bypass') {

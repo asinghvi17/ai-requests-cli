@@ -458,6 +458,10 @@ Claude Code:
   git repo whose trusted folder is above that repo. `air doctor` now checks exactly that: a trusted folder at or
   above `workspace_root`'s real path, and not above the git repo `workspace_root` is in, if any. Before, a trusted
   home directory passed even when `workspace_root` sat inside a repo under it, and each job would have prompted.
+  The real path is `canonicalPath`: the nearest existing ancestor resolved, the part not created yet joined back
+  on. So a `workspace_root` that doesn't exist yet is checked where Claude Code will find it, both behind a
+  symlink into a git repo and below a symlinked home (macOS `/var` is `/private/var`). The git root lookup, the
+  trust comparison and what `--fix` writes all use that one path (review finding).
 - No flag or job-scoped setting makes Claude Code trust a folder. Project trust lives only in the login's
   `.claude.json`, next to its account state, and air writes it only for `workspace_root`, through
   `air doctor --fix` (below), never per job. The one case left is a job dir the agent
@@ -470,8 +474,11 @@ Claude Code:
   `projects[<workspace_root's real path>].hasTrustDialogAccepted = true` in that login's `.claude.json`
   (`writeClaudeTrust`, src/serve/trust.ts). It creates `workspace_root` if needed, keeps every other key and
   the entry's other fields, and changes nothing else (no account or credential field). It writes beside the
-  file's real path, with the same mode, and renames over it, so a symlinked `.claude.json` stays a symlink. It
-  needs a terminal, and checks again after writing. `air config init` offers to run it, and plain `air doctor`
+  file's real path and renames over it, so a symlinked `.claude.json` stays a symlink. The copy is set to the
+  file's mode with fchmod, since the umask would cut down the mode it was created with. A running Claude Code
+  rewrites the file often, so air reads it again just before the rename. If it changed, air merges into the fresh
+  content, up to 5 times, then gives up untouched with "kept changing while air wrote it: close Claude Code, then
+  run `air doctor --fix` again" (review findings). It needs a terminal, and checks again after writing. `air config init` offers to run it, and plain `air doctor`
   stays read-only. There is no Codex counterpart: with the per-launch override the check finds no Codex trust
   to fix, and a `config.toml` writer would be a second way to do the same thing.
 - `src/serve/trust.e2e.test.ts` runs the installed CLIs through air's tmux layer with `agentArgv`'s argv for

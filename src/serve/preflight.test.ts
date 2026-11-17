@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import { parseConfig, type Config } from '../config.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions } from '../usage/index.ts';
 import { serveContext } from './context.ts';
-import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, unattendedMode, type Login, type PreflightDeps } from './preflight.ts';
+import { canonicalPath, defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, unattendedMode, type Login, type PreflightDeps } from './preflight.ts';
 
 const dirs: string[] = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -159,6 +159,42 @@ test('Claude Code in a git repo: trust from above the repo does not count, from 
   const viaLink = machine({ config: `workspace_root = "${link}"\n` });
   claudeState(viaLink.home, { trusted: [root] });
   assert.deepEqual(refusals(preflight(viaLink.config, [claude], viaLink.deps)), {});
+});
+
+test('regression: a workspace_root not created yet, below a symlink into a git repo, is checked in that repo', () => {
+  // Review finding: the missing path was walked as written, so the repo behind the symlink went unseen and
+  // trust from above that repo passed, while every job then prompted.
+  const base = realpathSync(tmp());
+  const repo = join(base, 'repo');
+  mkdirSync(join(repo, 'x'), { recursive: true });
+  execFileSync('git', ['init', '-q', repo]);
+  symlinkSync(join(repo, 'x'), join(base, 'link'));
+  const m = machine({ config: `workspace_root = "${join(base, 'link', 'air')}"\n` });
+  claudeState(m.home, { trusted: [base] });
+  const [problem] = preflight(m.config, [claude], m.deps)[0]!.logins.claude!;
+  assert.match(problem!.what, new RegExp(`is inside the git repo ${repo}, and Claude Code does not carry the trust of ${base} into`));
+  // --fix trusts the path Claude Code will see.
+  assert.deepEqual(problem!.trust, { stateFile: join(m.home, '.claude.json'), dir: join(repo, 'x', 'air') });
+});
+
+test('regression: a workspace_root not created yet, below a symlinked home, matches trust saved at the real path', () => {
+  // Review finding: Claude Code saves real paths (macOS /var is /private/var), and a missing ~/air was compared
+  // as written, so doctor refused a login that would have run.
+  const base = realpathSync(tmp());
+  mkdirSync(join(base, 'real'));
+  symlinkSync(join(base, 'real'), join(base, 'home'));
+  const m = machine({ config: `workspace_root = "${join(base, 'home', 'air')}"\n` });
+  claudeState(m.home, { trusted: [join(base, 'real')] });
+  assert.deepEqual(refusals(preflight(m.config, [claude], m.deps)), {});
+});
+
+test('canonicalPath resolves the nearest existing ancestor and keeps the missing tail', () => {
+  const base = realpathSync(tmp());
+  mkdirSync(join(base, 'real'));
+  symlinkSync(join(base, 'real'), join(base, 'link'));
+  assert.equal(canonicalPath(join(base, 'link', 'a', 'b')), join(base, 'real', 'a', 'b'));
+  assert.equal(canonicalPath(join(base, 'link')), join(base, 'real'));
+  assert.equal(canonicalPath(join(base, 'link', '..', 'real', 'c')), join(base, 'real', 'c'));
 });
 
 test('Codex needs no trust set up, in a git repo or not: each launch trusts its job dir', () => {
