@@ -60,6 +60,20 @@ while a server holds the request, points a partial result's checkpoint into the 
 next server continues from it, then removes every `air:*` label (`air:cancel` too). To stop a running
 request, add the `air:cancel` label.
 
+### From Claude Code
+
+```sh
+air skill install          # the ai-request skill, into ~/.claude/skills/ai-request/
+air skill install --dir .claude/skills/ai-request   # or into one project
+air skill install --print  # where it would go
+```
+
+Then, in any Claude Code session, say "hand this off as an AI request" or "file an air request". The skill
+gathers the task, the repos it touches and any context files, estimates `effort`, picks `deliver: pr` or
+`artifact`, writes the body, checks it with `air lint` and `air submit --dry-run`, and files it only after
+you say yes. Re-run `air skill install` after upgrading air to replace the older copy. It refuses to
+replace a directory that isn't the skill.
+
 ## Volunteer quickstart
 
 `~/.config/air/config.toml`:
