@@ -104,13 +104,13 @@ test('a corrupt ledger: manual subscriptions read unknown until reset-ledger; pl
   assert.equal(await run([]), 0);
   assert.deepEqual(readdirSync(state).filter(n => n.startsWith('manual-ledger')), []); // a read wrote nothing
   assert.equal(await run(['spend', 'team', '100']), 0);
-  writeFileSync(join(state, 'manual-ledger.json'), '{"version": 3}');
+  writeFileSync(join(state, 'manual-ledger.json'), '{"version": 1}');
   lines.length = 0;
   assert.equal(await run(['--json']), 0);
   const [s] = JSON.parse(lines.pop()!);
   assert.equal(s.stale, true);
   assert.equal(s.windows[0].usedPct, null);
-  assert.match(s.note, /unsupported version 3.*reset-ledger/);
+  assert.match(s.note, /invalid contents.*reset-ledger/);
   assert.equal(await run([]), 0);
   assert.match(lines.pop()!, /team \(manual\) · never read · STALE.*\n  WINDOW .*\n  Weekly   \?  /);
   assert.equal(await run(['spend', 'team', '1']), 1);

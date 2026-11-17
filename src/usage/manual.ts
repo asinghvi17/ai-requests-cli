@@ -1,6 +1,6 @@
 // Subscriptions with no readable meter: the volunteer states a budget and a reset schedule, and air records its own
 // spend in a small JSON ledger so the budget decrements. A new period rolls the spend back to zero.
-// A ledger that cannot be trusted (bad JSON, bad shape, unknown version) is moved aside and its subscriptions read
+// A ledger that cannot be trusted (bad JSON or a bad shape) is moved aside and its subscriptions read
 // as unknown until `air usage reset-ledger` writes a fresh one: lost spend must never look like an unused budget.
 import { readdirSync, readFileSync, renameSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -8,15 +8,15 @@ import { withLock, writeAtomic } from './lock.ts';
 import type { ManualConfig, Subscription } from './types.ts';
 
 /** `spent`: US dollars at API prices. */
-export interface Ledger { version: 2; subscriptions: Record<string, { periodStart: string; spent: number }> }
+export interface Ledger { version: 1; subscriptions: Record<string, { periodStart: string; spent: number }> }
 /** `ledger: null`: unusable; `error` says why and where the bad file went. */
 export type LedgerLoad = { ledger: Ledger; error?: undefined } | { ledger: null; error: string };
 
-export const emptyLedger = (): Ledger => ({ version: 2, subscriptions: {} });
+export const emptyLedger = (): Ledger => ({ version: 1, subscriptions: {} });
 const RESET_HINT = 'run `air usage reset-ledger` to start a fresh one';
 
 function valid(v: any): v is Ledger {
-  if (!v || typeof v !== 'object' || v.version !== 2 || !v.subscriptions || typeof v.subscriptions !== 'object' || Array.isArray(v.subscriptions)) return false;
+  if (!v || typeof v !== 'object' || v.version !== 1 || !v.subscriptions || typeof v.subscriptions !== 'object' || Array.isArray(v.subscriptions)) return false;
   return Object.values(v.subscriptions).every((e: any) => e && typeof e.periodStart === 'string' && Number.isFinite(Date.parse(e.periodStart))
     && typeof e.spent === 'number' && Number.isFinite(e.spent) && e.spent >= 0);
 }
@@ -31,7 +31,7 @@ function loadUnlocked(file: string): LedgerLoad {
       : { ledger: emptyLedger() };
   }
   let v: unknown, why: string;
-  try { v = JSON.parse(text); why = (v as any)?.version !== 2 ? `unsupported version ${JSON.stringify((v as any)?.version)}` : 'invalid contents'; }
+  try { v = JSON.parse(text); why = 'invalid contents'; }
   catch { why = 'invalid JSON'; }
   if (valid(v)) return { ledger: v };
   const to = `${file}.corrupt.${new Date().toISOString().replace(/[:.]/g, '-')}`;

@@ -67,9 +67,8 @@ test('a missing ledger is fresh; spend persists under the lock', () => {
 });
 
 for (const [what, text, why] of [
-  ['invalid JSON', '{"version": 2, "subscriptions": {', /invalid JSON/],
-  ['another version', JSON.stringify({ version: 1, subscriptions: {} }), /unsupported version 1/],
-  ['a bad entry', JSON.stringify({ version: 2, subscriptions: { team: { periodStart: 'x', spent: -5 } } }), /invalid contents/],
+  ['invalid JSON', '{"version": 1, "subscriptions": {', /invalid JSON/],
+  ['a bad entry', JSON.stringify({ version: 1, subscriptions: { team: { periodStart: 'x', spent: -5 } } }), /invalid contents/],
 ] as const) {
   test(`a ledger with ${what} is moved aside and reads as unknown until reset`, () => {
     const file = tmpLedger();

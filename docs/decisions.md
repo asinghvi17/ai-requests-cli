@@ -360,7 +360,7 @@ Alternatives considered:
   are all US dollars at API prices: the agent's tokens at the provider's published per-token rates. Spec §2:
   `effort` is XS $1, S $3, M $10, L $30, XL $100 (was 1, 3, 8, 20, 40 % of a weekly window). Matching compares
   dollars with dollars.
-- Budgets in `percent` and `tokens` are gone; a manual budget is `{ "usd": N }`, and its ledger is version 2.
+- Budgets in `percent` and `tokens` are gone; a manual budget is `{ "usd": N }`, and its ledger records dollars.
   config.toml's `scale` and `budget` are gone too: `[subscriptions.X] window_usd` says what a readable
   subscription's whole primary window is worth, so its percent meter reads as dollars. Without it a readable
   subscription takes nothing.
