@@ -20,7 +20,7 @@ import {
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
-import { matchPrompt, STUCK_MS, waitingFor } from './prompts.ts';
+import { matchPrompt, MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS, waitingFor } from './prompts.ts';
 import { configPath } from '../config.ts';
 
 export interface ServerOptions {
@@ -108,8 +108,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
    * never decides a job's fate: only a second consecutive miss pauses (or, after a restart, resumes) it.
    */
   const missing = new Map<number, { restart: boolean; nonce: string | undefined; starts: number }>();
-  /** Running job -> its pane's last screen and since when it has not changed (STUCK_MS). */
-  const screens = new Map<number, { text: string; since: number }>();
+  /** Running job -> its pane's last screen, since when it has not changed, and the prompt at its bottom since when. */
+  const screens = new Map<number, { text: string; since: number; prompt: string | undefined; promptSince: number }>();
   /** Running job -> the line shown in the tmux status bar while it waits on the volunteer. */
   const notices = new Map<number, string>();
   let notice: string | undefined;
@@ -314,40 +314,51 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   }
 
   /**
-   * Whether the running agent waits on a person: a known prompt at the bottom of its screen, or a screen that
-   * has not changed for STUCK_MS. Logs it once per prompt with the fix, records it for `air status`, puts it
-   * in the tmux status bar and, once per job, tells the issue. The job keeps running: its timeout decides.
+   * Whether the running agent waits on a person: a known prompt that has stayed at the bottom of its screen
+   * for SETTLE_MS, or a screen that has not changed for STUCK_MS (idle). Logs each waiting episode once with
+   * its fix, records it for `air status` and puts it in the tmux status bar. A prompt, not idleness, also
+   * tells the issue: once per episode, at most MAX_WAITING_COMMENTS times per job. The episode ends when the
+   * prompt leaves the screen (idle: when the screen changes). The job keeps running: its timeout decides.
    */
   async function watchPrompt(dir: string, n: number, job: JobRecord, windowId: string): Promise<void> {
     const text = await ctx.tmux.screen(n);
     if (text === null) return;
     const now = ctx.now().getTime();
     const prev = screens.get(n);
+    const changed = prev !== undefined && prev.text !== text;
+    const shown = matchPrompt(job.harness, text);
     const since = prev?.text === text ? prev.since : now;
-    if (prev?.text !== text) screens.set(n, { text, since });
-    const found = matchPrompt(job.harness, text) ?? (now - since >= STUCK_MS ? 'idle' : undefined);
+    const promptSince = shown && prev?.prompt === shown.id ? prev.promptSince : now;
+    screens.set(n, { text, since, prompt: shown?.id, promptSince });
+    const found = shown ? (now - promptSince >= SETTLE_MS ? shown : undefined) : now - since >= STUCK_MS ? 'idle' : undefined;
+    const notice = (what: string) => notices.set(n, `#${n} ${job.harness} waits on you: ${what}; see air status ${n}`);
     if (!found) {
-      notices.delete(n);
-      // Right after a restart an idle screen has no history yet: keep that until the screen changes.
-      if (job.waiting && !(job.waiting.prompt === 'idle' && prev === undefined)) {
+      const waiting = job.waiting;
+      // A restart keeps the episode: an idle one ends when the screen changes, a prompt when it leaves the screen.
+      if (waiting && (waiting.prompt === 'idle' ? changed : shown?.id !== waiting.prompt)) {
+        notices.delete(n);
         saveJob(ctx, dir, { waiting: undefined });
-        ctx.log(`#${n}: ${job.harness} moved on from ${job.waiting.what}`);
-      }
+        ctx.log(`#${n}: ${job.harness} moved on from ${waiting.what}`);
+      } else if (waiting) notice(waiting.what);
+      else notices.delete(n);
       return;
     }
     const w = waitingFor(found, {
       configFile: ctx.configFile ?? configPath(), workspaceRoot: ctx.root,
       attach: `\`air attach ${n}\` (\`tmux -L ${ctx.tmux.socket} attach -t ${windowId}\`)`,
     });
-    notices.set(n, `#${n} ${job.harness} waits on you: ${w.what}; see air status ${n}`);
-    if (job.waiting?.prompt !== w.prompt) {
-      saveJob(ctx, dir, { waiting: { ...w, since: new Date(found === 'idle' ? since : now).toISOString() } });
+    notice(w.what);
+    let waiting = job.waiting;
+    if (waiting?.prompt !== w.prompt) {
+      waiting = { ...w, since: new Date(found === 'idle' ? since : promptSince).toISOString() };
+      saveJob(ctx, dir, { waiting });
       ctx.log(`#${n}: ${job.harness} is waiting on you: ${w.what}. Fix: ${w.fix}`);
     }
-    if (job.waitingNotified) return;
+    const posted = job.waitingComments ?? 0;
+    if (found === 'idle' || waiting.notified || posted >= MAX_WAITING_COMMENTS) return;
     await ctx.gh.comment(n, `The ${job.harness} agent working on this request on ${code(ctx.host)} is waiting on the volunteer: ${w.what}. ` +
       'They have been told. The job keeps running, and the request\'s `timeout` still applies.');
-    saveJob(ctx, dir, { waitingNotified: true });
+    saveJob(ctx, dir, { waiting: { ...waiting, notified: true }, waitingComments: posted + 1 });
   }
 
   /** Puts the waiting jobs' notices in the tmux status bar, or clears it; only when that changes. */

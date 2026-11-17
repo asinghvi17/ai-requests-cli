@@ -362,11 +362,17 @@ Alternatives considered:
   fixes it.
 - A login that fails is refused through `MatchConfig.refused`. It takes no new requests ("not served: ..."
   in the no-fit log), and the other logins carry on. Jobs already running on it are left alone.
-- At runtime, each tick reads the running job's visible pane (`capture-pane -p -J`) and matches its last 30
-  lines, whitespace collapsed, against `PROMPTS` (`src/serve/prompts.ts`). A screen that hasn't changed for
-  5 minutes counts as `idle`. Each pattern records its source. Most were captured from the installed CLIs in
-  tmux with throwaway config dirs (`src/serve/fixtures/panes/`). The permission and approval prompts need a
-  working model to appear, so their fixtures are built from the CLIs' strings. When a prompt is found, the
-  server logs it once with its fix, records it as `job.waiting` (which `air status` shows on the serving
-  machine), puts it in the tmux status bar and posts at most one issue comment per job (`waitingNotified`).
-  It does not stop the job: the timeout and cut-off rules do.
+- At runtime, each tick reads the running job's visible pane (`capture-pane -p -J`). A prompt in
+  `PROMPTS` (`src/serve/prompts.ts`) is matched against the last 20 non-blank lines, whitespace collapsed,
+  and its footer (where captured: "Esc to cancel", "enter continue", ...) must be in the last 3. It counts
+  once it has stayed for 60 s, so output that merely quotes a prompt scrolls on, or sits above an idle input
+  box without the footer, and never does. A screen unchanged for 15 minutes counts as `idle`: long enough for
+  a quiet build. Each pattern records its source. Most were captured from the installed CLIs in tmux with
+  throwaway config dirs (`src/serve/fixtures/panes/`). The permission and approval prompts need a working
+  model to appear, so their fixtures are built from the CLIs' strings, and the Codex approval has no footer
+  check: its footer is assembled from fragments in the binary.
+- Each waiting episode is logged once with its fix, recorded as `job.waiting` (which `air status` shows on the
+  serving machine) and put in the tmux status bar. An episode ends when its prompt leaves the screen, or for
+  `idle` when the screen changes; a restart keeps it until then. A prompt, never `idle`, posts an issue
+  comment: once per episode, at most 3 per job (`waitingComments`), so one false match can't silence the
+  real prompts after it. None of this stops the job: the timeout and cut-off rules do.

@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseConfig, type Config } from '../config.ts';
+import { configFile as subscriptionsFile, loadConfig as loadSubscriptions } from '../usage/index.ts';
+import { serveContext } from './context.ts';
 import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, unattendedMode, type Login, type PreflightDeps } from './preflight.ts';
 
 const dirs: string[] = [];
@@ -80,11 +82,11 @@ test('launch args without an unattended mode are refused, with the exact args th
   assert.match(checks[0]!.problems[0]!.what, /^\[agents.claude\] launches claude without an unattended mode \(args = \["--permission-mode", "acceptEdits"\]\)/);
 });
 
-test('unattended modes: auto and bypass for Claude Code, never and bypass for Codex', () => {
+test('unattended modes: auto and bypassPermissions for Claude Code, never and bypass for Codex', () => {
   const a = (args: string[], command = ['x']) => ({ command, args });
   assert.equal(unattendedMode('claude', a(['--permission-mode', 'auto'])), 'auto');
   assert.equal(unattendedMode('claude', a(['--permission-mode=bypassPermissions'])), 'bypass');
-  assert.equal(unattendedMode('claude', a(['--dangerously-skip-permissions'])), 'bypass');
+  assert.equal(unattendedMode('claude', a(['--dangerously-skip-permissions'])), undefined);
   assert.equal(unattendedMode('claude', a(['--permission-mode', 'auto', '--permission-mode', 'plan'])), undefined);
   assert.equal(unattendedMode('claude', a([], ['claude', '--permission-mode', 'auto'])), 'auto');
   assert.equal(unattendedMode('codex', a(['-a', 'never'])), 'never');
@@ -164,4 +166,27 @@ test('loginsOf: claude and codex logins with their dirs, manual ones by their de
     { name: 'pro', harness: 'codex', codexHome: '/x' },
     { name: 'pool', harness: 'codex' },
   ]);
+});
+
+test('a manual login is checked against the config dir its agent runs with', () => {
+  const dir = tmp();
+  writeFileSync(join(dir, 'subscriptions.json'), JSON.stringify([
+    { name: 'pool', harness: 'manual', configDir: '/elsewhere/claude', reset: { every: 'weekly', day: 0 }, budget: { percent: 100 } },
+  ]));
+  const config = parseConfig('[subscriptions.pool]\nharness = "claude"\n', '/home/u');
+  const saved = { config: process.env.AIR_CONFIG_DIR, state: process.env.AIR_STATE_DIR };
+  process.env.AIR_CONFIG_DIR = dir;
+  process.env.AIR_STATE_DIR = join(dir, 'state');
+  try {
+    const ctx = serveContext(config, 'o/requests');
+    const [login] = loginsOf(loadSubscriptions(subscriptionsFile()), config);
+    // serve starts this login's agent without CLAUDE_CONFIG_DIR, so the preflight checks the default state.
+    assert.deepEqual(ctx.agentEnv('pool'), {});
+    assert.deepEqual(login, { name: 'pool', harness: 'claude' });
+  } finally {
+    for (const [k, v] of [['AIR_CONFIG_DIR', saved.config], ['AIR_STATE_DIR', saved.state]] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 });

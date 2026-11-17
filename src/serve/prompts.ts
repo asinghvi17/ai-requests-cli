@@ -1,6 +1,7 @@
 // Is a running agent waiting on a person? Each `air serve` tick reads the visible screen of the job's pane
-// (`tmux capture-pane -p`) and matches its last lines against the prompts below; a screen that has not
-// changed for STUCK_MS counts as a possible prompt too. The patterns are the CLIs' own prompt text: each
+// (`tmux capture-pane -p`) and matches its bottom against the prompts below. A prompt counts once it has
+// stayed there for SETTLE_MS, so output that merely mentions one scrolls on and never does. A screen that
+// has not changed for STUCK_MS counts as a possible prompt too. The patterns are the CLIs' own prompt text: each
 // entry says where it came from. "captured" ones are in src/serve/fixtures/panes/, taken from the CLI
 // running in tmux with a fresh config dir; "binary" ones are strings in the CLI's executable whose screen
 // could not be produced without a working login.
@@ -11,8 +12,10 @@ export interface PromptPattern {
   id: string;
   /** What the agent is waiting for, for the log, `air status` and the issue comment. */
   what: string;
-  /** Every one must match the screen's last lines. */
+  /** Every one must match the screen's last PROMPT_LINES lines. */
   match: RegExp[];
+  /** The prompt's footer, which must be in the last FOOTER_LINES lines: where the CLI draws it (captured ones only). */
+  footer?: RegExp;
   /** How to stop it happening again, or `attach` when only answering it helps. */
   fix: 'attach' | ((c: FixContext) => string);
   source: string;
@@ -32,10 +35,16 @@ export interface Waiting {
   fix: string;
 }
 
-/** A screen unchanged this long is taken for an agent waiting at a prompt. */
-export const STUCK_MS = 5 * 60_000;
+/** A screen unchanged this long is taken for an agent waiting at a prompt (long enough for a quiet build). */
+export const STUCK_MS = 15 * 60_000;
+/** A prompt counts once it has stayed at the bottom of the screen this long. */
+export const SETTLE_MS = 60_000;
+/** Issue comments one job may post about waiting on the volunteer: one per waiting episode, up to this. */
+export const MAX_WAITING_COMMENTS = 3;
 /** How many of the screen's last non-blank lines the patterns look at: prompts sit at the bottom. */
-export const PROMPT_LINES = 30;
+export const PROMPT_LINES = 20;
+/** How many of the screen's last non-blank lines a footer must be in. */
+export const FOOTER_LINES = 3;
 
 const CLAUDE = 'Claude Code 2.1.311';
 const CODEX = 'Codex CLI 0.164.0';
@@ -46,7 +55,7 @@ const onboarding = (c: FixContext) =>
 export const PROMPTS: PromptPattern[] = [
   {
     harness: 'claude', id: 'claude-onboarding', what: 'Claude Code first-run onboarding (theme picker)',
-    match: [/Choose the text style that looks best with your terminal/],
+    match: [/Choose the text style that looks best with your terminal/], footer: /Syntax theme:/,
     fix: onboarding, source: `${CLAUDE}, captured: claude-onboarding.txt (empty CLAUDE_CONFIG_DIR)`,
   },
   {
@@ -56,13 +65,13 @@ export const PROMPTS: PromptPattern[] = [
   },
   {
     harness: 'claude', id: 'claude-trust', what: 'Claude Code folder trust ("Quick safety check")',
-    match: [/Is this a project you created or one you trust\?/i, /Yes, I trust this folder/],
+    match: [/Is this a project you created or one you trust\?/i, /Yes, I trust this folder/], footer: /Esc to cancel/,
     fix: (c) => `run \`mkdir -p ${c.workspaceRoot} && cd ${c.workspaceRoot} && claude\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
     source: `${CLAUDE}, captured: claude-trust.txt (onboarded config, untrusted folder)`,
   },
   {
     harness: 'claude', id: 'claude-bypass-confirm', what: 'Claude Code Bypass Permissions warning',
-    match: [/WARNING: Claude Code running in Bypass Permissions mode/, /Yes, I accept/],
+    match: [/WARNING: Claude Code running in Bypass Permissions mode/, /Yes, I accept/], footer: /Esc to cancel/,
     fix: (c) => `use auto mode: args = ["--permission-mode", "auto"] under [agents.claude] in ${c.configFile}; or run \`claude --permission-mode bypassPermissions\` once by hand and choose "Yes, I accept"`,
     source: `${CLAUDE}, captured: claude-bypass.txt (--permission-mode bypassPermissions)`,
   },
@@ -74,19 +83,19 @@ export const PROMPTS: PromptPattern[] = [
   {
     // Auto mode asks a person again after repeated classifier denials, or when its check is unavailable.
     harness: 'claude', id: 'claude-permission', what: 'a Claude Code permission prompt',
-    match: [/Do you want to (proceed|make this edit|create|allow|use this|continue)\b/, /Esc to cancel/],
+    match: [/Do you want to (proceed|make this edit|create|allow|use this|continue)\b/], footer: /Esc to cancel/,
     fix: (c) => `attach and answer it; if it recurs, check args under [agents.claude] in ${c.configFile} include "--permission-mode", "auto"`,
-    source: `${CLAUDE}, binary: "Do you want to proceed", "Yes, and don't ask again for", "Esc to cancel"`,
+    source: `${CLAUDE}, binary: "Do you want to proceed", "Yes, and don't ask again for"; footer as in the captured trust and bypass dialogs`,
   },
   {
     harness: 'codex', id: 'codex-login', what: 'Codex sign-in',
-    match: [/Welcome to Codex/, /Sign in with ChatGPT/],
+    match: [/Welcome to Codex/, /Sign in with ChatGPT/], footer: /Press enter to continue/,
     fix: () => 'run `codex login` (with the login\'s CODEX_HOME, if it sets one)',
     source: `${CODEX}, captured: codex-login.txt (empty CODEX_HOME)`,
   },
   {
     harness: 'codex', id: 'codex-trust', what: 'Codex folder trust ("Trust this folder?")',
-    match: [/Trust this folder\?/, /Trust and continue/],
+    match: [/Trust this folder\?/, /Trust and continue/], footer: /enter continue/,
     fix: (c) => `run \`air doctor\`: it names the repo to trust in Codex's config.toml (workspace_root ${c.workspaceRoot} is inside a git repo)`,
     source: `${CODEX}, captured: codex-trust.txt (a git repo, with and without -a never -s workspace-write)`,
   },
@@ -98,15 +107,16 @@ export const PROMPTS: PromptPattern[] = [
   },
 ];
 
-/** The screen's last PROMPT_LINES non-blank lines as one line, whitespace collapsed: a narrow pane wraps prompts. */
-function bottom(screen: string): string {
-  return screen.split('\n').filter((l) => l.trim() !== '').slice(-PROMPT_LINES).join(' ').replace(/\s+/g, ' ');
+/** The screen's last `n` non-blank lines as one line, whitespace collapsed: a narrow pane wraps prompts. */
+function bottom(screen: string, n: number): string {
+  return screen.split('\n').filter((l) => l.trim() !== '').slice(-n).join(' ').replace(/\s+/g, ' ');
 }
 
-/** The known prompt `screen` ends on, for `harness`. */
+/** The known prompt `screen` ends on, for `harness`: its text near the bottom, and its footer at the very bottom. */
 export function matchPrompt(harness: Harness, screen: string): PromptPattern | undefined {
-  const text = bottom(screen);
-  return PROMPTS.find((p) => p.harness === harness && p.match.every((re) => re.test(text)));
+  const text = bottom(screen, PROMPT_LINES);
+  const foot = bottom(screen, FOOTER_LINES);
+  return PROMPTS.find((p) => p.harness === harness && p.match.every((re) => re.test(text)) && (!p.footer || p.footer.test(foot)));
 }
 
 /**

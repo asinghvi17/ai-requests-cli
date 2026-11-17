@@ -83,11 +83,11 @@ export interface JobRecord {
   failure?: { step: string; detail: string };
   /**
    * The running agent seems to wait on a person (a prompt on its screen, or a screen that stopped changing):
-   * what for, the fix, and since when. Cleared when its screen moves on.
+   * what for, the fix, since when, and whether the issue was told. Cleared when its screen moves on.
    */
-  waiting?: { prompt: string; what: string; fix: string; since: string };
-  /** The one issue comment saying the job waits on the volunteer was posted. */
-  waitingNotified?: boolean;
+  waiting?: { prompt: string; what: string; fix: string; since: string; notified?: boolean };
+  /** Issue comments posted so far about waiting on the volunteer (at most MAX_WAITING_COMMENTS). */
+  waitingComments?: number;
 }
 
 /** A `repos` entry (by `path`) and the commit its `ref` or `pr` resolved to when the claim was made (spec §5). */

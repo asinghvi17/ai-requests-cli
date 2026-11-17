@@ -25,6 +25,8 @@ test('each captured prompt matches its pattern, and only for its own harness', (
 
 test('a working agent is no prompt; nor is prompt text that scrolled far up', () => {
   assert.equal(matchPrompt('claude', pane('claude-auto-working')), undefined);
+  // An idle agent whose output quotes prompts: the text is near the bottom, but no prompt footer is.
+  assert.equal(matchPrompt('claude', pane('claude-output-mentions-prompt')), undefined);
   const scrolled = `${pane('claude-trust')}${'output line\n'.repeat(40)}`;
   assert.equal(matchPrompt('claude', scrolled), undefined);
 });
@@ -43,7 +45,7 @@ test('fixes: config prompts name the setting or command; others say how to attac
   assert.match(perm.fix, /^attach with `air attach 12` and answer it; if it recurs/);
   const approval = waitingFor(matchPrompt('codex', pane('codex-approval'))!, fix);
   assert.match(approval.fix, /^attach with `air attach 12` and answer it; to stop it recurring, set args = \["--ask-for-approval", "never"/);
-  assert.deepEqual(waitingFor('idle', fix), { prompt: 'idle', what: 'no screen change for 5 min: it may be waiting at a prompt', fix: 'attach with `air attach 12` and answer it' });
+  assert.deepEqual(waitingFor('idle', fix), { prompt: 'idle', what: 'no screen change for 15 min: it may be waiting at a prompt', fix: 'attach with `air attach 12` and answer it' });
 });
 
 test('every pattern records where its text came from', () => {

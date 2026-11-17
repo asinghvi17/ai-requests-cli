@@ -50,10 +50,11 @@ git repo, that Codex trusts that repo. Most first runs need one thing done by ha
 `workspace_root` and answer "Yes, I trust this folder". `air serve` runs the same check at startup and takes no
 new work for an agent that fails it. Other agents keep working.
 
-While a job runs, `air serve` reads its tmux pane on every tick. If the agent stops at a prompt (a permission
-request, folder trust, onboarding, a Codex approval) or its screen hasn't changed for 5 minutes, the server
-log names the job, the prompt and the fix. The tmux status bar shows it too, and so does `air status ISSUE` on your machine.
-The issue gets one comment saying the job is waiting on the volunteer. The job keeps running, and the
+While a job runs, `air serve` reads its tmux pane on every tick. If the agent has sat at a prompt (a
+permission request, folder trust, onboarding, a Codex approval) for a minute, or its screen hasn't changed for
+15 minutes, the server log names the job, the prompt and the fix. The tmux status bar shows it too, and so
+does `air status ISSUE` on your machine. A prompt, not a quiet screen, also gets a comment on the issue
+saying the job is waiting on the volunteer: one per prompt, at most 3 per job. The job keeps running, and the
 request's `timeout` still applies.
 
 ## Reference

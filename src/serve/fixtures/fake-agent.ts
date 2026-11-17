@@ -14,6 +14,8 @@
 //   progress       write out/PROGRESS.md, then never finish
 //   prompt NAME    show the captured prompt screen fixtures/panes/NAME.txt until the file `go` exists, then
 //                  clear the screen, report "answered" and create AIR_DONE
+//   screen NAME    never finish; show fixtures/panes/NAME.txt while the file `screen` is missing or says
+//                  `prompt`, and "working <n>" (n counting up) otherwise
 // A start with --resume (or `resume`) exits 3 at once if the file `resume-fails` exists.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -75,6 +77,17 @@ else if (mode === 'prompt') {
     report('answered');
     done();
     idle();
+  }, 50);
+}
+else if (mode === 'screen') {
+  const prompt = readFileSync(new URL(`panes/${arg}.txt`, import.meta.url), 'utf8');
+  let shown = '';
+  let n = 0;
+  setInterval(() => {
+    const want = existsSync(join(ws, 'screen')) ? readFileSync(join(ws, 'screen'), 'utf8').trim() : 'prompt';
+    const text = want === 'prompt' ? prompt : `working ${++n}\n`;
+    if (text !== shown) process.stdout.write(`\x1b[2J\x1b[H${text}`);
+    shown = text;
   }, 50);
 }
 else if (mode === 'wait') {

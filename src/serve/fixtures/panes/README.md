@@ -12,6 +12,7 @@ Captured from the installed CLIs, each run in a 120x40 tmux window with a fresh,
 | `codex-login.txt` | Codex CLI 0.164.0 | empty `CODEX_HOME` |
 | `codex-trust.txt` | Codex CLI 0.164.0 | API-key login, a git repo, `-a never -s workspace-write` |
 
-Composed, because producing them needs a working model login: `claude-permission.txt` and
+Composed: `claude-output-mentions-prompt.txt`, an idle Claude Code screen whose output quotes prompt text
+(it must match nothing), and, because producing them needs a working model login, `claude-permission.txt` and
 `codex-approval.txt`, laid out like the real prompts from the strings in each CLI's binary ("Do you want to
 proceed?", "Yes, and don't ask again for", "Esc to cancel"; "Would you like to run the following command?").

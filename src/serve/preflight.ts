@@ -124,7 +124,6 @@ function flagValue(args: string[], names: string[]): string | undefined {
 export function unattendedMode(harness: Harness, agent: Agent): 'auto' | 'bypass' | 'never' | undefined {
   const args = [...agent.command.slice(1), ...agent.args];
   if (harness === 'claude') {
-    if (args.includes('--dangerously-skip-permissions')) return 'bypass';
     const mode = flagValue(args, ['--permission-mode']);
     return mode === 'auto' ? 'auto' : mode === 'bypassPermissions' ? 'bypass' : undefined;
   }

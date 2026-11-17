@@ -30,7 +30,7 @@ import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';
 import { fakeGh, type FakeGh } from './fake-gh.ts';
 import { serveGitHub } from './github.ts';
 import { PAUSE_LIMIT_MS } from './jobs.ts';
-import { STUCK_MS } from './prompts.ts';
+import { MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS } from './prompts.ts';
 import { CLAIM_RETRY_MS, createServer, type Server } from './server.ts';
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0;
@@ -659,6 +659,9 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const w = world();
     w.store.addIssue({ number: 40, body: body('prompt claude-trust') });
     await running(w, 40);
+    await sleep(300);
+    await w.server.tick();
+    w.clock.offset = SETTLE_MS + 1000;
     await until(w, 'waiting', () => job(w, 40)!.state.job!.waiting?.prompt === 'claude-trust');
     const waiting = job(w, 40)!.state.job!.waiting!;
     assert.equal(waiting.what, 'Claude Code folder trust ("Quick safety check")');
@@ -684,17 +687,117 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(bar(), '');
   });
 
-  test('an agent whose screen stops changing for STUCK_MS may be at a prompt: reported as idle', async () => {
+  test('an agent whose screen stops changing for 15 min may be at a prompt: idle is local only, never posted', async () => {
     const w = world();
     w.store.addIssue({ number: 41, body: body('hang', ['deliver: comment', 'timeout: 1h']) });
     await running(w, 41);
     await w.server.tick();
     assert.equal(job(w, 41)!.state.job!.waiting, undefined);
+    // A quiet build or download: 6 minutes without output is not yet idle.
+    w.clock.offset = 6 * 60_000;
+    await w.server.tick();
+    assert.equal(job(w, 41)!.state.job!.waiting, undefined);
     w.clock.offset = STUCK_MS + 60_000;
     await until(w, 'idle', () => job(w, 41)!.state.job!.waiting?.prompt === 'idle');
     assert.match(job(w, 41)!.state.job!.waiting!.fix, /^attach with `air attach 41` \(`tmux -L \S+ attach -t @\d+`\) and answer it$/);
-    assert.equal(comments(w, 41).filter((c) => /may be waiting at a prompt/.test(c)).length, 1);
+    assert.ok(w.logs.some((l) => l.startsWith('#41: claude is waiting on you: no screen change for 15 min')));
+    assert.match((await statusViaCli(w, 41)).out, /waiting: the claude agent here waits on you since \S+: no screen change for 15 min/);
+    assert.equal(comments(w, 41).filter((c) => /waiting on the volunteer/.test(c)).length, 0);
     assert.equal(status(w, 41), 'running');
+  });
+
+  test('output that mentions a prompt is not a prompt: no waiting, no comment', async () => {
+    const w = world();
+    w.store.addIssue({ number: 42, body: body('screen claude-output-mentions-prompt', ['deliver: comment', 'timeout: 2h']) });
+    await running(w, 42);
+    await sleep(300);
+    for (const offset of [0, SETTLE_MS + 1000, 2 * SETTLE_MS]) {
+      w.clock.offset = offset;
+      await w.server.tick();
+      await w.server.idle();
+    }
+    assert.equal(job(w, 42)!.state.job!.waiting, undefined);
+    assert.equal(comments(w, 42).filter((c) => /waiting on the volunteer/.test(c)).length, 0);
+  });
+
+  test('a prompt counts only once it has stayed on screen for 60 s', async () => {
+    const w = world();
+    w.store.addIssue({ number: 43, body: body('screen claude-trust', ['deliver: comment', 'timeout: 2h']) });
+    await running(w, 43);
+    await sleep(300);
+    await w.server.tick();
+    assert.equal(job(w, 43)!.state.job!.waiting, undefined);
+    w.clock.offset = SETTLE_MS + 1000;
+    await w.server.tick();
+    assert.equal(job(w, 43)!.state.job!.waiting?.prompt, 'claude-trust');
+  });
+
+  test('each waiting episode posts once, up to 3 comments per job', async () => {
+    const w = world();
+    w.store.addIssue({ number: 44, body: body('screen claude-trust', ['deliver: comment', 'timeout: 2h']) });
+    await running(w, 44);
+    const dir = job(w, 44)!.dir;
+    const told = () => comments(w, 44).filter((c) => /waiting on the volunteer/.test(c)).length;
+    let offset = 0;
+    const tickAfter = async (ms: number) => {
+      w.clock.offset = offset += ms;
+      await w.server.tick();
+      await w.server.idle();
+    };
+    const show = async (what: 'prompt' | 'work') => {
+      writeFileSync(join(dir, 'screen'), what);
+      await sleep(300);
+    };
+    await sleep(300);
+    for (let episode = 1; episode <= 4; episode++) {
+      await tickAfter(0);
+      await tickAfter(SETTLE_MS + 1000);
+      await tickAfter(10_000);
+      assert.equal(job(w, 44)!.state.job!.waiting?.prompt, 'claude-trust', `episode ${episode}`);
+      assert.equal(told(), Math.min(episode, MAX_WAITING_COMMENTS), `episode ${episode}`);
+      await show('work');
+      await tickAfter(1000);
+      assert.equal(job(w, 44)!.state.job!.waiting, undefined, `episode ${episode} moved on`);
+      await show('prompt');
+    }
+    assert.equal(status(w, 44), 'running');
+  });
+
+  test('after a restart, an idle job stays waiting until its screen changes', async () => {
+    const w = world();
+    w.store.addIssue({ number: 45, body: body('screen claude-auto-working', ['deliver: comment', 'timeout: 2h']) });
+    await running(w, 45);
+    await sleep(300);
+    await w.server.tick();
+    w.clock.offset = STUCK_MS + 60_000;
+    await w.server.tick();
+    assert.equal(job(w, 45)!.state.job!.waiting?.prompt, 'idle');
+    const again = createServer(w.ctx);
+    for (let i = 0; i < 3; i++) {
+      await again.tick();
+      await again.idle();
+      assert.equal(job(w, 45)!.state.job!.waiting?.prompt, 'idle', `tick ${i + 1} after the restart`);
+    }
+    writeFileSync(join(job(w, 45)!.dir, 'screen'), 'work');
+    await sleep(300);
+    await again.tick();
+    assert.equal(job(w, 45)!.state.job!.waiting, undefined);
+  });
+
+  test('a config without [agents.claude] starts Claude Code with the default unattended args', async () => {
+    const bin = tmp('air-fake-bin-');
+    writeFileSync(join(bin, 'claude'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_AGENT)} "$@"\n`, { mode: 0o755 });
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    try {
+      const w = world();
+      w.ctx.config.agents = {};
+      w.store.addIssue({ number: 46, body: body('comment hi') });
+      await until(w, 'delivered', () => status(w, 46) === 'done');
+      assert.deepEqual(argvLog(job(w, 46)!.dir)[0]!.slice(-3), ['--permission-mode', 'auto', 'Read AIR_TASK.md in this directory and do the task it describes.']);
+    } finally {
+      process.env.PATH = path;
+    }
   });
 
   test('cancel: air:cancel stops the agent, comments and releases', async () => {
