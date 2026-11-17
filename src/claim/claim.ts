@@ -253,8 +253,27 @@ export async function backOff(
 }
 
 /**
- * Posts the final comment (message, release marker, `air-result` block: spec §9 step 4, §10), then fixes
- * labels and the assignment. A `failed` or `partial` result gets its label (`air:failed`, `air:partial`).
+ * The one way a server ends its part in an issue (spec §8): the final comment, with its `air-result` block,
+ * first; then the labels: `final` (if any) added before the held labels in `labels` are removed, so the issue
+ * never looks claimable in between; then the assignment. A reader that sees the new labels thus sees the
+ * result too. `comment` is undefined when an earlier attempt already posted it; `posted` records that it is up.
+ */
+export async function postResult(
+  gh: RequestsRepo, n: number, viewer: string,
+  opts: { comment: string | undefined; posted?: () => void; labels: readonly string[]; final?: string },
+): Promise<void> {
+  if (opts.comment !== undefined) {
+    await gh.comment(n, opts.comment);
+    opts.posted?.();
+  }
+  if (opts.final && !opts.labels.includes(opts.final)) await gh.addLabels(n, [opts.final]);
+  for (const l of HELD_LABELS) if (l !== opts.final && opts.labels.includes(l)) await gh.removeLabel(n, l);
+  await gh.unassign(n, viewer);
+}
+
+/**
+ * Gives the issue up (`postResult`): a final comment with the message, a release marker and the `air-result`
+ * block (spec §9 step 4, §10). A `failed` or `partial` result gets its label (`air:failed`, `air:partial`).
  */
 async function giveUp(
   gh: RequestsRepo, n: number, viewer: string, host: string, nonce: string,
@@ -262,11 +281,8 @@ async function giveUp(
 ): Promise<void> {
   const labels = opts.labels ?? (await gh.issue(n)).labels;
   const final = opts.result.status === 'failed' || opts.result.status === 'partial' ? `air:${opts.result.status}` : undefined;
-  // Add the final label before removing the held one, so the issue never looks claimable in between.
-  if (final) await gh.addLabels(n, [final]);
-  for (const l of HELD_LABELS) if (labels.includes(l)) await gh.removeLabel(n, l);
-  await gh.comment(n, `${opts.message}\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n${formatResult(opts.result)}\n`);
-  await gh.unassign(n, viewer);
+  const comment = `${opts.message}\n\n${formatMarker({ kind: 'release', version: SPEC_VERSION, host, nonce })}\n${formatResult(opts.result)}\n`;
+  await postResult(gh, n, viewer, { comment, labels, ...(final ? { final } : {}) });
 }
 
 /** The `deliver` of a request body, if it lints. */
@@ -299,8 +315,8 @@ export interface ReleaseOptions {
 export type ReleaseResult = { status: 'released'; nonce: string } | { status: 'refused'; message: string };
 
 /**
- * Gives a claim back (§9 step 4): posts an `air-release` marker for this host's holding claim, removes the
- * held state label (adding `air:failed` for a failure), unassigns, and marks the local workspace.
+ * Gives a claim back (§9 step 4): posts an `air-release` marker for this host's holding claim, then removes
+ * the held state label (adding `air:failed` for a failure), unassigns, and marks the local workspace.
  */
 export async function release(opts: ReleaseOptions): Promise<ReleaseResult> {
   const { gh, issue: n } = opts;

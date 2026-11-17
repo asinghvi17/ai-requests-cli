@@ -83,15 +83,18 @@ test('waitForResult polls until a current result, retrying transient errors', as
   let polls = 0;
   let state = 'air:running';
   const issue = gh.issue.bind(gh);
-  gh.issue = async (n) => ({ ...(await issue(n)), labels: ['ai-request', state] });
+  gh.issue = async (n) => {
+    // The server finishes between the second poll and the third.
+    if (polls === 2 && state === 'air:running') {
+      gh.post(1, 'srv', 'OWNER', `Report.\n\n${formatResult(result({ status: 'partial' }))}\n`);
+      state = 'air:partial';
+    }
+    return { ...(await issue(n)), labels: ['ai-request', state] };
+  };
   const real = gh.comments.bind(gh);
   gh.comments = async (n) => {
     polls++;
     if (polls === 2) throw new GhError('server', 'Bad Gateway (HTTP 502)', 502);
-    if (polls === 3) {
-      gh.post(1, 'srv', 'OWNER', `Report.\n\n${formatResult(result({ status: 'partial' }))}\n`);
-      state = 'air:partial';
-    }
     return real(n);
   };
   const retried: string[] = [];
@@ -104,8 +107,9 @@ test('waitForResult polls until a current result, retrying transient errors', as
   assert.equal(r.status.latest?.result.nonce, NONCE);
 });
 
-test('waitForResult reads the labels after the comments, and once more while the label still says held', async () => {
-  // A server posts the result comment, then moves air:running to air:done (serve/jobs.ts finishJob).
+test('waitForResult reads the labels before the comments, and once more while the label still says held', async () => {
+  // A server posts the result comment, then moves air:running to air:done (claim.ts postResult): a read
+  // between the two sees the result with the held label.
   const gh = requestIssue({ labels: ['air:running'] });
   const order: string[] = [];
   let state = 'air:running';
@@ -116,7 +120,7 @@ test('waitForResult reads the labels after the comments, and once more while the
   gh.post(1, 'srv', 'OWNER', `Report.\n\n${formatResult(result())}\n`);
   const slept: number[] = [];
   const r = await waitForResult(gh, 1, { intervalMs: 1000, sleep: async (ms) => { slept.push(ms); state = 'air:done'; } });
-  assert.deepEqual(order, ['comments', 'issue', 'comments', 'issue']);
+  assert.deepEqual(order, ['issue', 'comments', 'issue', 'comments']);
   assert.deepEqual(slept, [SETTLE_MS]);
   assert.equal(r.timedOut, false);
   assert.match(formatStatus(r.status), /^state: {2}air:done\b.*\nresult: done /m);

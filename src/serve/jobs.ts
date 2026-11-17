@@ -7,7 +7,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { HELD_LABELS, release } from '../claim/claim.ts';
+import { HELD_LABELS, postResult, release } from '../claim/claim.ts';
 import { DEFAULT_AGENTS } from '../config.ts';
 import { code, fenced, tail } from '../claim/text.ts';
 import { markedComments } from '../claim/trust.ts';
@@ -347,12 +347,11 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
     const { footer, usage } = await usageReport(ctx, dir, request);
     result = await deliver(ctx, dir, state, request, footer, usage);
     if (result.ok) {
-      if (!state.job!.delivery?.commented) {
-        await ctx.gh.comment(n, result.comment);
-        saveJob(ctx, dir, { delivery: { ...readState(dir).job!.delivery, commented: true } });
-      }
-      await moveLabel(ctx, dir, 'air:done');
-      await ctx.gh.unassign(n, await ctx.gh.viewer());
+      await postResult(ctx.gh, n, await ctx.gh.viewer(), {
+        comment: state.job!.delivery?.commented ? undefined : result.comment,
+        posted: () => saveJob(ctx, dir, { delivery: { ...readState(dir).job!.delivery, commented: true } }),
+        labels: (await ctx.gh.issue(n)).labels, final: 'air:done',
+      });
     }
   } catch (e) {
     if (e instanceof ClaimLost) return;
