@@ -435,6 +435,13 @@ Alternatives considered:
   when serve first added one, so `air:cancel` never existed on a fresh repo. `air cancel N` is the one way
   to cancel: it adds `air:cancel` (creating the label if needed). Like `air retry`, it is for the author or
   an account with write access.
+- GitHub answers a caller without push access with 403 on the collaborator-permission endpoint, and needs
+  triage to label an issue (push to create a label). `permission()` reads a 403 as `none` only for the
+  caller's own role: for another's it says nothing, so it still throws, and trust never takes a server's
+  marker for forged. The repo check asks for the server's own access first, so a server without push never
+  blames the requester. `air cancel` and `air retry` turn a 403 on a label write into a message saying the
+  account may not label issues, since an author passes their role check without triage. The fake follows
+  these rules (its viewer is admin unless a test records a role).
 - The agent's environment drops the variables Claude Code and Codex set for the commands they run
   (`SESSION_MARKERS`, `src/tmux/env.ts`; names read from Claude Code 2.1.311 and Codex 0.164.0). Cause of the
   missing Claude costs: `air serve` was started from a Claude Code session, the agent inherited

@@ -62,7 +62,11 @@ export interface RequestsRepo {
   ensureLabels(labels: readonly LabelSpec[]): Promise<string[]>;
   assign(n: number, login: string): Promise<void>;
   unassign(n: number, login: string): Promise<void>;
-  /** `login`'s role on any repo (`owner/name`) on the same host; `none` when GitHub says it has none. */
+  /**
+   * `login`'s role on any repo (`owner/name`) on the same host; `none` when GitHub says it has none. GitHub
+   * refuses (403) a caller without push access: for the caller's own role that means none too, for anyone
+   * else's it is unknown and throws.
+   */
   permission(repo: string, login: string): Promise<Permission>;
   /** The head of pull request `n` of any repo (`owner/name`) on the same host. */
   pullHead(repo: string, n: number): Promise<PullHead>;
@@ -99,7 +103,7 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
   checkRepo(repo);
   const base = `repos/${repo}`;
   let viewer: string | undefined;
-  return {
+  const self: RequestsRepo = {
     repo,
     async viewer() {
       if (viewer === undefined) {
@@ -170,6 +174,8 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
         r = await gh.api(`repos/${target}/collaborators/${encodeURIComponent(login)}/permission`);
       } catch (e) {
         if (e instanceof GhError && e.kind === 'not_found') return 'none';
+        // The caller lacks push access to `target`: that is its own role, but says nothing of another's.
+        if (e instanceof GhError && e.kind === 'forbidden' && login === (await self.viewer())) return 'none';
         throw e;
       }
       // `permission` folds maintain into write and triage into read; `role_name` keeps them.
@@ -183,4 +189,5 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
       return { ref: p.head.ref, sha: p.head.sha, cloneUrl: p.head.repo.clone_url };
     },
   };
+  return self;
 }

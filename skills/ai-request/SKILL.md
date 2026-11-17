@@ -95,5 +95,7 @@ Offer these for the issue number `N`:
   failed or released, and 4 on timeout.
 - `air fetch N [DIR]`: downloads the report, the PR branches, the artifact and any checkpoint into
   `./air-N/`.
+- `air cancel N`: cancels the request. It adds the `air:cancel` label, and the server holding it stops its
+  agent and gives it back.
 
-After a failed or partial result, `air retry N` offers the request again (`--effort` raises the estimate).
+After a cancel, or a failed or partial result, `air retry N` offers the request again (`--effort` raises the estimate).

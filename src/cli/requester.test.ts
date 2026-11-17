@@ -139,6 +139,7 @@ test('air cancel adds air:cancel, creating the label on a fresh repo; author or 
 
   gh = requestIssue();
   gh.issues.get(1)!.author = 'bob';
+  gh.setPermission('o/requests', 'alice', 'read'); // GitHub won't show a reader its role (403): none
   assert.deepEqual(await call('cancel', '1'), { code: 1, out: '', err: "air cancel: only the issue's author (bob) or someone with write access to o/requests can cancel #1; alice has none\n" });
   gh.setPermission('o/requests', 'alice', 'write');
   assert.equal((await call('cancel', '1')).code, 0);
@@ -147,6 +148,35 @@ test('air cancel adds air:cancel, creating the label on a fresh repo; author or 
   assert.deepEqual(await call('cancel', '1'), { code: 1, out: '', err: 'air cancel: #1 is closed, which cancels it already\n' });
   gh.issues.get(1)!.labels = [];
   assert.match((await call('cancel', '1')).err, /not a request/);
+});
+
+test("air cancel by an author who may not label issues says so, whichever of GitHub's 403s it meets", async () => {
+  const denied = "air cancel: alice lacks permission to label issues in o/requests, so it can't add `air:cancel` to #1; ask someone with write access to o/requests to run it (or to give alice triage or write access)\n";
+  // A reader: GitHub refuses creating the missing label.
+  gh = requestIssue({ labels: ['air:running'] });
+  gh.setPermission('o/requests', 'alice', 'read');
+  assert.deepEqual(await call('cancel', '1'), { code: 1, out: '', err: denied });
+  // The label exists (a server created it): GitHub refuses adding it.
+  gh.labels.add('air:cancel');
+  assert.deepEqual(await call('cancel', '1'), { code: 1, out: '', err: denied });
+  assert.deepEqual(gh.issues.get(1)!.labels, ['ai-request', 'air:running']);
+  // Triage may label an existing label, but not create one.
+  gh = requestIssue({ labels: ['air:running'] });
+  gh.setPermission('o/requests', 'alice', 'triage');
+  assert.deepEqual(await call('cancel', '1'), { code: 1, out: '', err: denied });
+  gh.labels.add('air:cancel');
+  assert.equal((await call('cancel', '1')).code, 0);
+  assert.deepEqual(gh.issues.get(1)!.labels, ['ai-request', 'air:running', 'air:cancel']);
+});
+
+test("air retry by an author who may not remove labels says so, and that the body is already edited", async () => {
+  gh = requestIssue({ labels: ['air:failed'], claimed: false });
+  gh.setPermission('o/requests', 'alice', 'read');
+  final({ status: 'failed' });
+  const r = await call('retry', '--effort', 'L', '1');
+  assert.deepEqual(r, { code: 1, out: '', err: "air retry: alice lacks permission to label issues in o/requests, so it can't remove the `air:*` labels from #1; ask someone with write access to o/requests to run it (or to give alice triage or write access). The body is already edited, so their `air retry 1` only removes the labels\n" });
+  assert.equal(lint(gh.issues.get(1)!.body).request?.effort, 'L', 'an author may edit their own body');
+  assert.deepEqual(gh.issues.get(1)!.labels, ['ai-request', 'air:failed'], 'the labels keep servers off');
 });
 
 test('air fetch: hostile repo paths never leave DIR', async () => {

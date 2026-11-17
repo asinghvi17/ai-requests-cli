@@ -3,7 +3,9 @@
 // every `air:*` label, so no server can claim the old body.
 import { WRITE_ROLES, createTrust, type Trust } from '../claim/trust.ts';
 import { REQUEST_LABEL } from '../claim/claim.ts';
+import { GhError } from '../gh/gh.ts';
 import type { RequestsRepo } from '../gh/issues.ts';
+import { labelDenied } from './cancel.ts';
 import { splitLines, type Effort, type Resume } from '../spec/frontmatter.ts';
 import { lint } from '../spec/lint.ts';
 import { formatResume } from '../spec/markers.ts';
@@ -87,6 +89,16 @@ export async function retry(opts: RetryOptions): Promise<Retried> {
   if (edited) await gh.editBody(n, body);
 
   const removed = (await gh.issue(n)).labels.filter((l) => l.startsWith('air:'));
-  for (const l of removed) await gh.removeLabel(n, l);
+  try {
+    for (const l of removed) await gh.removeLabel(n, l);
+  } catch (e) {
+    // An author may edit their own body without triage access, but not remove labels: the labels left keep
+    // servers off, and anyone who may label can finish the retry.
+    if (e instanceof GhError && e.kind === 'forbidden') {
+      const done = edited ? `. The body is already edited, so their \`air retry ${n}\` only removes the labels` : '';
+      throw new RetryError(`${labelDenied(gh.repo, viewer, `remove the \`air:*\` labels from #${n}`)}${done}`);
+    }
+    throw e;
+  }
   return { resumed: resume !== undefined, edited, removed };
 }

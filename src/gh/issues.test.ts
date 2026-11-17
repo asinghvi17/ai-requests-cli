@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createGh, type RunResult } from './gh.ts';
+import { createGh, GhError, type RunResult } from './gh.ts';
 import { requestsRepo } from './issues.ts';
 
 /** A gh runner answering by path; records argv and stdin. */
@@ -42,13 +42,18 @@ test('writes go to the right endpoints', async () => {
   ]);
 });
 
-test('removing an absent label is fine; permission reads role_name, 404 is none', async () => {
+test("removing an absent label is fine; permission reads role_name, 404 is none, 403 is none only for one's own role", async () => {
   const notFound = { code: 1, stderr: 'gh: Not Found (HTTP 404)' };
   const { repo } = fake({
     'repos/o/r/issues/5/labels/x': notFound,
     'repos/o/r/collaborators/m/permission': { stdout: '{"permission":"write","role_name":"maintain"}' },
     'repos/o/r/collaborators/w/permission': { stdout: '{"permission":"write","role_name":"custom-role"}' },
     'repos/o/r/collaborators/n/permission': notFound,
+    // What GitHub answers a caller without push access.
+    'repos/o/r/collaborators/r/permission': { code: 1, stdout: '{"message":"Must have push access to view repository collaborator permission."}', stderr: 'gh: Must have push access to view repository collaborator permission. (HTTP 403)' },
+    'repos/o/r/collaborators/x/permission': { code: 1, stdout: '{"message":"Must have push access to view repository collaborator permission."}', stderr: 'gh: Must have push access to view repository collaborator permission. (HTTP 403)' },
+    user: { stdout: '{"login":"r"}' },
+    'repos/o/r/collaborators/l/permission': { code: 1, stdout: '{"message":"API rate limit exceeded"}', stderr: 'gh: API rate limit exceeded (HTTP 403)' },
     'repos/o/r/collaborators/dependabot%5Bbot%5D/permission': { stdout: '{"permission":"write","role_name":"write"}' },
   });
   await repo.removeLabel(5, 'x');
@@ -56,6 +61,10 @@ test('removing an absent label is fine; permission reads role_name, 404 is none'
   assert.equal(await repo.permission('o/r', 'm'), 'maintain');
   assert.equal(await repo.permission('o/r', 'w'), 'write');
   assert.equal(await repo.permission('o/r', 'n'), 'none');
+  // 'r' is the caller: GitHub's 403 is its own lack of push access. For anyone else the role is unknown.
+  assert.equal(await repo.permission('o/r', 'r'), 'none');
+  await assert.rejects(repo.permission('o/r', 'x'), (e: unknown) => e instanceof GhError && e.kind === 'forbidden');
+  await assert.rejects(repo.permission('o/r', 'l'), /rate limit/);
   await assert.rejects(repo.permission('../x', 'm'), /bad repo/);
   await assert.rejects(repo.permission('o/r', '../m'), /bad GitHub login/);
   assert.throws(() => requestsRepo('o/r/x'), /bad repo/);
