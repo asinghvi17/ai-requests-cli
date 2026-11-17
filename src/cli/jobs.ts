@@ -3,7 +3,9 @@
 // whether or not a server is running.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createInterface } from 'node:readline/promises';
 import { configPath, loadConfig, type Config } from '../config.ts';
 import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
@@ -11,6 +13,7 @@ import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent } from '../serv
 import { acquireServeLock, readServerState, updateServerState } from '../serve/state.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../usage/index.ts';
 import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, type AgentCheck } from '../serve/preflight.ts';
+import { writeClaudeTrust } from '../serve/trust.ts';
 import { clientEnv } from '../tmux/env.ts';
 import { socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
@@ -24,6 +27,14 @@ export const jobDeps = {
   attach: (argv: string[]): number => spawnSync(argv[0]!, argv.slice(1), { stdio: 'inherit' }).status ?? 1,
   stateDir: (): string => usageStateDir(),
   preflight: (config: Config): AgentCheck[] => preflight(config, loginsOf(loadSubscriptions(subscriptionsFile()), config), defaultPreflightDeps(configPath())),
+  writeClaudeTrust: (stateFile: string, dir: string): string => writeClaudeTrust(stateFile, dir),
+  home: (): string => homedir(),
+  isTTY: (): boolean => Boolean(process.stdin.isTTY),
+  /** Opens a prompt session on the terminal; prompts go to stderr so stdout stays clean. */
+  prompter: (): { ask: (question: string) => Promise<string>; close: () => void } => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
+    return { ask: (q) => rl.question(q), close: () => rl.close() };
+  },
 };
 
 function contextFor(inv: Invocation): ServeContext {
@@ -96,11 +107,58 @@ async function tmuxUsable(ctx: ServeContext, inv: Invocation): Promise<boolean> 
   }
 }
 
-/** `air doctor`: can each configured agent run unattended? Exit 1 if any can't. */
-export function doctorCommand(inv: Invocation): number {
-  const checks = jobDeps.preflight(jobDeps.loadConfig());
+/**
+ * `air doctor [--fix]`: can each configured agent run unattended? Exit 1 if any can't. Read-only, except that
+ * `--fix` asks, for each missing folder trust, whether to write it, and then checks again.
+ */
+export async function doctorCommand(inv: Invocation): Promise<number> {
+  const config = jobDeps.loadConfig();
+  let checks = jobDeps.preflight(config);
   inv.io.out(formatPreflight(checks));
+  if (inv.flags.fix === true && (await fixTrust(inv, checks))) {
+    checks = jobDeps.preflight(config);
+    inv.io.out(`\n${formatPreflight(checks)}`);
+  }
   return Object.keys(refusals(checks)).length ? 1 : 0;
+}
+
+/** Asks before writing each folder trust `checks` found missing; true if it wrote any. */
+async function fixTrust(inv: Invocation, checks: AgentCheck[]): Promise<boolean> {
+  // One question per state file and folder, naming the logins that share it when there are several.
+  const fixes = new Map<string, { stateFile: string; dir: string; logins: string[] }>();
+  let many = false;
+  for (const c of checks) {
+    many ||= Object.keys(c.logins).length > 1;
+    for (const [login, problems] of Object.entries(c.logins)) {
+      for (const { trust } of problems) {
+        if (!trust) continue;
+        const key = `${trust.stateFile}\0${trust.dir}`;
+        if (!fixes.has(key)) fixes.set(key, { ...trust, logins: [] });
+        fixes.get(key)!.logins.push(login);
+      }
+    }
+  }
+  if (!fixes.size) {
+    if (Object.keys(refusals(checks)).length) inv.io.out('--fix: no folder trust is missing; the problems above need the fixes they name\n');
+    return false;
+  }
+  if (!jobDeps.isTTY()) throw new CommandError('--fix asks before each change: run it in a terminal');
+  const home = jobDeps.home();
+  const tilde = (p: string) => (home && (p === home || p.startsWith(`${home}/`)) ? `~${p.slice(home.length)}` : p);
+  const p = jobDeps.prompter();
+  let wrote = false;
+  try {
+    for (const f of fixes.values()) {
+      const answer = await p.ask(`Trust ${tilde(f.dir)} for Claude Code${many ? ` (login${f.logins.length > 1 ? 's' : ''} ${f.logins.join(', ')}, ${tilde(f.stateFile)})` : ''}? [y/N] `);
+      if (!/^y(es)?$/i.test(answer.trim())) continue;
+      const key = jobDeps.writeClaudeTrust(f.stateFile, f.dir);
+      inv.io.out(`wrote projects[${JSON.stringify(key)}].hasTrustDialogAccepted = true in ${f.stateFile}\n`);
+      wrote = true;
+    }
+  } finally {
+    p.close();
+  }
+  return wrote;
 }
 
 export async function runCommand(inv: Invocation): Promise<number> {

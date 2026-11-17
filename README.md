@@ -39,17 +39,19 @@ air fetch 12              # report, PR branches and artifacts into ./air-12/
 
 ```sh
 air config init --repo org/requests   # unless you did above: Claude Code and Codex agents, both unattended
-air doctor                            # check each agent can run unattended; it prints the fix for anything that can't
+air doctor --fix                      # check each agent can run unattended; offers to set up folder trust
 tmux new -s air-serve 'air serve'     # serve; detach with C-b d
 air attach                            # watch: window 0 is the server log, one window per job
 ```
 
 `air doctor` checks that each agent's binary runs, that its launch flags put it in an unattended mode, that
 Claude Code has finished its first-run setup and trusts `workspace_root` (or a folder above it, but not above
-a git repo that `workspace_root` is in). Most first runs need one thing done by hand: start Claude Code in
-`workspace_root` and answer "Yes, I trust this folder". Codex needs nothing: `air serve` tells it to trust each
-job's directory when it starts it. `air serve` runs the same check at startup and takes no new work for an agent
-that fails it. Other agents keep working.
+a git repo that `workspace_root` is in). On a first run that trust is usually missing: `air doctor --fix` asks
+"Trust ~/air for Claude Code? [y/N]" and, on yes, writes that one entry to Claude Code's `.claude.json`, as
+answering "Yes, I trust this folder" in `workspace_root` would. `air config init` offers to run it, and plain
+`air doctor` only reads. Codex needs nothing: `air serve` tells it to trust each job's directory when it starts
+it. `air serve` runs the same check at startup and takes no new work for an agent that fails it. Other agents
+keep working.
 
 While a job runs, `air serve` reads its tmux pane on every tick. If the agent has sat at a prompt (a
 permission request, folder trust, onboarding, a Codex approval) for a minute, or its screen hasn't changed for

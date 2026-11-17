@@ -459,10 +459,22 @@ Claude Code:
   above `workspace_root`'s real path, and not above the git repo `workspace_root` is in, if any. Before, a trusted
   home directory passed even when `workspace_root` sat inside a repo under it, and each job would have prompted.
 - No flag or job-scoped setting makes Claude Code trust a folder. Project trust lives only in the login's
-  `.claude.json`, next to its account state, and air doesn't write it. The one case left is a job dir the agent
+  `.claude.json`, next to its account state, and air writes it only for `workspace_root`, through
+  `air doctor --fix` (below), never per job. The one case left is a job dir the agent
   made a git repo itself, met on a restart or resume. Stuck-prompt detection catches it (`claude-trust`, whose fix
   now says to attach and answer, then run `air doctor`); `codex-trust` stays too, as a backstop for a Codex that
   ignores the override.
+- `air doctor --fix` (asked for after a Mac run where the only fix was answering Claude Code's prompt in
+  `~/air` by hand): for each missing Claude Code trust the check found, it asks "Trust ~/air for Claude Code?
+  [y/N]" (one question per state file, naming the logins when there are several) and, on yes, sets
+  `projects[<workspace_root's real path>].hasTrustDialogAccepted = true` in that login's `.claude.json`
+  (`writeClaudeTrust`, src/serve/trust.ts). It creates `workspace_root` if needed, keeps every other key and
+  the entry's other fields, and changes nothing else (no account or credential field). It writes beside the
+  file's real path, with the same mode, and renames over it, so a symlinked `.claude.json` stays a symlink. It
+  needs a terminal, and checks again after writing. `air config init` offers to run it, and plain `air doctor`
+  stays read-only. There is no Codex counterpart: with the per-launch override the check finds no Codex trust
+  to fix, and a `config.toml` writer would be a second way to do the same thing.
 - `src/serve/trust.e2e.test.ts` runs the installed CLIs through air's tmux layer with `agentArgv`'s argv for
   these cases, including Codex without the override as a control, and checks each first screen with
-  `matchPrompt`. It is skipped for a CLI that isn't installed (as in CI).
+  `matchPrompt`. Its Claude Code workspace_root is trusted by `writeClaudeTrust`, so the test also shows that
+  Claude Code honours the entry `--fix` writes. It is skipped for a CLI that isn't installed (as in CI).

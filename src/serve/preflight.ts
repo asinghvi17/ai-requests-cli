@@ -19,6 +19,8 @@ export interface Problem {
   what: string;
   /** The exact command or setting that fixes it. */
   fix: string;
+  /** Folder trust `air doctor --fix` can write: Claude Code's state file, and the folder to trust in it. */
+  trust?: { stateFile: string; dir: string };
 }
 
 /** One local login an agent can run on: a subscription and the agent config dir it selects. */
@@ -195,7 +197,8 @@ function claudeChecks(login: Login, mode: 'auto' | 'bypass', config: Config, dep
       what: outside
         ? `workspace_root ${root} is inside the git repo ${repo}, and Claude Code does not carry the trust of ${outside} into a git repo below it, so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`
         : `Claude Code does not trust workspace_root ${root} (nor a folder above it), so each job would stop at "Quick safety check: Is this a project you created or one you trust?".`,
-      fix: `run \`${startThere}\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
+      fix: `run \`air doctor --fix\`, or run \`${startThere}\`, answer "Yes, I trust this folder", then /exit (folders below it inherit the trust)`,
+      trust: { stateFile, dir: root },
     });
   }
   if (mode === 'bypass') {

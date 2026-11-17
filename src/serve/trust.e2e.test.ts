@@ -2,7 +2,8 @@
 // in job dirs like the ones setup makes, each with a throwaway config dir and a fake API key. Nothing reaches a
 // model: the agents get no prompt, and the test only reads their first screen. Skipped for a CLI (or tmux) that
 // is not installed. What it pins down (docs/decisions.md, "Folder trust"):
-// - a fresh job dir under a trusted workspace_root, holding a git clone in repo/, never asks to be trusted;
+// - a fresh job dir under a workspace_root trusted by `air doctor --fix`, holding a git clone in repo/, never
+//   asks to be trusted;
 // - Codex asks in a git repo unless told to trust the dir, and `agentArgv` tells it;
 // - Claude Code asks when the job dir is itself a git repo, and stuck-prompt detection sees that screen.
 import { test, describe, after } from 'node:test';
@@ -18,6 +19,7 @@ import { createTmux, socketPath } from '../tmux/tmux.ts';
 import { makeBareRepo } from '../workspace/git-fixture.ts';
 import { agentArgv, type Harness } from './agent.ts';
 import { matchPrompt } from './prompts.ts';
+import { writeClaudeTrust } from './trust.ts';
 
 const has = (cmd: string, arg: string) => spawnSync(cmd, [arg], { stdio: 'ignore' }).status === 0;
 const hasTmux = has('tmux', '-V');
@@ -85,13 +87,13 @@ describe('folder trust, with the installed agents in tmux', { skip: hasTmux ? fa
   mkdirSync(join(base, 'home'), { recursive: true });
 
   test('Claude Code: a job dir inherits workspace_root\'s trust, clone inside or not; a job dir that is a git repo does not', { skip: installed.claude ? false : 'claude not installed', timeout: 180_000 }, async () => {
-    // As `air doctor` requires: onboarded, workspace_root trusted (the API key approved, as a login would be).
+    // Onboarded, the API key approved (as a login would be), and workspace_root trusted by `air doctor --fix`.
     const config = join(base, 'claude-config');
     mkdirSync(config);
     writeFileSync(join(config, '.claude.json'), JSON.stringify({
       hasCompletedOnboarding: true, theme: 'dark', customApiKeyResponses: { approved: [KEY.slice(-20)], rejected: [] },
-      projects: { [root]: { hasTrustDialogAccepted: true } },
     }));
+    writeClaudeTrust(join(config, '.claude.json'), root);
     const agent = hermetic('claude', { CLAUDE_CONFIG_DIR: config, ANTHROPIC_API_KEY: KEY, DISABLE_AUTOUPDATER: '1' });
     const ready = /auto mode on/;
     const fresh = jobDir();
