@@ -277,7 +277,7 @@ test('release: posts a counted release, clears labels and assignment, marks the 
   if (won.status !== 'won') return;
   gh.issues.get(7)!.labels.push('air:running');
   const r = await release({ gh, issue: 7, root: opts.root, host: 'box-a' });
-  assert.deepEqual(r, { status: 'released', nonce: 'aaaaaaaaaaaa' });
+  assert.deepEqual(r, { status: 'released', nonce: 'aaaaaaaaaaaa', result: { status: 'released', deliver: 'comment', prs: [], host: 'box-a', nonce: 'aaaaaaaaaaaa' } });
   const issue = gh.issues.get(7)!;
   assert.deepEqual(issue.labels, ['ai-request']);
   assert.deepEqual(issue.assignees, []);

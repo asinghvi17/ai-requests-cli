@@ -71,9 +71,10 @@ export interface JobRecord {
   /**
    * Delivery (or checkpoint) steps already done, so a retry doesn't repeat them: per repo (by `path`) the
    * branch chosen, the commit pushed there, the PR and whether its siblings were added to its body; the
-   * uploaded asset (artifact, long report or checkpoint `out/` zip); the final comment.
+   * uploaded asset (artifact, long report or checkpoint `out/` zip). The final comment is not recorded here:
+   * `postResult` finds it on the issue.
    */
-  delivery?: { repos?: Record<string, RepoDelivery>; asset?: UploadedAsset; commented?: boolean };
+  delivery?: { repos?: Record<string, RepoDelivery>; asset?: UploadedAsset };
   /** How many times the agent was resumed after exiting without AIR_DONE (spec §11 rule 3: once). */
   exitResumes?: number;
   /** Why the job is `checkpointing`. With `timeout`, an empty checkpoint makes the result `failed` (§11 rule 5). */

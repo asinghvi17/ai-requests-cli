@@ -7,7 +7,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { HELD_LABELS, release } from '../claim/claim.ts';
+import { HELD_LABELS, postResult, release } from '../claim/claim.ts';
 import { DEFAULT_AGENTS } from '../config.ts';
 import { code, fenced, tail } from '../claim/text.ts';
 import { markedComments } from '../claim/trust.ts';
@@ -79,12 +79,21 @@ export async function claimHolds(ctx: ServeContext, state: State): Promise<boole
 
 /**
  * The claim is gone: close our agent's window (local only) and mark the workspace `lost`, so the server never
- * writes to the issue for it again. The holder, if any, owns the issue's labels now.
+ * writes to the issue for it again. The holder, if any, owns the issue's labels now. Unless our own release
+ * ended the claim and was cut off after its comment (a label write or the unassign failed): then `release`
+ * finishes it, and the job ends as its result says.
  */
 export async function loseJob(ctx: ServeContext, dir: string): Promise<void> {
   const state = readState(dir);
   if (state.job?.paneNonce && (await ctx.tmux.listJobs()).some((j) => j.issue === state.issue && j.nonce === state.job!.paneNonce)) {
     await ctx.tmux.stopJob(state.issue, { graceMs: ctx.stopGraceMs });
+  }
+  const r = await release({ gh: ctx.gh, issue: state.issue, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce });
+  if (r.status === 'released') {
+    const status = r.result.status === 'failed' ? 'failed' : r.result.status === 'partial' ? 'partial' : 'cancelled';
+    if (state.job) saveJob(ctx, dir, { status, startedAt: undefined, lastError: undefined });
+    ctx.log(`#${state.issue}: finished our release (${r.result.status}) that was cut off after its comment`);
+    return;
   }
   updateState(dir, { phase: 'lost', ...(state.job ? { job: { ...state.job, status: 'cancelled' as const, startedAt: undefined } } : {}) }, ctx.now());
   ctx.log(`#${state.issue}: our claim no longer holds; leaving the issue alone`);
@@ -347,12 +356,9 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
     const { footer, usage } = await usageReport(ctx, dir, request);
     result = await deliver(ctx, dir, state, request, footer, usage);
     if (result.ok) {
-      if (!state.job!.delivery?.commented) {
-        await ctx.gh.comment(n, result.comment);
-        saveJob(ctx, dir, { delivery: { ...readState(dir).job!.delivery, commented: true } });
-      }
-      await moveLabel(ctx, dir, 'air:done');
-      await ctx.gh.unassign(n, await ctx.gh.viewer());
+      await postResult(ctx.gh, n, await ctx.gh.viewer(), ctx.trust, {
+        comment: result.comment, host: state.host, nonce: state.nonce, labels: (await ctx.gh.issue(n)).labels, final: 'air:done',
+      });
     }
   } catch (e) {
     if (e instanceof ClaimLost) return;

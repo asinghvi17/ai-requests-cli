@@ -30,7 +30,7 @@ export class GhError extends Error {
   }
 }
 
-// Settles once. With `outFile`, stdout goes to that file and passing its limit kills gh and rejects. If gh exits before reading its input (stdin EPIPE), a failing gh still resolves so its own
+// Settles once. With `outFile`, stdout goes to that file and passing its limit kills gh and rejects. If gh exits before reading its input (a stdin write error: EPIPE, or ENOTCONN on macOS), a failing gh still resolves so its own
 // error is mapped; a gh that exits 0 without reading the request body rejects. An aborted `signal` kills gh
 // (SIGTERM, then SIGKILL) and rejects with a `timeout` error at once, without waiting for it to exit.
 export const spawnGh: Runner = (args, input, signal, outFile) =>

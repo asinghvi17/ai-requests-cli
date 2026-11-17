@@ -2,10 +2,10 @@
 // result, read with the requester's own gh credentials and trusting only counted markers and results.
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CANCEL_LABEL, HELD_LABELS, STATE_LABELS } from '../claim/claim.ts';
-import { createTrust, type Trust } from '../claim/trust.ts';
+import { createTrust, markedComments, type Trust } from '../claim/trust.ts';
 import { GhError } from '../gh/gh.ts';
 import type { RequestsRepo } from '../gh/issues.ts';
-import { countedMarkers, countedResults, currentClaim, type AirResult, type AuthoredComment, type ResultStatus } from '../spec/markers.ts';
+import { countedMarkers, countedResults, currentClaim, type AirResult, type ResultStatus } from '../spec/markers.ts';
 
 export interface LatestResult {
   /** Id of the final comment that carries it. */
@@ -35,13 +35,11 @@ export interface RequestStatus {
 
 /** Reads issue `n` and its comments and works out its status. */
 export async function readStatus(gh: RequestsRepo, n: number, trust: Trust = createTrust(gh)): Promise<RequestStatus> {
-  // Comments first: a server posts the result comment before it moves the state label, so labels read after
-  // the comments are at least as new as the result they show.
-  const raw = await gh.comments(n);
+  // Labels first: a server posts its result comment before it changes the labels (claim.ts `postResult`), so
+  // comments read after the held label is gone hold the result that replaced it. The other mix, a result next
+  // to a held label, is the gap between the server's two writes (`waitForResult` reads again for it).
   const issue = await gh.issue(n);
-  const comments: AuthoredComment[] = await Promise.all(raw.map(async (c) => ({
-    id: c.id, body: c.body, author: c.author, createdAt: c.createdAt, updatedAt: c.updatedAt, trusted: await trust(c.author, c.authorAssociation),
-  })));
+  const comments = await markedComments(await gh.comments(n), trust);
   const status: RequestStatus = {
     repo: gh.repo, issue: n, title: issue.title, url: issue.url, body: issue.body, open: issue.state === 'open', cancel: issue.labels.includes(CANCEL_LABEL),
   };
@@ -135,6 +133,8 @@ export async function waitForResult(gh: RequestsRepo, n: number, opts: WaitOptio
     try {
       last = await readStatus(gh, n, trust);
       if (last.latest?.current) {
+        // A read between the server's result comment and its label change shows the result with the held
+        // label: no write order closes that gap, so give the label one more read.
         if (settling || !(HELD_LABELS as readonly (string | undefined)[]).includes(last.state)) return { status: last, timedOut: false };
         settling = true;
         await pause(SETTLE_MS);

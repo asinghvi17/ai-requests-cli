@@ -376,7 +376,8 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(prsOf(w, 62)?.map((p) => p.repo), ['service']);
   });
 
-  test('two delivered repos: a checkpoint pushes a branch per repo, and the resumed request continues both', async () => {
+  // Three repos pushed twice: past bun's default 5 s on a slow machine.
+  test('two delivered repos: a checkpoint pushes a branch per repo, and the resumed request continues both', { timeout: 60_000 }, async () => {
     const w = world();
     for (const r of ['o/service', 'o/target']) w.store.setPermission(r, 'alice', 'write');
     const fm = ['deliver: pr', 'repos:', `  - url: ${SERVICE}`, '    ref: main', `  - url: ${TARGET}`, '    ref: main', `  - url: ${GUIDE}`, '    ref: main', '    deliver: none'];

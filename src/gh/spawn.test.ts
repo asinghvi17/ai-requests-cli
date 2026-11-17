@@ -40,7 +40,9 @@ test('gh failing without reading stdin rejects with its own error', async () => 
 
 test('gh exiting 0 without reading stdin rejects cleanly', async () => {
   fakeGh('exit 0');
-  await assert.rejects(spawnGh(['api', 'x'], JSON.stringify(big)), (e: unknown) => e instanceof GhError && /exited without reading its input \(EPIPE\)/.test(e.message));
+  // Node's stdio pipes are socket pairs on macOS: a write after gh closed its end fails with EPIPE or ENOTCONN,
+  // depending on when the write lands.
+  await assert.rejects(spawnGh(['api', 'x'], JSON.stringify(big)), (e: unknown) => e instanceof GhError && /exited without reading its input \((EPIPE|ENOTCONN)\)/.test(e.message));
 });
 
 test('missing gh is a missing_gh error', async () => {

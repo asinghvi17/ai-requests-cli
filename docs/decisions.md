@@ -517,3 +517,26 @@ Claude Code:
 - With #19's environment scrub (`SESSION_MARKERS`, src/tmux/env.ts) both hold: the agent starts without the
   parent session's markers, and Codex still gets the per-launch trust override in its argv. The trust e2e
   starts its agents with `env -i` and only the throwaway login, so the scrub doesn't change what it checks.
+
+## 2026-11-17: the result comment always comes before the label change
+
+- Every path that ends a server's part in an issue now goes through one helper, `postResult` (src/claim/claim.ts):
+  the final comment first, then the final label added, then the held labels removed, then the unassign. Before,
+  `finishJob` commented first but `giveUp` (every release: failure, partial, cancel, long pause, quota stop,
+  interrupted claim or setup, `air release`) moved the labels first, so `air status` could show `air:failed`
+  or a released issue with no result yet. The spec (§8) now states the order.
+- `readStatus` reads the labels, then the comments (PR #21 had swapped them). With the one write order, a
+  label read that finds the held label gone is followed by a comment read that finds its result. Reading the
+  comments first gave no such guarantee: both mixes were possible.
+- `air wait`'s one extra read after `SETTLE_MS` stays: a read between the server's comment and its label change
+  still sees a current result next to a held label. No write order closes that gap.
+- A release cut off after its comment (a label write or the unassign failed) is finished, not wedged. Before,
+  the retry saw our own release marker, found no holder, was refused ("no claim to release") and marked the job
+  lost with `air:running` and the assignment left on the issue (review finding). Now `postResult` checks the
+  issue: if the claim's counted result is already there, it skips the comment and does only the writes left.
+  That replaces finishJob's `delivery.commented` flag, so there is one way to tell. `release()` finishes a
+  release when nothing holds, the latest claim or release marker is our own release, and its workspace hasn't
+  recorded the release, using the result it posted. `loseJob` tries that first, so `ensureHeld` and the server
+  tick finish the release too.
+- `spawn.test.ts` accepts ENOTCONN as well as EPIPE from a gh that exits without reading its input. On macOS
+  node's stdio pipes are socket pairs, and that write can fail with either (it failed one macOS CI run).
