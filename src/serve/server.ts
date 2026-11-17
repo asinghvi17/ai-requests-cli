@@ -96,7 +96,10 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   /** Issue -> why its last claim was refused, for refusals checked again every tick (logged once per reason). */
   const refused = new Map<number, string>();
   let adopting = true;
-  /** Workspaces left `setting-up` by a setup that died (a restart, or a release that failed): to release. */
+  /**
+   * Workspaces left `claiming` or `setting-up` by a claim or setup that died (a restart, or a release that
+   * failed): to give back, retried every tick until that works.
+   */
   const orphans = new Set<string>();
   /**
    * Running jobs whose window one tick could not find, and whether that tick was the restart. A single miss
@@ -145,7 +148,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     if (state.phase === 'claiming') {
       // This server's own claims finish inside `poll`. One found at startup, or long after it began, was cut
       // off (a crash, a restart): give it back if it holds, so the issue isn't held with nobody acting on it.
-      if (!first && ctx.now().getTime() - Date.parse(state.updatedAt) < CLAIM_STALE_MS) return;
+      if (first || ctx.now().getTime() - Date.parse(state.updatedAt) >= CLAIM_STALE_MS) orphans.add(dir);
+      if (!orphans.has(dir)) return;
       const r = await release({ gh: ctx.gh, issue: n, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
         message: `Released by ${code(state.host)}: its claim was cut off before work started.` });
       if (r.status !== 'released') {
@@ -154,6 +158,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         await backOff(ctx.gh, n, await ctx.gh.viewer(), state.claimCommentId, comments, currentClaim(await markedComments(comments, ctx.trust)));
         updateState(dir, { phase: 'lost' }, ctx.now());
       }
+      orphans.delete(dir);
       ctx.log(`#${n}: interrupted claim ${r.status === 'released' ? 'released' : `dropped (${r.message})`}`);
       return;
     }

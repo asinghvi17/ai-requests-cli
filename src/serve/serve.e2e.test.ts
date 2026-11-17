@@ -416,6 +416,30 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     await until(w, 'delivered', () => status(w, 26) === 'done');
   });
 
+  test('regression: an interrupted claim whose release fails on the restart tick is retried on the next tick', async () => {
+    const w = world();
+    w.store.addIssue({ number: 27, body: body('comment x') });
+    void claim({ gh: w.ctx.gh, issue: 27, root: w.root, host: 'box', sleep: () => new Promise(() => {}) });
+    while (job(w, 27)?.state.claimCommentId === undefined) await sleep(10);
+    const read = w.store.comments;
+    let failed = false;
+    w.store.comments = async (n) => {
+      if (!failed) {
+        failed = true;
+        throw new GhError('server', 'Server Error (HTTP 502)', 502);
+      }
+      return read(n);
+    };
+    await w.server.tick({ poll: false });
+    await w.server.idle();
+    assert.ok(failed);
+    assert.equal(job(w, 27)!.state.phase, 'claiming');
+    await w.server.tick({ poll: false });
+    await w.server.idle();
+    assert.equal(job(w, 27)!.state.phase, 'released', w.logs.join('\n'));
+    assert.equal(await holder(w, 27), undefined);
+  });
+
   test('a claim that throws is withdrawn and left alone for a while, not claimed again every tick', async () => {
     const w = world();
     w.store.addIssue({ number: 24, body: body('comment x') });
