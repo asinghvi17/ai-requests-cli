@@ -4,7 +4,7 @@ import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -76,7 +76,7 @@ interface World {
 let bare: BareRepo, service: BareRepo, guide: BareRepo;
 const tmuxClient = createTmux({ socket });
 
-function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig['budget'] } = {}): World {
+function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig['budget']; transcripts?: boolean } = {}): World {
   const store = fakeGitHub();
   // This server's account can push to the repos requests deliver to; each test grants the requester's access.
   for (const r of ['o/target', 'o/service', 'o/guide']) store.setPermission(r, 'bot', 'write');
@@ -88,7 +88,7 @@ function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig[
   const logs: string[] = [];
   const clock = { offset: 0 };
   const config: Config = {
-    repo: 'o/requests', workspace_root: root, max_jobs: 2, tick_seconds: 60, subscriptions: { max: { harness: 'claude', scale: 1, reserve: 0 } },
+    repo: 'o/requests', workspace_root: root, max_jobs: 2, tick_seconds: 60, subscriptions: { max: { harness: 'claude', window_usd: 1000, reserve: 0 } },
     models: { claude: { small: 'haiku', medium: 'sonnet', large: 'opus' } },
     agents: { claude: { command: [process.execPath, FAKE_AGENT], args: ['--permission-mode', 'acceptEdits'] } },
   };
@@ -99,10 +99,10 @@ function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig[
     now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, claimWaitMs: 0,
     download: releaseDownload(gh, 'github.com'),
   };
-  if (o.budget) {
-    // `max` is a manual budget, and the fake agent leaves Claude Code transcripts in a config dir of its own.
+  if (o.budget || o.transcripts) {
+    // The fake agent leaves Claude Code transcripts in a config dir of its own; with `budget`, `max` is a manual budget.
     const claudeDir = tmp('air-serve-claude-');
-    ctx.manual = (name) => (name === 'max' ? { name, harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: o.budget! } : undefined);
+    if (o.budget) ctx.manual = (name) => (name === 'max' ? { name, harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: o.budget! } : undefined);
     ctx.agentEnv = () => ({ CLAUDE_CONFIG_DIR: claudeDir, FAKE_TRANSCRIPT: '1' });
   }
   return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root };
@@ -157,6 +157,13 @@ async function unzip(data: Buffer): Promise<string> {
   await extractZip(join(d, 'a.zip'), join(d, 'x'), 1 << 20);
   return join(d, 'x');
 }
+/** Appends an API call on `model` to the transcript of #n's Claude Code session. */
+function addCall(w: World, n: number, model: string, usage: object): void {
+  const id = job(w, n)!.state.job!.sessionId!;
+  const projects = join(w.ctx.agentEnv('max').CLAUDE_CONFIG_DIR!, 'projects');
+  const file = readdirSync(projects).map((d) => join(projects, d, `${id}.jsonl`)).find((f) => existsSync(f))!;
+  appendFileSync(file, `${JSON.stringify({ type: 'assistant', message: { id: `msg_${Math.random()}`, model, usage } })}\n`);
+}
 const holder = async (w: World, n: number) => currentClaim(await markedComments(await w.store.comments(n), createTrust(w.store)));
 
 describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' }, () => {
@@ -184,8 +191,9 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(w.store.issues.get(1)!.assignees, []);
     const final = comments(w, 1).at(-1)!;
     assert.match(final, /^hello\n\n<sub>air on `box`: subscription `max`, claude `sonnet`/);
-    assert.match(final, /Usage: 10% before, 10% after: 0 points; effort XS expects 1/);
-    assert.match(final, /<!-- air-usage \{"issue":"o\/requests#1","effort":"XS","expected":1,"delta":0,"share":0\} -->/);
+    assert.match(final, /Cost at API prices: unknown, the agent left no usage record; effort XS expects \$1\.00\./);
+    assert.match(final, /Usage of `max`'s window: 10% before, 10% after\./);
+    assert.match(final, /<!-- air-usage \{"issue":"o\/requests#1","effort":"XS","expected":1,"usd":null\} -->/);
     const [argv] = argvLog(ws.dir);
     assert.equal(argv![0], '--session-id');
     assert.equal(argv![1], ws.state.job!.sessionId);
@@ -197,32 +205,39 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(order, ['addLabels 1 air:claimed', 'addLabels 1 air:running', 'removeLabel 1 air:claimed', 'addLabels 1 air:done', 'removeLabel 1 air:running']);
   });
 
-  test('a manual budget in tokens is charged what each job spent, by its transcripts; one in percent is not', async () => {
-    const w = world({ budget: { tokens: 1_000_000 } });
+  test('a manual budget is charged what each job cost at API prices, from its transcripts', async () => {
+    const w = world({ budget: { usd: 100 } });
     const spent = () => (loadLedger(ledgerFile(w.ctx.stateDir)).ledger?.subscriptions.max?.spent);
+    const start = 0.500325 + 0.00003; // one start: a claude-sonnet-5-5 call and a claude-haiku-4-5 subagent call
+    const near = (a: number | undefined, b: number) => assert.ok(a !== undefined && Math.abs(a - b) < 1e-9, `${a} != ${b}`);
     w.store.addIssue({ number: 80, body: body('comment Done.') });
     await until(w, 'delivered', () => status(w, 80) === 'done');
-    // one API call (its line repeated, counted once) and one subagent call
-    assert.equal(spent(), 1170);
-    assert.deepEqual(job(w, 80)!.state.job!.spend, { tokens: 1170, charged: true });
-    assert.match(comments(w, 80).at(-1)!, /Charged 1,170 tokens to manual budget `max`\./);
+    near(spent(), start);
+    assert.deepEqual(job(w, 80)!.state.job!.spend, { usd: start, charged: true });
+    assert.match(comments(w, 80).at(-1)!, /Cost at API prices: \$0\.50; effort XS expects \$1\.00\.\nCharged \$0\.50 to manual budget `max`\./);
+    assert.match(comments(w, 80).at(-1)!, /<!-- air-usage \{"issue":"o\/requests#80","effort":"XS","expected":1,"usd":0\.500355\} -->/);
     // A partial job is charged for both its starts: the fresh one and the resumed session.
     w.store.addIssue({ number: 81, body: body('quit 3') });
     await until(w, 'partial', () => status(w, 81) === 'partial');
     assert.equal(job(w, 81)!.state.job!.starts, 2);
-    assert.equal(spent(), 1170 + 2340);
+    near(spent(), 3 * start);
     // A cancelled job too.
     w.store.addIssue({ number: 82, body: body('hang') });
     await running(w, 82);
     w.store.issues.get(82)!.labels.push('air:cancel');
     await until(w, 'cancelled', () => status(w, 82) === 'cancelled');
-    assert.equal(spent(), 1170 + 2340 + 1170);
+    near(spent(), 4 * start);
+  });
 
-    const p = world({ budget: { percent: 100 } });
-    p.store.addIssue({ number: 83, body: body('comment Done.') });
-    await until(p, 'delivered', () => status(p, 83) === 'done');
-    assert.equal(loadLedger(ledgerFile(p.ctx.stateDir)).ledger?.subscriptions.max, undefined);
-    assert.match(comments(p, 83).at(-1)!, /Not charged to manual budget `max` \(the agent used 1,170 tokens\): its budget is in percent, and the agent reports tokens\./);
+  test('a model the price table lacks is not charged, with a warning naming it', async () => {
+    const w = world({ budget: { usd: 100 } });
+    w.store.addIssue({ number: 84, body: body('progress') });
+    await running(w, 84);
+    addCall(w, 84, 'claude-future-9', { input_tokens: 1000, output_tokens: 1000 });
+    w.store.issues.get(84)!.labels.push('air:cancel');
+    await until(w, 'cancelled', () => status(w, 84) === 'cancelled');
+    assert.deepEqual(job(w, 84)!.state.job!.spend, { usd: 0.500355, unpriced: ['claude-future-9'], charged: true });
+    assert.ok(w.logs.some((l) => l === '#84: warning: no API price for claude-future-9; calls on it are not charged'), w.logs.join('\n'));
   });
 
   test('comment: an over-long report is truncated and the full text uploaded', async () => {
@@ -882,19 +897,18 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(stateLabels(w, 36), ['air:partial']);
   });
 
-  test('effort: a job that uses more than twice its effort share is stopped early as partial', async () => {
-    const w = world();
+  test('effort: a job that costs more than twice its effort is stopped early as partial', async () => {
+    const w = world({ transcripts: true });
     w.store.addIssue({ number: 37, body: body('progress') });
-    await running(w, 37);
-    const before = job(w, 37)!.state.job!.usageBefore!;
-    w.subs[0] = weekly(12, before.windows[0]!.resetsAt!); // XS on this plan: 1 point; 2 is the cap
+    await running(w, 37); // $0.50 so far
+    addCall(w, 37, 'claude-sonnet-5-5', { input_tokens: 0, output_tokens: 140_000 }); // + $1.40: XS is $1, the cap $2
     await w.server.tick();
     await w.server.idle();
-    assert.equal(status(w, 37), 'running', 'twice the share is still allowed');
-    w.subs[0] = weekly(12.5, before.windows[0]!.resetsAt!);
+    assert.equal(status(w, 37), 'running', 'twice the effort is still allowed');
+    addCall(w, 37, 'claude-sonnet-5-5', { input_tokens: 0, output_tokens: 20_000 }); // + $0.20
     await until(w, 'partial', () => status(w, 37) === 'partial');
-    assert.match(comments(w, 37).at(-1)!, /it used 2\.5 points of subscription `max`'s usage window, more than twice the 1 that effort XS stands for here/);
-    assert.deepEqual(resultOf(w, 37)?.usage, { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 12.5, attempts: 1 });
+    assert.match(comments(w, 37).at(-1)!, /it has cost \$2\.10 at API prices, more than twice the \$1\.00 that effort XS stands for/);
+    assert.deepEqual(resultOf(w, 37)?.usage, { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 1 });
   });
 
   test('a hanging gh call times out; the loop logs it and carries on', async () => {

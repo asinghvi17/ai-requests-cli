@@ -14,8 +14,8 @@
 //   progress       write out/PROGRESS.md, then never finish
 // A start with --resume (or `resume`) exits 3 at once if the file `resume-fails` exists.
 // With FAKE_TRANSCRIPT set, each start with a Claude session id writes a Claude Code transcript of one API call
-// (1,160 tokens, its line repeated as Claude Code does per content block) and one subagent call (10 tokens)
-// under $CLAUDE_CONFIG_DIR/projects.
+// on claude-sonnet-5-5 ($0.500325 at API prices, its line repeated as Claude Code does per content block) and
+// one subagent call on claude-haiku-4-5 ($0.00003) under $CLAUDE_CONFIG_DIR/projects.
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,11 +29,11 @@ const session = argv[argv.indexOf('--session-id') + 1 || argv.indexOf('--resume'
 if (process.env.FAKE_TRANSCRIPT && process.env.CLAUDE_CONFIG_DIR && session) {
   const project = join(process.env.CLAUDE_CONFIG_DIR, 'projects', ws.replace(/[^A-Za-z0-9]/g, '-'));
   mkdirSync(join(project, session, 'subagents'), { recursive: true });
-  const call = (id: string, usage: object) => `${JSON.stringify({ type: 'assistant', sessionId: session, uuid: `${id}-${Math.random()}`, message: { id, usage } })}\n`;
+  const call = (id: string, model: string, usage: object) => `${JSON.stringify({ type: 'assistant', sessionId: session, uuid: `${id}-${Math.random()}`, message: { id, model, usage } })}\n`;
   const id = `msg_${process.pid}_${Date.now()}`;
-  const main = call(id, { input_tokens: 100, cache_creation_input_tokens: 10, cache_read_input_tokens: 1000, output_tokens: 50, service_tier: 'standard' });
+  const main = call(id, 'claude-sonnet-5-5', { input_tokens: 100, cache_creation_input_tokens: 10, cache_read_input_tokens: 1000, output_tokens: 50_000, service_tier: 'standard' });
   appendFileSync(join(project, `${session}.jsonl`), `${JSON.stringify({ type: 'user', message: { content: 'go' } })}\n${main}${main}`);
-  appendFileSync(join(project, session, 'subagents', 'agent-a.jsonl'), call(`${id}_sub`, { input_tokens: 5, output_tokens: 5 }));
+  appendFileSync(join(project, session, 'subagents', 'agent-a.jsonl'), call(`${id}_sub`, 'claude-haiku-4-5', { input_tokens: 5, output_tokens: 5 }));
 }
 
 const task = readFileSync(join(ws, 'AIR_TASK.md'), 'utf8');

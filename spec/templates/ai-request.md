@@ -6,7 +6,7 @@ labels: ai-request
 ---
 ---
 air: 0          # spec version; see spec/v0.md
-effort: S       # XS 1% | S 3% | M 8% | L 20% | XL 40% of a weekly usage window
+effort: S       # US dollars at API prices: XS $1 | S $3 | M $10 | L $30 | XL $100
 deliver: comment  # comment | pr (needs repos) | artifact (files left in $AIR_OUT)
 # harness: [any]          # claude | codex | any
 # model: medium           # small | medium | large (minimum tier)

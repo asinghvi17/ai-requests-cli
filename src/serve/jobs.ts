@@ -10,13 +10,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { HELD_LABELS, release } from '../claim/claim.ts';
 import { code, fenced, tail } from '../claim/text.ts';
 import { markedComments } from '../claim/trust.ts';
-import { choose, primaryWindow, recordActual, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
+import { choose, EFFORT_USD, primaryWindow, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
 import type { Request } from '../spec/frontmatter.ts';
 import { lint } from '../spec/lint.ts';
 import { currentClaim, type ResultUsage } from '../spec/markers.ts';
 import { ledgerFile } from '../usage/index.ts';
-import { spend as spendTokens } from '../usage/manual.ts';
-import { claudeSpent, codexSpent } from '../usage/spent.ts';
+import { usd } from '../usage/prices.ts';
+import { spend as spendUsd } from '../usage/manual.ts';
+import { claudeSpent, codexSpent, type Spent } from '../usage/spent.ts';
 import type { Subscription } from '../usage/types.ts';
 import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
@@ -87,7 +88,7 @@ export async function loseJob(ctx: ServeContext, dir: string): Promise<void> {
   updateState(dir, { phase: 'lost', ...(state.job ? { job: { ...state.job, status: 'cancelled' as const, startedAt: undefined } } : {}) }, ctx.now());
   ctx.log(`#${state.issue}: our claim no longer holds; leaving the issue alone`);
   try {
-    if (state.job) chargeSpend(ctx, dir);
+    if (state.job) settleSpend(ctx, dir, requestOf(dir));
   } catch (e) {
     ctx.log(`#${state.issue}: could not work out what the job spent: ${(e as Error).message}`);
   }
@@ -211,8 +212,8 @@ export async function stopAgent(ctx: ServeContext, dir: string, reason: PauseRea
   return true;
 }
 
-/** Tokens the job's agent spent, from its own session records (`usage/spent.ts`); undefined if it left none. */
-export function jobSpent(ctx: ServeContext, dir: string, job: JobRecord): number | undefined {
+/** What the job's agent has spent at API prices, from its own session records (`usage/spent.ts`); undefined if it left none. */
+export function jobSpent(ctx: ServeContext, dir: string, job: JobRecord): Spent | undefined {
   // The login the agent ran with: the subscription's own, else the one its inherited environment names.
   const own = ctx.agentEnv(job.subscription);
   if (job.harness === 'claude') return claudeSpent(own.CLAUDE_CONFIG_DIR || ctx.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), job.sessions ?? []);
@@ -220,64 +221,68 @@ export function jobSpent(ctx: ServeContext, dir: string, job: JobRecord): number
 }
 
 /**
- * Charges a manual subscription what the ended job spent, once (the README's subscriptions.json section):
- * the agent's tokens go on the ledger of a budget in tokens. A budget in percent, or an agent that left no
- * usage record, is not charged. Returns the footer line saying which, or undefined for a subscription that
- * isn't manual or a job whose agent never started.
+ * Settles what an ended job cost, once (`job.spend`): its agent's spend at API prices and, for a manual
+ * subscription, the charge to its budget (the README's subscriptions.json section). Calls on a model the price
+ * table doesn't cover cost nothing here, with a warning naming the model. Returns the footer lines saying so,
+ * none for a job whose agent never started.
  */
-export function chargeSpend(ctx: ServeContext, dir: string): string | undefined {
-  const job = jobOf(readState(dir));
+export function settleSpend(ctx: ServeContext, dir: string, request: Request): string[] {
+  const state = readState(dir);
+  const job = jobOf(state);
+  if (job.starts === 0) return [];
   const cfg = ctx.manual?.(job.subscription);
-  if (!cfg || job.starts === 0) return undefined;
   let spend = job.spend;
   if (!spend) {
-    const tokens = jobSpent(ctx, dir, job);
-    if (tokens === undefined) spend = { charged: false, why: `${job.harness} left no usage record for this job` };
-    else if (!('tokens' in cfg.budget)) spend = { tokens, charged: false, why: 'its budget is in percent, and the agent reports tokens' };
+    const spent = jobSpent(ctx, dir, job);
+    const n = `#${state.issue}`;
+    if (spent?.unpriced.length) ctx.log(`${n}: warning: no API price for ${spent.unpriced.join(', ')}; calls on ${spent.unpriced.length === 1 ? 'it' : 'them'} are not charged`);
+    const measured = spent ? { usd: spent.usd, ...(spent.unpriced.length ? { unpriced: spent.unpriced } : {}) } : {};
+    if (!cfg) spend = { ...measured, charged: false };
+    else if (!spent) spend = { charged: false, why: `${job.harness} left no usage record for this job` };
     else {
       try {
-        spendTokens(ledgerFile(ctx.stateDir), cfg, tokens, ctx.now().getTime());
+        spendUsd(ledgerFile(ctx.stateDir), cfg, spent.usd, ctx.now().getTime());
       } catch (e) {
         // An unusable ledger: the subscription reads as unknown until it is reset, so it takes no work meanwhile.
-        ctx.log(`#${readState(dir).issue}: could not charge ${tokens} tokens to ${job.subscription}: ${(e as Error).message}`);
-        return `Not charged to manual budget ${code(job.subscription)}: ${(e as Error).message}.`;
+        ctx.log(`${n}: could not charge ${usd(spent.usd)} to ${job.subscription}: ${(e as Error).message}`);
+        return [costLine(measured, request), `Not charged to manual budget ${code(job.subscription)}: ${(e as Error).message}.`];
       }
-      spend = { tokens, charged: true };
+      spend = { ...measured, charged: true };
     }
     saveJob(ctx, dir, { spend });
-    ctx.log(`#${readState(dir).issue}: ${spend.charged ? `charged ${tokens} tokens to` : `did not charge`} ${job.subscription}${spend.why ? `: ${spend.why}` : ''}`);
+    if (cfg) ctx.log(`${n}: ${spend.charged ? `charged ${usd(spend.usd!)} to` : 'did not charge'} ${job.subscription}${spend.why ? `: ${spend.why}` : ''}`);
   }
-  const n = spend.tokens?.toLocaleString('en-US');
-  return spend.charged
-    ? `Charged ${n} tokens to manual budget ${code(job.subscription)}.`
-    : `Not charged to manual budget ${code(job.subscription)}${n !== undefined ? ` (the agent used ${n} tokens)` : ''}: ${spend.why}.`;
+  const lines = [costLine(spend, request)];
+  if (cfg) lines.push(spend.charged ? `Charged ${usd(spend.usd!)} to manual budget ${code(job.subscription)}.` : `Not charged to manual budget ${code(job.subscription)}: ${spend.why}.`);
+  return lines;
+}
+
+function costLine(spend: { usd?: number; unpriced?: string[] }, request: Request): string {
+  const expects = `effort ${request.effort} expects ${usd(EFFORT_USD[request.effort as Effort])}`;
+  const unpriced = spend.unpriced?.length ? ` Calls on ${spend.unpriced.map(code).join(', ')} are not counted: air's price table has no price for ${spend.unpriced.length === 1 ? 'it' : 'them'}.` : '';
+  return spend.usd === undefined ? `Cost at API prices: unknown, the agent left no usage record; ${expects}.` : `Cost at API prices: ${usd(spend.usd)}; ${expects}.${unpriced}`;
 }
 
 /**
- * Usage before and after, agent time and, for a manual subscription, the charge (`chargeSpend`): the
- * calibration footer of the final comment, and the `usage` of its `air-result` block (§10), which is there
- * once the agent has started.
+ * Agent time, cost (`settleSpend`) and usage before and after: the calibration footer of the final comment,
+ * and the `usage` of its `air-result` block (§10), which is there once the agent has started.
  */
 export async function usageReport(ctx: ServeContext, dir: string, request: Request): Promise<{ footer: string; usage?: ResultUsage }> {
-  const charge = chargeSpend(ctx, dir);
+  const cost = settleSpend(ctx, dir, request);
   const state = readState(dir);
   const job = jobOf(state);
   const minutes = Math.round(agentMs(job, ctx.now()) / 60_000);
-  const lines = [`<sub>air on ${code(state.host)}: subscription ${code(job.subscription)}, ${job.harness} ${code(job.model)}, agent time ${minutes} min.`];
-  if (charge) lines.push(charge);
+  const lines = [`<sub>air on ${code(state.host)}: subscription ${code(job.subscription)}, ${job.harness} ${code(job.model)}, agent time ${minutes} min.`, ...cost];
   const after = await reading(ctx, job.subscription, true);
   const b = job.usageBefore ? primaryWindow(job.usageBefore)?.usedPct : undefined;
   const a = after && !after.stale ? primaryWindow(after)?.usedPct : undefined;
-  let rec: ActualRecord | undefined;
-  if (job.usageBefore && after) {
-    rec = recordActual(`${state.repo}#${state.issue}`, request.effort as Effort, job.usageBefore, after, matchConfig(ctx.config));
-    const fmt = (x: number | null | undefined) => (typeof x === 'number' ? `${Math.round(x * 10) / 10}%` : '?');
-    lines.push(rec.delta === null
-      ? `Usage: ${fmt(b)} before, ${fmt(a)} after (not comparable). Effort ${request.effort} expects ${rec.expected}%.`
-      : `Usage: ${fmt(b)} before, ${fmt(a)} after: ${Math.round(rec.delta * 10) / 10} points; effort ${request.effort} expects ${rec.expected}, measured ${Math.round(rec.share! * 10) / 10}.`);
-  }
+  const fmt = (x: number | null | undefined) => (typeof x === 'number' ? `${Math.round(x * 10) / 10}%` : '?');
+  if (job.usageBefore || after) lines.push(`Usage of \`${job.subscription}\`'s window: ${fmt(b)} before, ${fmt(a)} after.`);
   lines[lines.length - 1] += '</sub>';
-  if (rec) lines.push(`<!-- air-usage ${JSON.stringify(rec)} -->`);
+  if (job.starts > 0) {
+    const rec: ActualRecord = { issue: `${state.repo}#${state.issue}`, effort: request.effort as Effort, expected: EFFORT_USD[request.effort as Effort], usd: job.spend?.usd ?? null };
+    lines.push(`<!-- air-usage ${JSON.stringify(rec)} -->`);
+  }
   const footer = lines.join('\n');
   if (job.starts === 0) return { footer };
   const pct = (x: number | null | undefined) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(100, Math.max(0, Math.round(x * 10) / 10)) : undefined);

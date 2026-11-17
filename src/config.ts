@@ -11,9 +11,10 @@ export type Models = Record<Tier, string>;
 
 export type Subscription = {
   harness: string;
-  scale: number; // multiplier on effort units this subscription can absorb (e.g. a 20x plan vs a 5x one)
+  /** US dollars at API prices a full primary window (weekly, else monthly) of this plan is worth, so its percent
+   *  meter compares with efforts in dollars. Not used for a manual subscription, whose budget is in dollars. */
+  window_usd?: number;
   reserve: number; // fraction of the quota window kept for the owner, 0 <= reserve < 1
-  budget?: number; // manual effort budget per window, for subscriptions whose usage can't be read
 };
 
 /** `[agents.<harness>]`: how `air serve` starts that harness's agent. */
@@ -99,16 +100,15 @@ export function parseConfig(src: string, home = homedir()): Config {
   for (const [name, raw] of Object.entries(table(doc.subscriptions, 'subscriptions'))) {
     const w = `subscriptions.${name}`;
     const t = table(raw, w);
-    only(t, ['harness', 'scale', 'reserve', 'budget'], `${w}.`);
+    only(t, ['harness', 'window_usd', 'reserve'], `${w}.`);
     const harness = str(t.harness, `${w}.harness`);
     if (harness === undefined) throw new ConfigError(`${w}.harness is required`);
     const sub: Subscription = {
       harness,
-      scale: num(t.scale, `${w}.scale`, (n) => n > 0, 'a positive number') ?? 1,
       reserve: num(t.reserve, `${w}.reserve`, (n) => n >= 0 && n < 1, 'a number in [0, 1)') ?? 0,
     };
-    const budget = num(t.budget, `${w}.budget`, (n) => n >= 0, 'a non-negative number');
-    if (budget !== undefined) sub.budget = budget;
+    const windowUsd = num(t.window_usd, `${w}.window_usd`, (n) => n > 0, 'a positive number (US dollars)');
+    if (windowUsd !== undefined) sub.window_usd = windowUsd;
     subscriptions[name] = sub;
   }
 

@@ -353,3 +353,22 @@ Alternatives considered:
   since, air leaves it alone and that repo gets no push, with the reason in the final comment.
 - A PR body holds the agent's report (§6 already said so). One too long for GitHub's 65,536-character body is now
   cut, with the full report uploaded as the report asset, where before `createPull` failed.
+
+## 2026-11-17: everything in US dollars at API prices
+
+- Raw tokens mislead across models, and a share of a plan depends on the plan, so efforts, budgets and spend
+  are all US dollars at API prices: the agent's tokens at the provider's published per-token rates. Spec §2:
+  `effort` is XS $1, S $3, M $10, L $30, XL $100 (was 1, 3, 8, 20, 40 % of a weekly window). Matching compares
+  dollars with dollars.
+- Budgets in `percent` and `tokens` are gone; a manual budget is `{ "usd": N }`, and its ledger is version 2.
+  config.toml's `scale` and `budget` are gone too: `[subscriptions.X] window_usd` says what a readable
+  subscription's whole primary window is worth, so its percent meter reads as dollars. Without it a readable
+  subscription takes nothing.
+- A job's cost is priced from the agent's own token records with one table, `src/usage/prices.ts`, keyed by
+  model id, each price citing its page. Claude Code's own total (`cost-state.totalCostUSD` in the transcript)
+  can't be used: it is written only when a session exits, so a running job (for the effort check) or a killed
+  one has none. The table reproduces it to the cent where it exists. Codex reports no cost at all.
+- A model not in the table costs nothing, and serve logs a warning naming it; the final comment names it too.
+- Spec §11 rule 4: a job is stopped early once its cost passes twice its effort's dollars, measured from the
+  agent's records rather than the window's meter. The final comment says "Cost at API prices: $X; effort E
+  expects $Y." and, for a manual budget, "Charged $X to manual budget `name`."

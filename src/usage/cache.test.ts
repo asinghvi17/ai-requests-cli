@@ -44,7 +44,7 @@ test('a failed read keeps the last windows, which go stale after 15 minutes and 
   // the numbers are gone from the subscription itself, so JSON and every consumer see unknown
   assert.deepEqual(stale.windows.map(x => x.usedPct), [null, null]);
   assert.deepEqual(effectiveWindows(stale).map(x => x.usedPct), [null, null]);
-  assert.doesNotMatch(JSON.stringify(stale), /usedPct":\d|tokensLeft/);
+  assert.doesNotMatch(JSON.stringify(stale), /usedPct":\d|usdLeft/);
   assert.equal(headroomPct(stale), null);
 });
 
@@ -77,7 +77,7 @@ test('an incomplete reading is unknown, and replaces the last full one', async (
   assert.equal(headroomPct({ name: 'h', harness: 'codex', readAt: null, stale: false, incomplete: true, windows: [w('five_hour', 1)] }), null);
 });
 
-test('stale tokensLeft is dropped', () => {
-  const s = { name: 'm', harness: 'manual', readAt: null, stale: true, windows: [w('weekly', 10, { tokensLeft: 5 })] };
+test('stale usdLeft is dropped', () => {
+  const s = { name: 'm', harness: 'manual', readAt: null, stale: true, windows: [w('weekly', 10, { usdLeft: 5, usdBudget: 10 })] };
   assert.deepEqual(effectiveWindows(s), [{ name: 'weekly', kind: 'weekly', usedPct: null, resetsAt: null }]);
 });

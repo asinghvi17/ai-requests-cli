@@ -7,15 +7,16 @@ import { basename, dirname, join } from 'node:path';
 import { withLock, writeAtomic } from './lock.ts';
 import type { ManualConfig, Subscription } from './types.ts';
 
-export interface Ledger { version: 1; subscriptions: Record<string, { periodStart: string; spent: number }> }
+/** `spent`: US dollars at API prices. */
+export interface Ledger { version: 2; subscriptions: Record<string, { periodStart: string; spent: number }> }
 /** `ledger: null`: unusable; `error` says why and where the bad file went. */
 export type LedgerLoad = { ledger: Ledger; error?: undefined } | { ledger: null; error: string };
 
-export const emptyLedger = (): Ledger => ({ version: 1, subscriptions: {} });
+export const emptyLedger = (): Ledger => ({ version: 2, subscriptions: {} });
 const RESET_HINT = 'run `air usage reset-ledger` to start a fresh one';
 
 function valid(v: any): v is Ledger {
-  if (!v || typeof v !== 'object' || v.version !== 1 || !v.subscriptions || typeof v.subscriptions !== 'object' || Array.isArray(v.subscriptions)) return false;
+  if (!v || typeof v !== 'object' || v.version !== 2 || !v.subscriptions || typeof v.subscriptions !== 'object' || Array.isArray(v.subscriptions)) return false;
   return Object.values(v.subscriptions).every((e: any) => e && typeof e.periodStart === 'string' && Number.isFinite(Date.parse(e.periodStart))
     && typeof e.spent === 'number' && Number.isFinite(e.spent) && e.spent >= 0);
 }
@@ -30,7 +31,7 @@ function loadUnlocked(file: string): LedgerLoad {
       : { ledger: emptyLedger() };
   }
   let v: unknown, why: string;
-  try { v = JSON.parse(text); why = (v as any)?.version !== 1 ? `unsupported version ${JSON.stringify((v as any)?.version)}` : 'invalid contents'; }
+  try { v = JSON.parse(text); why = (v as any)?.version !== 2 ? `unsupported version ${JSON.stringify((v as any)?.version)}` : 'invalid contents'; }
   catch { why = 'invalid JSON'; }
   if (valid(v)) return { ledger: v };
   const to = `${file}.corrupt.${new Date().toISOString().replace(/[:.]/g, '-')}`;
@@ -90,7 +91,7 @@ function current(cfg: ManualConfig, ledger: Ledger, now: number) {
   return { periodStart, end, spent: e && e.periodStart === periodStart ? e.spent : 0 };
 }
 
-/** Record spend (tokens or percent points, the budget's unit), rolling the period over. Mutates `ledger`. */
+/** Record spend (US dollars, the budget's unit), rolling the period over. Mutates `ledger`. */
 export function recordSpend(cfg: ManualConfig, ledger: Ledger, amount: number, now = Date.now()) {
   if (!Number.isFinite(amount) || amount < 0) throw new Error(`invalid spend ${amount}`);
   const { periodStart, spent } = current(cfg, ledger, now);
@@ -105,11 +106,10 @@ export function readManual(cfg: ManualConfig, ledger: Ledger | null, now = Date.
       windows: [{ name: kind, kind, usedPct: null, resetsAt: new Date(period(cfg.reset, now).end).toISOString() }] };
   }
   const { spent, end } = current(cfg, ledger, now);
-  const budget = 'tokens' in cfg.budget ? cfg.budget.tokens : cfg.budget.percent;
-  const usedPct = budget > 0 ? Math.round((spent / budget) * 1000) / 10 : 100;
+  const budget = cfg.budget.usd;
+  const usedPct = budget > 0 ? (spent / budget) * 100 : 100;
   return {
     name: cfg.name, harness: 'manual', readAt: new Date(now).toISOString(), stale: false,
-    windows: [{ name: kind, kind, usedPct, resetsAt: new Date(end).toISOString(),
-      ...('tokens' in cfg.budget ? { tokensLeft: Math.max(0, cfg.budget.tokens - spent) } : {}) }],
+    windows: [{ name: kind, kind, usedPct, resetsAt: new Date(end).toISOString(), usdLeft: Math.max(0, budget - spent), usdBudget: budget }],
   };
 }

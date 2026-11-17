@@ -1,6 +1,6 @@
 ---
 air: 0
-effort: S                  # XS | S | M | L | XL
+effort: S                  # XS $1 | S $3 | M $10 | L $30 | XL $100 at API prices
 deliver: pr                # pr | artifact | comment
 # model: medium            # small | medium | large
 # harness: [any]           # claude | codex | any

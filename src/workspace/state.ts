@@ -50,7 +50,7 @@ export interface JobRecord {
   /** The local subscription it runs on, and the concrete model for the requested tier. */
   subscription: string;
   model: string;
-  /** The matched cost in percent points of the subscription's primary window (match `costOf`). */
+  /** The effort's cost in US dollars at API prices (spec §2), as matched. */
   expectedCost?: number;
   /** The agent's own session id, for `claude --resume` / `codex resume`. */
   sessionId?: string;
@@ -84,10 +84,11 @@ export interface JobRecord {
   /** Why the job is `failing`, so a retried failure posts the same reason. */
   failure?: { step: string; detail: string };
   /**
-   * What the job spent, once it ended, for a manual subscription: the tokens the agent's records show, and
-   * whether they were charged to the budget, or why not. Recorded so the job is charged once.
+   * What the ended job cost at API prices (US dollars), from its agent's records, with the models the price
+   * table doesn't cover; for a manual subscription, whether that was charged to the budget, or why not.
+   * Recorded so the job is settled once.
    */
-  spend?: { tokens?: number; charged: boolean; why?: string };
+  spend?: { usd?: number; unpriced?: string[]; charged: boolean; why?: string };
 }
 
 /** A `repos` entry (by `path`) and the commit its `ref` or `pr` resolved to when the claim was made (spec §5). */

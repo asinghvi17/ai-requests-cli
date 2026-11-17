@@ -15,18 +15,21 @@
 - Stopping early (spec §11), all in `watch`: a pane that exits without `AIR_DONE` (any status) is resumed once
   (`pauseReason: exit`, `exitResumes`), with an instruction to read `out/PROGRESS.md` and the git log; a second
   exit stops it early. So do a quota window resetting more than 24 h away, a quota pause past `QUOTA_WAIT_MS`
-  (24 h; not before an hour after the reset it waited on), more than twice `expectedCost` used of the primary
-  window (`overEffort`, only with comparable readings) and `timeout`. `partialJob` sets `checkpointing`, closes
+  (24 h; not before an hour after the reset it waited on), a cost at API prices over twice the effort's dollars
+  (`overEffort`, from `jobSpent`; no record, no check) and `timeout`. `partialJob` sets `checkpointing`, closes
   the window, pushes `air/<N>[-k]` for `deliver: pr` (`pushWork`, shared with PR delivery; a resumed request
   pushes to its checkpoint's own branch, with a lease on the checkpoint's commit) and uploads `out/` as
   `air-<N>-<nonce>-out.zip`, then posts the `partial` release with `resume`. A timeout whose checkpoint keeps
   nothing fails instead. Quota pauses are never released by the 48 h rule.
 - Every final comment (done, failed, partial, released) ends with an `air-result` block; `usage` is in it once
   the agent started (`usageReport`). Release comments get theirs from `release()` in src/claim.
-- Manual budgets: when a job ends (`usageReport`, and `loseJob`), `chargeSpend` reads what the agent spent from
-  its own records (`src/usage/spent.ts`: Claude Code transcripts of `job.sessions`, Codex rollouts whose `cwd` is
-  the workspace) and puts the tokens on the ledger of a budget in tokens, once (`job.spend`). A budget in
-  percent, or an agent that left no record, is not charged; the footer says which.
+- Spend: when a job ends (`usageReport`, and `loseJob`), `settleSpend` prices what the agent spent from its own
+  records (`jobSpent` → `src/usage/spent.ts`: Claude Code transcripts of `job.sessions`, Codex rollouts whose
+  `cwd` is the workspace; priced by `src/usage/prices.ts`), once (`job.spend`). The footer gives the cost
+  against the effort's dollars, and a manual budget is charged it on its ledger. A model without a price is
+  logged as a warning and its calls count nothing; an agent that left no record isn't charged, and the footer
+  says so. `committedUsage` holds back each running job's effort dollars (less what it spent so far) from a
+  readable window, and the larger of the two from a manual one, whose ledger is charged only at the end.
 - Sessions: Claude Code starts with `--session-id <uuid>` chosen by air, so resume is `--resume <uuid>`. Codex's
   id is read from its rollout file (`$CODEX_HOME/sessions/**/rollout-*.jsonl`, `session_meta.cwd` = workspace)
   when stopping. A resume that dies within `resumeCheckMs` falls back to a fresh start told to read `out/` and
