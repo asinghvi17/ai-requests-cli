@@ -119,15 +119,20 @@ test('exhausted: a full all-model window, or the full window scoped to the model
   assert.equal(exhausted(undefined, 'opus'), undefined);
 });
 
-test('committedUsage adds the expected cost still to come of held jobs', () => {
+test('committedUsage adds what held jobs are still to spend, in dollars', () => {
   const now = sub([{ name: 'seven_day', kind: 'weekly', usedPct: 12, resetsAt: null }]);
-  const before = sub([{ name: 'seven_day', kind: 'weekly', usedPct: 10, resetsAt: null }]);
-  const ws = (status: string, expectedCost: number) => ({
-    dir: '/x',
-    state: { job: { status, harness: 'claude', subscription: 'max', model: 'sonnet', runMs: 0, starts: 1, expectedCost, usageBefore: before } },
+  const manual = sub([{ name: 'weekly', kind: 'weekly', usedPct: 50, resetsAt: null, usdLeft: 50, usdBudget: 100 }], { name: 'team', harness: 'manual' });
+  const ws = (subscription: string, status: string, expectedCost: number, spent: number) => ({
+    dir: `/x/${spent}`,
+    state: { job: { status, harness: 'claude', subscription, model: 'sonnet', runMs: 0, starts: 1, expectedCost } },
   }) as never;
-  const [s] = committedUsage([now], [ws('running', 8), ws('done', 40)]);
-  assert.equal(s!.windows[0]!.usedPct, 12 + (8 - 2));
+  const config = { models: {}, subscriptions: { max: { window_usd: 1000 } } };
+  const spent = (w: { dir: string }) => Number(w.dir.slice(3));
+  const [s, m] = committedUsage([now, manual], [ws('max', 'running', 10, 2), ws('max', 'done', 100, 0), ws('team', 'running', 10, 12), ws('team', 'paused', 30, 5)], config, spent);
+  // a readable meter already shows the $2 spent: $8 more of a $1,000 window
+  assert.ok(Math.abs(s!.windows[0]!.usedPct! - (12 + 0.8)) < 1e-9);
+  // a manual ledger is charged when a job ends: the larger of expected and spent, $12 + $30 of $100
+  assert.ok(Math.abs(m!.windows[0]!.usedPct! - (50 + 42)) < 1e-9);
 });
 
 test('server state: pause flag round-trips; a missing or bad file is not paused', () => {

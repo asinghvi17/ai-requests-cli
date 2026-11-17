@@ -8,8 +8,9 @@ export interface Window {
   kind: WindowKind;
   /** Percent of the window used, 0-100 (may exceed 100); null when unknown. */
   usedPct: number | null;
-  /** Manual budgets in tokens only. */
-  tokensLeft?: number;
+  /** Manual budgets: US dollars (at API prices) left of the budget, and the whole budget. */
+  usdLeft?: number;
+  usdBudget?: number;
   /** ISO time the window resets; null when the source gives none. */
   resetsAt: string | null;
   /** A meter that only counts one model (Claude's `weekly_scoped`), e.g. `Fable`. */
@@ -22,7 +23,7 @@ export interface Subscription {
   windows: Window[];
   /** When the windows were read; null if never read successfully. */
   readAt: string | null;
-  /** Older than STALE_MS (or never read): every usedPct is null and tokensLeft absent. */
+  /** Older than STALE_MS (or never read): every usedPct is null and usdLeft absent. */
   stale: boolean;
   /** The source answered but its primary window (Claude weekly, Codex primary) was missing, e.g. renamed:
    *  every usedPct is null, as for stale. */
@@ -45,6 +46,6 @@ export interface ManualConfig {
   harness: 'manual';
   /** weekly: `day` 0-6 (Sunday 0); monthly: `day` 1-28. `hour` 0-23, default 0. Local time unless `utc`. */
   reset: { every: 'weekly' | 'monthly'; day: number; hour?: number; utc?: boolean };
-  /** Exactly one of tokens or percent. Spend is recorded in the same unit. */
-  budget: { tokens: number } | { percent: number };
+  /** US dollars at API prices (src/usage/prices.ts) per period; spend is recorded in the same dollars. */
+  budget: { usd: number };
 }

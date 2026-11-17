@@ -15,7 +15,7 @@ function setup(subs: unknown) {
   writeFileSync(config, JSON.stringify(subs));
   const lines: string[] = [], errs: string[] = [];
   const run = (argv: string[]) => usageCommand([...argv, '--config', config, '--state-dir', join(dir, 'state')], {
-    now, out: s => lines.push(s), err: s => errs.push(s),
+    now, out: s => lines.push(s), err: s => errs.push(s), windowUsd: name => (name === 'work' ? 2000 : undefined),
     readers: {
       claude: async cfg => cfg.name === 'work' ? { windows: parseClaudeUsage(recorded) } : { windows: [], note: 'not logged in' },
       codex: async () => ({ windows: [], note: 'codex: timeout' }),
@@ -28,7 +28,7 @@ const subs = [
   { name: 'work', harness: 'claude', configDir: '/nonexistent/claude-work' },
   { name: 'home', harness: 'claude' },
   { name: 'codex', harness: 'codex' },
-  { name: 'team', harness: 'manual', reset: { every: 'weekly', day: 1, utc: true }, budget: { tokens: 2_000_000 } },
+  { name: 'team', harness: 'manual', reset: { every: 'weekly', day: 1, utc: true }, budget: { usd: 200 } },
 ];
 
 test('prints a table per subscription', async () => {
@@ -36,28 +36,28 @@ test('prints a table per subscription', async () => {
   assert.equal(await run([]), 0);
   assert.equal(lines.join('\n'), [
     'work (claude) · read <1m ago',
-    '  WINDOW           LEFT   RESETS IN',
-    '  5-hour           70%    2h 15m',
-    '  Weekly           54%    22h 15m',
-    '  Weekly (Fable)   100%   22h 15m',
+    '  WINDOW           LEFT                         RESETS IN',
+    '  5-hour           70%                          2h 15m',
+    '  Weekly           54% ($1080.00 of $2000.00)   22h 15m',
+    '  Weekly (Fable)   100%                         22h 15m',
     'home (claude) · never read · STALE: treated as unknown · not logged in',
     '  no windows',
     'codex (codex) · never read · STALE: treated as unknown · codex: timeout',
     '  no windows',
     'team (manual) · read <1m ago',
-    '  WINDOW   LEFT              RESETS IN',
-    '  Weekly   100% (2.0M tok)   1d 5h',
+    '  WINDOW   LEFT                        RESETS IN',
+    '  Weekly   100% ($200.00 of $200.00)   1d 5h',
   ].join('\n'));
 });
 
-test('spend decrements a manual budget; --json prints subscriptions', async () => {
+test('spend decrements a manual budget in dollars; --json prints subscriptions', async () => {
   const { run, lines } = setup(subs);
-  assert.equal(await run(['spend', 'team', '500000']), 0);
-  assert.match(lines.pop()!, /Weekly {3}75% \(1\.5M tok\)/);
+  assert.equal(await run(['spend', 'team', '50.5']), 0);
+  assert.match(lines.pop()!, /Weekly {3}75% \(\$149\.50 of \$200\.00\)/);
   assert.equal(await run(['--json']), 0);
   const out = JSON.parse(lines.pop()!);
   assert.deepEqual(out.map((s: any) => [s.name, s.stale]), [['work', false], ['home', true], ['codex', true], ['team', false]]);
-  assert.equal(out[3].windows[0].tokensLeft, 1_500_000);
+  assert.equal(out[3].windows[0].usdLeft, 149.5);
 });
 
 test('rejects bad arguments and config', async () => {
@@ -67,7 +67,12 @@ test('rejects bad arguments and config', async () => {
   assert.equal(await run(['bogus']), 2);
   assert.equal(await run(['--nope']), 2);
   assert.equal(errs.length, 9);
-  assert.equal(await setup([{ name: 'm', harness: 'manual', reset: { every: 'weekly', day: 9 }, budget: { tokens: 1 } }]).run([]), 1);
+  assert.equal(await setup([{ name: 'm', harness: 'manual', reset: { every: 'weekly', day: 9 }, budget: { usd: 1 } }]).run([]), 1);
+  for (const budget of [{ tokens: 1 }, { percent: 100 }, { usd: 0 }, { usd: '5' }, { usd: 5, tokens: 1 }]) {
+    const e = setup([{ name: 'm', harness: 'manual', reset: { every: 'weekly', day: 1 }, budget }]);
+    assert.equal(await e.run([]), 1, JSON.stringify(budget));
+    assert.match(e.errs[0]!, /budget must be \{ usd: N \}/);
+  }
   assert.equal(await setup([{ name: 'a', harness: 'claude' }, { name: 'a', harness: 'codex' }]).run([]), 1);
   assert.deepEqual(loadConfig('/nonexistent/subscriptions.json').map(s => s.harness), ['claude', 'codex']);
 });
@@ -99,18 +104,18 @@ test('a corrupt ledger: manual subscriptions read unknown until reset-ledger; pl
   assert.equal(await run([]), 0);
   assert.deepEqual(readdirSync(state).filter(n => n.startsWith('manual-ledger')), []); // a read wrote nothing
   assert.equal(await run(['spend', 'team', '100']), 0);
-  writeFileSync(join(state, 'manual-ledger.json'), '{"version": 2}');
+  writeFileSync(join(state, 'manual-ledger.json'), '{"version": 1}');
   lines.length = 0;
   assert.equal(await run(['--json']), 0);
   const [s] = JSON.parse(lines.pop()!);
   assert.equal(s.stale, true);
   assert.equal(s.windows[0].usedPct, null);
-  assert.match(s.note, /unsupported version 2.*reset-ledger/);
+  assert.match(s.note, /invalid contents.*reset-ledger/);
   assert.equal(await run([]), 0);
   assert.match(lines.pop()!, /team \(manual\) · never read · STALE.*\n  WINDOW .*\n  Weekly   \?  /);
   assert.equal(await run(['spend', 'team', '1']), 1);
   assert.match(errs.pop()!, /reset-ledger/);
   assert.equal(await run(['reset-ledger']), 0);
   assert.equal(await run(['spend', 'team', '1']), 0);
-  assert.match(lines.pop()!, /100% \(2\.0M tok\)/);
+  assert.match(lines.pop()!, /\(\$199\.00 of \$200\.00\)/);
 });

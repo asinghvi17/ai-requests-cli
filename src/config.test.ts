@@ -33,12 +33,11 @@ tick_seconds = 30
 
 [subscriptions.max]
 harness = "claude"
-scale = 20
+window_usd = 1500
 reserve = 0.3
 
 [subscriptions.codex-pro]
 harness = "codex"
-budget = 40
 
 [models.claude]
 large = "claude-opus-5-5"
@@ -60,8 +59,8 @@ args = ["--permission-mode", "acceptEdits"]
     max_jobs: 3,
     tick_seconds: 30,
     subscriptions: {
-      max: { harness: 'claude', scale: 20, reserve: 0.3 },
-      'codex-pro': { harness: 'codex', scale: 1, reserve: 0, budget: 40 },
+      max: { harness: 'claude', window_usd: 1500, reserve: 0.3 },
+      'codex-pro': { harness: 'codex', reserve: 0 },
     },
     models: {
       claude: { small: 'haiku', medium: 'sonnet', large: 'claude-opus-5-5' },
@@ -81,7 +80,8 @@ test('validation errors', () => {
     ['max_jobs = 1.5', /max_jobs/],
     ['workspace_root = "rel/dir"', /workspace_root must be an absolute path/],
     ['colour = "x"', /unknown key colour/],
-    ['[subscriptions.a]\nscale = 1', /subscriptions.a.harness is required/],
+    ['[subscriptions.a]\nreserve = 0.1', /subscriptions.a.harness is required/],
+    ['[subscriptions.a]\nharness = "claude"\nwindow_usd = 0', /subscriptions.a.window_usd must be a positive number/],
     ['[subscriptions.a]\nharness = "claude"\nreserve = 1', /reserve must be a number in \[0, 1\)/],
     ['[subscriptions.a]\nharness = "claude"\nplan = "max"', /unknown key subscriptions.a.plan/],
     ['subscriptions = 1', /subscriptions must be a table/],

@@ -1,12 +1,13 @@
 // Subscriptions with no readable meter: the volunteer states a budget and a reset schedule, and air records its own
 // spend in a small JSON ledger so the budget decrements. A new period rolls the spend back to zero.
-// A ledger that cannot be trusted (bad JSON, bad shape, unknown version) is moved aside and its subscriptions read
+// A ledger that cannot be trusted (bad JSON or a bad shape) is moved aside and its subscriptions read
 // as unknown until `air usage reset-ledger` writes a fresh one: lost spend must never look like an unused budget.
 import { readdirSync, readFileSync, renameSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { withLock, writeAtomic } from './lock.ts';
 import type { ManualConfig, Subscription } from './types.ts';
 
+/** `spent`: US dollars at API prices. */
 export interface Ledger { version: 1; subscriptions: Record<string, { periodStart: string; spent: number }> }
 /** `ledger: null`: unusable; `error` says why and where the bad file went. */
 export type LedgerLoad = { ledger: Ledger; error?: undefined } | { ledger: null; error: string };
@@ -30,7 +31,7 @@ function loadUnlocked(file: string): LedgerLoad {
       : { ledger: emptyLedger() };
   }
   let v: unknown, why: string;
-  try { v = JSON.parse(text); why = (v as any)?.version !== 1 ? `unsupported version ${JSON.stringify((v as any)?.version)}` : 'invalid contents'; }
+  try { v = JSON.parse(text); why = 'invalid contents'; }
   catch { why = 'invalid JSON'; }
   if (valid(v)) return { ledger: v };
   const to = `${file}.corrupt.${new Date().toISOString().replace(/[:.]/g, '-')}`;
@@ -90,7 +91,7 @@ function current(cfg: ManualConfig, ledger: Ledger, now: number) {
   return { periodStart, end, spent: e && e.periodStart === periodStart ? e.spent : 0 };
 }
 
-/** Record spend (tokens or percent points, the budget's unit), rolling the period over. Mutates `ledger`. */
+/** Record spend (US dollars, the budget's unit), rolling the period over. Mutates `ledger`. */
 export function recordSpend(cfg: ManualConfig, ledger: Ledger, amount: number, now = Date.now()) {
   if (!Number.isFinite(amount) || amount < 0) throw new Error(`invalid spend ${amount}`);
   const { periodStart, spent } = current(cfg, ledger, now);
@@ -105,11 +106,10 @@ export function readManual(cfg: ManualConfig, ledger: Ledger | null, now = Date.
       windows: [{ name: kind, kind, usedPct: null, resetsAt: new Date(period(cfg.reset, now).end).toISOString() }] };
   }
   const { spent, end } = current(cfg, ledger, now);
-  const budget = 'tokens' in cfg.budget ? cfg.budget.tokens : cfg.budget.percent;
-  const usedPct = budget > 0 ? Math.round((spent / budget) * 1000) / 10 : 100;
+  const budget = cfg.budget.usd;
+  const usedPct = budget > 0 ? (spent / budget) * 100 : 100;
   return {
     name: cfg.name, harness: 'manual', readAt: new Date(now).toISOString(), stale: false,
-    windows: [{ name: kind, kind, usedPct, resetsAt: new Date(end).toISOString(),
-      ...('tokens' in cfg.budget ? { tokensLeft: Math.max(0, cfg.budget.tokens - spent) } : {}) }],
+    windows: [{ name: kind, kind, usedPct, resetsAt: new Date(end).toISOString(), usdLeft: Math.max(0, budget - spent), usdBudget: budget }],
   };
 }

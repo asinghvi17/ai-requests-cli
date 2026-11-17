@@ -23,7 +23,7 @@ function save(stateDir: string, name: string, e: Entry) {
 }
 
 /** Windows with the numbers removed: what unknown looks like. */
-export const unknownWindows = (ws: Window[]): Window[] => ws.map(({ tokensLeft, ...w }) => ({ ...w, usedPct: null }));
+export const unknownWindows = (ws: Window[]): Window[] => ws.map(({ usdLeft, usdBudget, ...w }) => ({ ...w, usedPct: null }));
 
 export function toSubscription(name: string, harness: string, e: Entry | undefined, now: number): Subscription {
   const readAt = e?.readAt ?? null;

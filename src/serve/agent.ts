@@ -1,10 +1,11 @@
 // Agent command lines. Claude Code runs interactively with the model for the matched tier and a session id
 // air picks (`--session-id`), so it can be resumed with `--resume`. Codex CLI runs interactively too; its
 // session id is found afterwards in its rollout files, for `codex resume`.
-import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { closeSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { Agent } from '../config.ts';
+import { codexRollouts } from '../usage/spent.ts';
 import { TASK_INSTRUCTION } from '../workspace/launch.ts';
 
 export type Harness = 'claude' | 'codex';
@@ -48,30 +49,8 @@ export function agentArgv(a: AgentArgs): string[] {
  * `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`, whose first line is a `session_meta` record.
  */
 export function findCodexSession(cwd: string, since: Date, codexHome = process.env.CODEX_HOME || join(homedir(), '.codex')): string | undefined {
-  const files: { path: string; mtime: number }[] = [];
-  const walk = (dir: string, depth: number) => {
-    let names: string[];
-    try {
-      names = readdirSync(dir);
-    } catch {
-      return;
-    }
-    for (const n of names) {
-      const p = join(dir, n);
-      if (depth < 3) walk(p, depth + 1);
-      else if (/^rollout-.*\.jsonl$/.test(n)) {
-        try {
-          const m = statSync(p).mtimeMs;
-          if (m >= since.getTime() - 60_000) files.push({ path: p, mtime: m });
-        } catch {
-          // gone
-        }
-      }
-    }
-  };
-  walk(join(codexHome, 'sessions'), 0);
-  for (const f of files.sort((a, b) => b.mtime - a.mtime)) {
-    const meta = firstLine(f.path);
+  for (const path of codexRollouts(codexHome, since)) {
+    const meta = firstLine(path);
     try {
       const v = JSON.parse(meta ?? '') as { type?: string; payload?: { id?: string; cwd?: string } };
       if (v.type === 'session_meta' && v.payload?.cwd === cwd && typeof v.payload.id === 'string' && /^[A-Za-z0-9-]+$/.test(v.payload.id)) return v.payload.id;

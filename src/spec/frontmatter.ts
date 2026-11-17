@@ -8,8 +8,8 @@ export const SPEC_VERSION = 0;
 
 export const EFFORTS = ['XS', 'S', 'M', 'L', 'XL'] as const;
 export type Effort = (typeof EFFORTS)[number];
-/** Share of one weekly usage window, in percent. */
-export const EFFORT_PERCENT: Record<Effort, number> = { XS: 1, S: 3, M: 8, L: 20, XL: 40 };
+/** What each effort is expected to cost, in US dollars at API prices (spec §2). */
+export const EFFORT_USD: Readonly<Record<Effort, number>> = { XS: 1, S: 3, M: 10, L: 30, XL: 100 };
 
 export const HARNESSES = ['claude', 'codex', 'any'] as const;
 export type Harness = (typeof HARNESSES)[number];

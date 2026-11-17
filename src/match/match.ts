@@ -1,26 +1,23 @@
 // Effort matching: pick the local subscription (if any) that takes a request. Pure: no I/O, `now` is injected.
+// Everything is in US dollars at API prices: an effort's cost (spec §2), a manual budget, and a subscription's
+// primary window, which config.toml's `window_usd` says the worth of.
 
+import { EFFORT_USD, EFFORTS, type Effort } from '../spec/frontmatter.ts';
+import { usd } from '../usage/prices.ts';
 import type { Subscription, Window } from '../usage/types.ts';
 
-export type Effort = 'XS' | 'S' | 'M' | 'L' | 'XL';
+export { EFFORT_USD, EFFORTS, type Effort };
 export type Tier = 'small' | 'medium' | 'large';
-
-export const EFFORTS: readonly Effort[] = ['XS', 'S', 'M', 'L', 'XL'];
-
-/** Percent of one weekly window an effort is expected to cost, at scale 1. */
-export const EFFORT_COST: Readonly<Record<Effort, number>> = { XS: 1, S: 3, M: 8, L: 20, XL: 40 };
 
 /** Fraction of the primary window kept for the owner when a subscription sets none. */
 export const DEFAULT_RESERVE = 0.3;
 /** Harnesses a request can name and the server can run; `any` matches both. */
 export const EXECUTABLE_HARNESSES: readonly string[] = ['claude', 'codex'];
-/** Tolerance for percent arithmetic, so exact fits are not lost to float error. */
+/** Tolerance for dollar arithmetic, so exact fits are not lost to float error. */
 export const EPS = 1e-9;
 export const DEFAULT_MAX_JOBS = 1;
 export const FIVE_HOUR_LIMIT = 80;
 export const TAPER_MS = 24 * 3600_000;
-/** A monthly window is ~30/7 weeks, so the same work is a smaller share of it. */
-export const MONTHLY_FACTOR = 7 / 30;
 
 export interface Request {
   /** Anything but XS, S, M, L or XL exactly takes nothing. */
@@ -35,9 +32,9 @@ export interface SubscriptionSettings {
   /** The agent harness this subscription funds. Required for `manual` subscriptions, which are matched like
    *  any other subscription of that harness; ignored for claude and codex readers (the reader's harness wins). */
   harness?: string;
-  /** Cost multiplier relative to the reference (largest) plan: a smaller plan such as Pro sets 5, so every
-   *  effort size costs 5x as much of its window. Default 1. */
-  scale?: number;
+  /** US dollars at API prices a full primary window of this plan is worth. Required for a subscription whose
+   *  meter is a percentage (claude, codex); a manual one has its budget in dollars. */
+  window_usd?: number;
   /** Fraction (0-1) of the primary window kept back. Default 0.3. */
   reserve?: number;
 }
@@ -56,7 +53,6 @@ export interface NoChoice { none: true; reasons: string[] }
 export interface Verdict { ok: boolean; reason: string; headroom: number; cost: number; model?: string }
 
 const fmt = (n: number): string => String(Math.round(n * 10) / 10);
-
 export function canTakeMore(running: number, maxJobs: number = DEFAULT_MAX_JOBS): boolean {
   return running < maxJobs;
 }
@@ -67,7 +63,7 @@ export function primaryWindow(sub: Subscription): Window | undefined {
   return unscoped.find((w) => w.kind === 'weekly') ?? unscoped.find((w) => w.kind === 'monthly');
 }
 
-/** Reserve in percent points: full until 24 h before reset, then linear to 0 at reset. */
+/** Reserve (in the unit of `base`): full until 24 h before reset, then linear to 0 at reset. */
 export function reserveFor(base: number, resetsAt: string | null, now: Date): number {
   if (resetsAt === null) return base;
   const left = Date.parse(resetsAt) - now.getTime();
@@ -75,7 +71,7 @@ export function reserveFor(base: number, resetsAt: string | null, now: Date): nu
   return base * Math.min(1, Math.max(0, left / TAPER_MS));
 }
 
-const isEffort = (e: unknown): e is Effort => typeof e === 'string' && Object.hasOwn(EFFORT_COST, e);
+const isEffort = (e: unknown): e is Effort => typeof e === 'string' && Object.hasOwn(EFFORT_USD, e);
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 
 /** The agent harness a subscription's work runs on: a manual one funds the harness its config declares. */
@@ -84,10 +80,9 @@ export function effectiveHarness(sub: Subscription, config: MatchConfig): string
   return config.subscriptions?.[sub.name]?.harness;
 }
 
-export function costOf(effort: Effort, sub: Subscription, config: MatchConfig): number {
-  const scale = config.subscriptions?.[sub.name]?.scale ?? 1;
-  const factor = primaryWindow(sub)?.kind === 'monthly' ? MONTHLY_FACTOR : 1;
-  return EFFORT_COST[effort] * scale * factor;
+/** What `sub`'s whole primary window is worth in dollars: a manual budget, else config.toml's `window_usd`. */
+export function windowSize(sub: Subscription, config: MatchConfig): number | undefined {
+  return sub.harness === 'manual' ? primaryWindow(sub)?.usdBudget : config.subscriptions?.[sub.name]?.window_usd;
 }
 
 function harnessAllowed(harness: string, allowed: string[] | undefined): boolean {
@@ -111,11 +106,9 @@ export function evaluate(
       : `harness ${harness} cannot run requests, ignored`);
   }
   const settings = config.subscriptions?.[sub.name];
-  const scale = settings?.scale ?? 1;
   const baseReserve = settings?.reserve ?? DEFAULT_RESERVE;
-  if (!finite(scale) || scale <= 0) return no(`invalid scale ${scale}, takes nothing`);
   if (!finite(baseReserve) || baseReserve < 0) return no(`invalid reserve ${baseReserve}, takes nothing`);
-  const cost = costOf(effort, sub, config);
+  const cost = EFFORT_USD[effort];
   if (!harnessAllowed(harness, allowed)) return no(`harness ${harness} not allowed (wants ${allowed!.join(', ')})`, cost);
   let model: string | undefined;
   if (tier !== undefined) {
@@ -126,10 +119,13 @@ export function evaluate(
   const win = primaryWindow(sub);
   const label = win?.kind === 'monthly' ? 'monthly' : 'weekly';
   if (!win || !finite(win.usedPct) || win.usedPct < 0) return no(`${label} usage unknown, takes nothing`, cost);
-  const left = 100 - win.usedPct;
-  const reserve = reserveFor(baseReserve * 100, win.resetsAt, now);
+  const size = windowSize(sub, config);
+  if (size === undefined) return no('no window_usd in config.toml, so its window has no dollar size; takes nothing', cost);
+  if (!finite(size) || size <= 0) return no(`invalid window size $${size}, takes nothing`, cost);
+  const left = ((100 - win.usedPct) / 100) * size;
+  const reserve = reserveFor(baseReserve * size, win.resetsAt, now);
   const headroom = left - cost - reserve;
-  const why = `${label} ${fmt(left)}% left, needs ${fmt(cost)}% + ${fmt(reserve)}% reserve`;
+  const why = `${label} ${usd(left)} left, needs ${usd(cost)} + ${usd(reserve)} reserve`;
   if (!Number.isFinite(headroom)) return no(`${label} usage unknown, takes nothing`, cost);
   // Round to 1e-9 so exact fits survive float error and ordering by headroom stays a strict weak order.
   const rounded = Math.round(headroom / EPS) * EPS;
@@ -184,32 +180,13 @@ export function largestEffort(sub: Subscription, config: MatchConfig, now: Date)
   return null;
 }
 
-// Calibration hook: the server logs these into claim comments so the effort table can be tuned.
+// Calibration: the final comment records each job's expected and measured cost, so the effort table can be tuned.
 
 export interface ActualRecord {
   issue: string;
   effort: Effort;
-  /** Table cost at scale 1, percent of a weekly window. */
+  /** The effort's cost, US dollars. */
   expected: number;
-  /** Percent points of the primary window actually consumed; null if not measurable. */
-  delta: number | null;
-  /** delta normalised by scale: comparable to `expected`. */
-  share: number | null;
-}
-
-export function recordActual(
-  issue: string, effort: Effort, before: Subscription, after: Subscription, config: MatchConfig = { models: {} },
-): ActualRecord {
-  const expected = EFFORT_COST[effort];
-  const b = primaryWindow(before);
-  const a = primaryWindow(after);
-  const bu = b?.usedPct;
-  const au = a?.usedPct;
-  if (!finite(bu) || !finite(au) || before.stale || after.stale || before.incomplete || after.incomplete || b?.resetsAt !== a?.resetsAt || au < bu) {
-    return { issue, effort, expected, delta: null, share: null };
-  }
-  const delta = au - bu;
-  const scale = config.subscriptions?.[after.name]?.scale ?? 1;
-  const factor = a?.kind === 'monthly' ? MONTHLY_FACTOR : 1;
-  return { issue, effort, expected, delta, share: delta / (scale * factor) };
+  /** What the job cost at API prices; null if it couldn't be measured. */
+  usd: number | null;
 }

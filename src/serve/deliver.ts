@@ -72,12 +72,16 @@ export async function reportComment(report: string, footer: string, upload: () =
   const cut = '\n\n[... cut ...]\n\n';
   const tailText = `${cut}${footer}\n\n${block}`;
   // Room for a closing fence of any length the cut may need.
-  const room = COMMENT_LIMIT - head.length - tailText.length;
-  let start = safe.slice(0, Math.max(0, room));
+  return `${head}${cutToFit(safe, COMMENT_LIMIT - head.length - tailText.length)}${tailText}`;
+}
+
+/** The start of `text`, with any fence the cut leaves open closed, in at most `room` characters. */
+function cutToFit(text: string, room: number): string {
+  let start = text.slice(0, Math.max(0, room));
   for (;;) {
     if (/[\uD800-\uDBFF]$/.test(start)) start = start.slice(0, -1); // no dangling surrogate half
     const closed = closeFence(start);
-    if (closed.length <= room) return `${head}${closed}${tailText}`;
+    if (closed.length <= room) return closed;
     start = start.slice(0, room - (closed.length - start.length));
   }
 }
@@ -131,18 +135,21 @@ async function uploadOnce(ctx: ServeContext, dir: string, name: string, file: ()
   return asset;
 }
 
+/** Uploads the full report once, as `air-<N>-<nonce>-report.md`, for a comment or PR body it doesn't fit in (§6). */
+async function uploadReport(ctx: ServeContext, dir: string, state: State, report: string): Promise<UploadedAsset> {
+  const name = `air-${state.issue}-${state.nonce}-report.md`;
+  const tmp = join(dir, `.${name}`);
+  try {
+    return await uploadOnce(ctx, dir, name, () => (writeFileSync(tmp, report), tmp), 'text/markdown');
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
 async function deliverComment(ctx: ServeContext, dir: string, state: State, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
   const report = readReport(dir);
   if (report === undefined) return { ok: false, step: 'delivery', detail: `The agent finished without writing its report to \`out/${REPORT_FILE}\`.` };
-  const comment = await reportComment(report, footer, async () => {
-    const name = `air-${state.issue}-${state.nonce}-report.md`;
-    const tmp = join(dir, `.${name}`);
-    try {
-      return await uploadOnce(ctx, dir, name, () => (writeFileSync(tmp, report), tmp), 'text/markdown');
-    } finally {
-      rmSync(tmp, { force: true });
-    }
-  }, (where) => doneResult(state, 'comment', usage, { report: where }));
+  const comment = await reportComment(report, footer, () => uploadReport(ctx, dir, state, report), (where) => doneResult(state, 'comment', usage, { report: where }));
   return { ok: true, comment };
 }
 
@@ -191,12 +198,13 @@ const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
 type Pushed = { ok: true; branch: string; sha: string } | { ok: false; detail: string };
 
 /**
- * Pushes the agent's work in `repo/<path>` to the first free `air/<N>[-k]` branch of the entry's url (§6), or
- * says why there is nothing to push: no commits beyond the commit the entry resolved to when claimed. The
- * chosen branch and the pushed commit are recorded per repo, so a retry pushes the same branch. Transient
- * failures throw.
+ * Pushes the agent's work in `repo/<path>` (§6), or says why there is nothing to push: no commits beyond the
+ * commit the entry resolved to when claimed. A resumed request continues its checkpoint's branch (`resume`,
+ * §11): the push moves that branch on, as long as it still points where the checkpoint left it. Otherwise the
+ * work goes to the first free `air/<N>[-k]` branch of the entry's url. The chosen branch and the pushed commit
+ * are recorded per repo, so a retry pushes the same branch. Transient failures throw.
  */
-async function pushWork(ctx: ServeContext, dir: string, state: State, entry: RepoEntry): Promise<Pushed> {
+async function pushWork(ctx: ServeContext, dir: string, state: State, request: Request, entry: RepoEntry): Promise<Pushed> {
   const repoDir = join(dir, 'repo', entry.path);
   const url = entry.url;
   const base = state.repos.find((r) => r.path === entry.path)?.sha;
@@ -233,27 +241,62 @@ async function pushWork(ctx: ServeContext, dir: string, state: State, entry: Rep
   if (!head || !/^[0-9a-f]{40,64}$/.test(head)) {
     return { ok: false, detail: `no commits beyond \`${base.slice(0, 12)}\`. Uncommitted changes are not delivered.` };
   }
+  const ls = await g(['ls-remote', '--heads', '--', url]);
+  if (ls.code !== 0) throw new Error(`git ls-remote failed: ${ls.stderr.trim()}`);
+  const heads = new Map(ls.stdout.split('\n').filter(Boolean).map((l) => {
+    const [sha, ref] = l.split('\t');
+    return [ref!.replace(/^refs\/heads\//, ''), sha!] as const;
+  }));
+  const checkpoint = request.resume?.branches.find((b) => b.repo === entry.path);
   let branch = done.branch;
-  if (!branch) {
-    const ls = await g(['ls-remote', '--heads', '--', url]);
-    if (ls.code !== 0) throw new Error(`git ls-remote failed: ${ls.stderr.trim()}`);
-    const heads = new Set(ls.stdout.split('\n').filter(Boolean).map((l) => l.split('\t')[1]!.replace(/^refs\/heads\//, '')));
+  let force = ['--force'];
+  if (checkpoint) {
+    branch = checkpoint.branch;
+    const now = heads.get(branch);
+    // Ours to move on: the checkpoint's commit, gone (say deleted after the partial result), or already this push.
+    if (now !== undefined && now !== checkpoint.sha && now !== head) {
+      return { ok: false, detail: `the checkpoint branch \`${branch}\` moved since the checkpoint (it is at \`${now.slice(0, 12)}\`, not \`${checkpoint.sha.slice(0, 12)}\`), so air did not overwrite it.` };
+    }
+    // The check above and the push are one step on the remote: the push fails if the branch moved meanwhile.
+    force = [`--force-with-lease=refs/heads/${branch}:${now ?? ''}`];
+    if (!done.branch) recordRepo(ctx, dir, entry.path, { branch });
+  } else if (!branch) {
     branch = `air/${state.issue}`;
     for (let k = 2; heads.has(branch); k++) branch = `air/${state.issue}-${k}`;
     // Recorded before the push, so a retry after a crash pushes the same branch rather than the next one.
     recordRepo(ctx, dir, entry.path, { branch });
   }
-  const push = await g(['push', '--quiet', '--porcelain', '--force', '--', url, `${head}:refs/heads/${branch}`]);
+  const push = await g(['push', '--quiet', '--porcelain', ...force, '--', url, `${head}:refs/heads/${branch}`]);
   if (push.code !== 0) throw new Error(`git push of ${branch} to ${url} failed: ${push.stderr.trim() || push.stdout.trim()}`);
   rmSync(clean, { recursive: true, force: true });
   recordRepo(ctx, dir, entry.path, { sha: head });
   return { ok: true, branch, sha: head };
 }
 
+/** Room in a pull request's body for the `Part of` line and each sibling's line. */
+const PR_LINE_ROOM = 512;
+
+/**
+ * The agent's report for the bodies of `prs` pull requests (§6), made safe. One that doesn't fit next to the
+ * `Part of` line and the siblings in GitHub's body limit (COMMENT_LIMIT) is uploaded whole, and the body gets
+ * a line pointing at it and the report's start.
+ */
+async function prSummary(ctx: ServeContext, dir: string, state: State, prs: number): Promise<string> {
+  const report = readReport(dir);
+  if (report === undefined) return '(The agent left no summary.)';
+  // A fence the report leaves open would swallow the siblings list: close it.
+  const safe = closeFence(defuseMarkers(report.trim()));
+  const room = COMMENT_LIMIT - PR_LINE_ROOM * (prs + 1);
+  if (safe.length <= room) return safe;
+  const head = `**Truncated:** the full report is ${(await uploadReport(ctx, dir, state, report)).url}\n\n`;
+  const cut = '\n\n[... cut ...]';
+  return `${head}${cutToFit(safe, room - head.length - cut.length)}${cut}`;
+}
+
 /** A pull request's body (§6): the requests issue, the agent's summary and, once all are open, its siblings. */
 function prBody(ctx: ServeContext, state: State, summary: string, siblings: string[]): string {
   const others = siblings.length ? `\n\nThe other pull requests for this request:\n\n${siblings.map((u) => `- ${u}`).join('\n')}\n` : '';
-  return `Part of ${ctx.gh.repo}#${state.issue}\n\n${defuseMarkers(summary.trim())}\n${others}`;
+  return `Part of ${ctx.gh.repo}#${state.issue}\n\n${summary}\n${others}`;
 }
 
 /**
@@ -262,14 +305,14 @@ function prBody(ctx: ServeContext, state: State, summary: string, siblings: stri
  * with commits fails the request.
  */
 async function deliverPr(ctx: ServeContext, dir: string, state: State, request: Request, footer: string, usage: ResultUsage | undefined): Promise<Delivered> {
-  const summary = readReport(dir) ?? '(The agent left no summary.)';
   const entries = request.repos.filter((e) => delivers(request, e));
+  const summary = await prSummary(ctx, dir, state, entries.length);
   const without: string[] = [];
   for (const entry of entries) {
     if (repoRecord(dir, entry.path).prUrl) continue;
     const target = githubRepo(entry.url, ctx.ghHost);
     if ('error' in target) return { ok: false, step: 'delivery', detail: target.error };
-    const pushed = await pushWork(ctx, dir, state, entry);
+    const pushed = await pushWork(ctx, dir, state, request, entry);
     if (!pushed.ok) {
       without.push(`- ${code(entry.path)}: ${pushed.detail}`);
       continue;
@@ -320,7 +363,7 @@ export async function checkpoint(ctx: ServeContext, dir: string, state: State, r
   const resume: Resume = { branches: [] };
   for (const entry of request.repos) {
     if (!delivers(request, entry) || !existsSync(join(dir, 'repo', entry.path))) continue;
-    const pushed = await pushWork(ctx, dir, state, entry);
+    const pushed = await pushWork(ctx, dir, state, request, entry);
     if (pushed.ok) {
       resume.branches.push({ repo: entry.path, branch: pushed.branch, sha: pushed.sha });
       lines.push(`- ${code(entry.path)}: the agent's commits, pushed to branch \`${pushed.branch}\` of ${entry.url} (\`${pushed.sha.slice(0, 12)}\`). Uncommitted changes are not kept.`);

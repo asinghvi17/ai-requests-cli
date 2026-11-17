@@ -4,15 +4,20 @@
 // same record.
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HELD_LABELS, release } from '../claim/claim.ts';
 import { code, fenced, tail } from '../claim/text.ts';
 import { markedComments } from '../claim/trust.ts';
-import { choose, primaryWindow, recordActual, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
+import { choose, EFFORT_USD, primaryWindow, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
 import type { Request } from '../spec/frontmatter.ts';
 import { lint } from '../spec/lint.ts';
 import { currentClaim, type ResultUsage } from '../spec/markers.ts';
+import { ledgerFile } from '../usage/index.ts';
+import { usd } from '../usage/prices.ts';
+import { spend as spendUsd } from '../usage/manual.ts';
+import { claudeSpent, codexSpent, type Spent } from '../usage/spent.ts';
 import type { Subscription } from '../usage/types.ts';
 import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
@@ -82,6 +87,11 @@ export async function loseJob(ctx: ServeContext, dir: string): Promise<void> {
   }
   updateState(dir, { phase: 'lost', ...(state.job ? { job: { ...state.job, status: 'cancelled' as const, startedAt: undefined } } : {}) }, ctx.now());
   ctx.log(`#${state.issue}: our claim no longer holds; leaving the issue alone`);
+  try {
+    if (state.job) settleSpend(ctx, dir, requestOf(dir));
+  } catch (e) {
+    ctx.log(`#${state.issue}: could not work out what the job spent: ${(e as Error).message}`);
+  }
 }
 
 /** Throws ClaimLost (after `loseJob`) unless this workspace's claim still holds the issue. */
@@ -135,11 +145,12 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
     });
   }
   const usageBefore = job.usageBefore ?? (await reading(ctx, job.subscription));
+  const sessions = sessionId !== undefined && job.harness === 'claude' && !job.sessions?.includes(sessionId) ? [...job.sessions ?? [], sessionId] : job.sessions;
   const startedAt = ctx.now();
   await ctx.tmux.startJob({ issue: n, cwd: dir, argv, env: { ...airEnv(dir), ...ctx.agentEnv(job.subscription) } });
   const pane = (await ctx.tmux.listJobs()).find((j) => j.issue === n);
   job = saveJob(ctx, dir, {
-    status: 'running', sessionId, paneNonce: pane?.nonce, startedAt: startedAt.toISOString(), starts: job.starts + 1,
+    status: 'running', sessionId, sessions, paneNonce: pane?.nonce, startedAt: startedAt.toISOString(), starts: job.starts + 1,
     pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, ...(usageBefore ? { usageBefore } : {}),
   });
   ctx.log(`#${n}: started ${job.harness} (${job.model}) ${resume ? `resuming session ${resume}` : 'fresh'}: ${argv.map((a) => JSON.stringify(a)).join(' ')}`);
@@ -201,27 +212,77 @@ export async function stopAgent(ctx: ServeContext, dir: string, reason: PauseRea
   return true;
 }
 
+/** What the job's agent has spent at API prices, from its own session records (`usage/spent.ts`); undefined if it left none. */
+export function jobSpent(ctx: ServeContext, dir: string, job: JobRecord): Spent | undefined {
+  // The login the agent ran with: the subscription's own, else the one its inherited environment names.
+  const own = ctx.agentEnv(job.subscription);
+  if (job.harness === 'claude') return claudeSpent(own.CLAUDE_CONFIG_DIR || ctx.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), job.sessions ?? []);
+  return codexSpent(own.CODEX_HOME || ctx.codexHome || ctx.env.CODEX_HOME || join(homedir(), '.codex'), dir, new Date(readState(dir).createdAt));
+}
+
 /**
- * Usage before and after, and agent time: the calibration footer of the final comment, and the `usage` of
- * its `air-result` block (§10), which is there once the agent has started.
+ * Settles what an ended job cost, once (`job.spend`): its agent's spend at API prices and, for a manual
+ * subscription, the charge to its budget (the README's subscriptions.json section). Calls on a model the price
+ * table doesn't cover cost nothing here, with a warning naming the model. Returns the footer lines saying so,
+ * none for a job whose agent never started.
  */
-export async function usageReport(ctx: ServeContext, state: State, request: Request): Promise<{ footer: string; usage?: ResultUsage }> {
+export function settleSpend(ctx: ServeContext, dir: string, request: Request): string[] {
+  const state = readState(dir);
+  const job = jobOf(state);
+  if (job.starts === 0) return [];
+  const cfg = ctx.manual?.(job.subscription);
+  let spend = job.spend;
+  if (!spend) {
+    const spent = jobSpent(ctx, dir, job);
+    const n = `#${state.issue}`;
+    if (spent?.unpriced.length) ctx.log(`${n}: warning: no API price for ${spent.unpriced.join(', ')}; calls on ${spent.unpriced.length === 1 ? 'it' : 'them'} are not charged`);
+    const measured = spent ? { usd: spent.usd, ...(spent.unpriced.length ? { unpriced: spent.unpriced } : {}) } : {};
+    if (!cfg) spend = { ...measured, charged: false };
+    else if (!spent) spend = { charged: false, why: `${job.harness} left no usage record for this job` };
+    else {
+      try {
+        spendUsd(ledgerFile(ctx.stateDir), cfg, spent.usd, ctx.now().getTime());
+      } catch (e) {
+        // An unusable ledger: the subscription reads as unknown until it is reset, so it takes no work meanwhile.
+        ctx.log(`${n}: could not charge ${usd(spent.usd)} to ${job.subscription}: ${(e as Error).message}`);
+        return [costLine(measured, request), `Not charged to manual budget ${code(job.subscription)}: ${(e as Error).message}.`];
+      }
+      spend = { ...measured, charged: true };
+    }
+    saveJob(ctx, dir, { spend });
+    if (cfg) ctx.log(`${n}: ${spend.charged ? `charged ${usd(spend.usd!)} to` : 'did not charge'} ${job.subscription}${spend.why ? `: ${spend.why}` : ''}`);
+  }
+  const lines = [costLine(spend, request)];
+  if (cfg) lines.push(spend.charged ? `Charged ${usd(spend.usd!)} to manual budget ${code(job.subscription)}.` : `Not charged to manual budget ${code(job.subscription)}: ${spend.why}.`);
+  return lines;
+}
+
+function costLine(spend: { usd?: number; unpriced?: string[] }, request: Request): string {
+  const expects = `effort ${request.effort} expects ${usd(EFFORT_USD[request.effort as Effort])}`;
+  const unpriced = spend.unpriced?.length ? ` Calls on ${spend.unpriced.map(code).join(', ')} are not counted: air's price table has no price for ${spend.unpriced.length === 1 ? 'it' : 'them'}.` : '';
+  return spend.usd === undefined ? `Cost at API prices: unknown, the agent left no usage record; ${expects}.` : `Cost at API prices: ${usd(spend.usd)}; ${expects}.${unpriced}`;
+}
+
+/**
+ * Agent time, cost (`settleSpend`) and usage before and after: the calibration footer of the final comment,
+ * and the `usage` of its `air-result` block (§10), which is there once the agent has started.
+ */
+export async function usageReport(ctx: ServeContext, dir: string, request: Request): Promise<{ footer: string; usage?: ResultUsage }> {
+  const cost = settleSpend(ctx, dir, request);
+  const state = readState(dir);
   const job = jobOf(state);
   const minutes = Math.round(agentMs(job, ctx.now()) / 60_000);
-  const lines = [`<sub>air on ${code(state.host)}: subscription ${code(job.subscription)}, ${job.harness} ${code(job.model)}, agent time ${minutes} min.`];
+  const lines = [`<sub>air on ${code(state.host)}: subscription ${code(job.subscription)}, ${job.harness} ${code(job.model)}, agent time ${minutes} min.`, ...cost];
   const after = await reading(ctx, job.subscription, true);
   const b = job.usageBefore ? primaryWindow(job.usageBefore)?.usedPct : undefined;
   const a = after && !after.stale ? primaryWindow(after)?.usedPct : undefined;
-  let rec: ActualRecord | undefined;
-  if (job.usageBefore && after) {
-    rec = recordActual(`${state.repo}#${state.issue}`, request.effort as Effort, job.usageBefore, after, matchConfig(ctx.config));
-    const fmt = (x: number | null | undefined) => (typeof x === 'number' ? `${Math.round(x * 10) / 10}%` : '?');
-    lines.push(rec.delta === null
-      ? `Usage: ${fmt(b)} before, ${fmt(a)} after (not comparable). Effort ${request.effort} expects ${rec.expected}%.`
-      : `Usage: ${fmt(b)} before, ${fmt(a)} after: ${Math.round(rec.delta * 10) / 10} points; effort ${request.effort} expects ${rec.expected}, measured ${Math.round(rec.share! * 10) / 10}.`);
-  }
+  const fmt = (x: number | null | undefined) => (typeof x === 'number' ? `${Math.round(x * 10) / 10}%` : '?');
+  if (job.usageBefore || after) lines.push(`Usage of \`${job.subscription}\`'s window: ${fmt(b)} before, ${fmt(a)} after.`);
   lines[lines.length - 1] += '</sub>';
-  if (rec) lines.push(`<!-- air-usage ${JSON.stringify(rec)} -->`);
+  if (job.starts > 0) {
+    const rec: ActualRecord = { issue: `${state.repo}#${state.issue}`, effort: request.effort as Effort, expected: EFFORT_USD[request.effort as Effort], usd: job.spend?.usd ?? null };
+    lines.push(`<!-- air-usage ${JSON.stringify(rec)} -->`);
+  }
   const footer = lines.join('\n');
   if (job.starts === 0) return { footer };
   const pct = (x: number | null | undefined) => (typeof x === 'number' && Number.isFinite(x) ? Math.min(100, Math.max(0, Math.round(x * 10) / 10)) : undefined);
@@ -238,7 +299,7 @@ export async function usageReport(ctx: ServeContext, state: State, request: Requ
 async function safeUsage(ctx: ServeContext, dir: string): Promise<{ footer: string; usage?: ResultUsage }> {
   try {
     const state = readState(dir);
-    return state.job ? await usageReport(ctx, state, requestOf(dir)) : { footer: '' };
+    return state.job ? await usageReport(ctx, dir, requestOf(dir)) : { footer: '' };
   } catch {
     return { footer: '' };
   }
@@ -278,7 +339,7 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
   let result;
   try {
     await ensureHeld(ctx, dir); // never push, upload or comment for an issue we no longer hold
-    const { footer, usage } = await usageReport(ctx, state, request);
+    const { footer, usage } = await usageReport(ctx, dir, request);
     result = await deliver(ctx, dir, state, request, footer, usage);
     if (result.ok) {
       if (!state.job!.delivery?.commented) {
@@ -336,8 +397,8 @@ export async function partialJob(ctx: ServeContext, dir: string, reason?: { why:
     return failJob(ctx, dir, 'the checkpoint', `The job stopped early because ${why.why} Its checkpoint failed ${attempts} times. The last error was:\n\n${fenced((e as Error).message)}`);
   }
   if (!cp.resume && why.timeout) return failJob(ctx, dir, 'the timeout', `The job stopped early because ${why.why}\n\n${cp.text}`);
+  const { footer, usage } = await usageReport(ctx, dir, request);
   const state = readState(dir);
-  const { footer, usage } = await usageReport(ctx, state, request);
   const r = await release({
     gh: ctx.gh, issue: n, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
     message: `air on ${code(state.host)} stopped this request early because ${why.why}\n\n${cp.text}\n\n${footer}`,

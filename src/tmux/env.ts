@@ -1,53 +1,39 @@
-// Job environments and command lines. Jobs never inherit the server's environment: the pane runs
-// `env -i` with an explicit allowlist, so tokens (GH_TOKEN, AWS_*, SSH_AUTH_SOCK, ...) cannot leak.
+// Job environments and command lines. A job inherits the environment air runs in, the volunteer's: every
+// variable is passed through, and the caller only adds or overrides variables (the AIR_* ones, an agent's
+// config dir). The tmux client and server get an allowlisted environment of their own.
 
-/** Copied from the caller's environment when set. Everything else must be passed explicitly. */
+/** Copied from the caller's environment for the tmux client when set. */
 export const ALLOWED_VARS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TZ'];
 
-/** Agents' own config dir variables (Claude Code, Codex CLI). */
-export const AGENT_CONFIG_VARS = ['CLAUDE_CONFIG_DIR', 'CODEX_HOME'];
-
-/** Never passed to a job, even when a caller asks. */
-const DENIED = [/^GH_/, /^GITHUB_/, /^AWS_/, /^SSH_/, /^GPG_/, /^GOOGLE_APPLICATION_CREDENTIALS$/, /^AZURE_/,
-  /^NPM_TOKEN$/, /^NODE_AUTH_TOKEN$/, /^TMUX/, /^LD_PRELOAD$/, /^NODE_OPTIONS$/,
-  // Shell startup hooks: sh/bash source these on start, which would re-inject variables.
-  /^BASH_ENV$/, /^ENV$/];
-
-export function isDenied(name: string): boolean {
-  return DENIED.some(re => re.test(name));
-}
+/** Set by tmux for the job's own pane: the caller's values would point at another tmux. */
+const PANE_VARS = ['TMUX', 'TMUX_PANE'];
 
 /**
- * The job's whole environment: allowlisted variables from `base`, then `extra` (which may override them).
- * Throws on a denied or malformed name in `extra`; denied names in `base` are simply not copied.
+ * The job's whole environment: every variable of `base`, then `extra` on top. TMUX and TMUX_PANE are
+ * left to tmux. Throws on a malformed name in `extra`.
  */
 export function jobEnv(extra: Record<string, string> = {}, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const name of [...ALLOWED_VARS, ...AGENT_CONFIG_VARS]) {
-    const v = base[name];
-    if (v !== undefined) env[name] = v;
-  }
+  for (const [name, v] of Object.entries(base)) if (v !== undefined && !PANE_VARS.includes(name)) env[name] = v;
   for (const [name, value] of Object.entries(extra)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`tmux: bad environment variable name ${JSON.stringify(name)}`);
-    if (isDenied(name)) throw new Error(`tmux: refusing to pass ${name} to a job`);
     env[name] = value;
   }
   return env;
 }
 
 /**
- * Check a job's argv and environment before they go into its launcher (`env -i K=V ... argv...`).
+ * Check a job's argv before it goes into its launcher (`env K=V ... argv...`).
  * stdin stays the pane's TTY, so the agent remains interactive.
  */
-export function checkJob(argv: string[], env: Record<string, string>): void {
+export function checkJob(argv: string[]): void {
   const [cmd] = argv;
   if (!cmd) throw new Error('tmux: empty job argv');
   // env(1) would read a leading NAME=value word as an assignment.
   if (cmd.includes('=')) throw new Error(`tmux: job command may not contain '=': ${cmd}`);
-  for (const name of Object.keys(env)) if (isDenied(name)) throw new Error(`tmux: refusing to pass ${name} to a job`);
 }
 
-/** Environment for the tmux client process, so a server we start does not hold the caller's secrets either. */
+/** Environment for the tmux client process, so a server we start does not hold the caller's secrets. */
 export function clientEnv(base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of [...ALLOWED_VARS, 'TERM', 'TMUX_TMPDIR']) {

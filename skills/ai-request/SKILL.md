@@ -32,10 +32,11 @@ If there's none, ask for it and pass `--repo OWNER/NAME` to every `air` command 
 
 ## 3. Estimate and choose
 
-- **effort**: the cost as a share of one weekly usage window. Use `XS` (1%) for a quick lookup or a one-file
-  fix, `S` (3%) for a small change with tests, `M` (8%) for a feature across a few files, `L` (20%) for a
-  multi-repo change or a deep investigation, and `XL` (40%) for a long migration. Estimate on the high
-  side, because a job that uses more than twice its share is stopped early as `partial`.
+- **effort**: the expected cost in US dollars at API prices (the agent's tokens at the model's published
+  rates). Use `XS` ($1) for a quick lookup or a one-file fix, `S` ($3) for a small change with tests, `M`
+  ($10) for a feature across a few files, `L` ($30) for a multi-repo change or a deep investigation, and
+  `XL` ($100) for a long migration. Estimate on the high side, because a job that costs more than twice
+  its effort's dollars is stopped early as `partial`.
 - **deliver**: `pr` when the result is code changes to repos the user can push to. Each repo without
   `deliver: none` must use a branch `ref`, and each one gets its own PR. `artifact` when the result is
   files, such as data, a report with figures, or a patch for a repo the user can't push to. Those go in

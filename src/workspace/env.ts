@@ -1,6 +1,6 @@
 // Environments for `setup` and `check`: an allowlist copied from the server's environment plus the
-// spec's AIR_* variables, never the server's credentials. The same idea as the tmux layer's job env
-// (PR #5); the lists should be shared once both are merged.
+// spec's AIR_* variables, never the server's credentials. (The agent itself inherits the whole
+// environment: see src/tmux/env.ts.)
 
 /** Copied from the server's environment when set. Everything else is dropped. */
 export const ALLOWED_VARS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TZ', 'TERM'];

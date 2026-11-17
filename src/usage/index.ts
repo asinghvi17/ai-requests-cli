@@ -9,6 +9,7 @@ import { cachedRead, effectiveWindows } from './cache.ts';
 import { readClaude } from './claude.ts';
 import { readCodex } from './codex.ts';
 import { loadLedger, readManual, resetLedger, spend } from './manual.ts';
+import { usd } from './prices.ts';
 import type { Reading, Subscription, SubscriptionConfig, Window } from './types.ts';
 
 export type * from './types.ts';
@@ -42,8 +43,8 @@ export function loadConfig(file: string): SubscriptionConfig[] {
         || (r.every === 'weekly' ? r.day < 0 || r.day > 6 : r.day < 1 || r.day > 28)) {
         throw new Error(`${file}: ${s.name}: reset must be { every: "weekly", day: 0-6 } or { every: "monthly", day: 1-28 }`);
       }
-      if (!b || ('tokens' in b) === ('percent' in b) || !(Number(b.tokens ?? b.percent) > 0)) {
-        throw new Error(`${file}: ${s.name}: budget must be { tokens: N } or { percent: N }`);
+      if (!b || typeof b !== 'object' || Object.keys(b).join() !== 'usd' || typeof b.usd !== 'number' || !(b.usd > 0) || !Number.isFinite(b.usd)) {
+        throw new Error(`${file}: ${s.name}: budget must be { usd: N }, US dollars at API prices`);
       }
     }
   }
@@ -88,19 +89,25 @@ export function windowTitle(w: Window): string {
   return w.scope ? `${base} (${w.scope})` : base;
 }
 
-const tokens = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(Math.round(n));
-
-export function formatTable(subs: Subscription[], now = Date.now()): string {
+/**
+ * The `air usage` table. A manual budget's left shows dollars; another subscription's primary window shows the
+ * dollars it is worth when `windowUsd` (config.toml `window_usd`) knows its size.
+ */
+export function formatTable(subs: Subscription[], now = Date.now(), windowUsd: (name: string) => number | undefined = () => undefined): string {
   const out: string[] = [];
   for (const s of subs) {
     const age = s.readAt ? `read ${span(now - Date.parse(s.readAt))} ago` : 'never read';
     out.push(`${s.name} (${s.harness}) · ${age}${s.stale ? ' · STALE: treated as unknown' : ''}${s.note ? ` · ${s.note}` : ''}`);
     const ws = effectiveWindows(s);
     if (!ws.length) { out.push('  no windows'); continue; }
+    const primary = ws.filter(w => !w.scope).find(w => w.kind === 'weekly') ?? ws.filter(w => !w.scope).find(w => w.kind === 'monthly');
+    const size = windowUsd(s.name);
     const rows = ws.map(w => {
       const left = w.usedPct == null ? '?' : `${Math.max(0, Math.round(100 - w.usedPct))}%`;
       const reset = w.resetsAt ? (Date.parse(w.resetsAt) > now ? span(Date.parse(w.resetsAt) - now) : 'reset due') : '?';
-      return [windowTitle(w), w.tokensLeft !== undefined ? `${left} (${tokens(w.tokensLeft)} tok)` : left, reset];
+      const dollars = w.usdLeft !== undefined && w.usdBudget !== undefined ? ` (${usd(w.usdLeft)} of ${usd(w.usdBudget)})`
+        : w === primary && size !== undefined && w.usedPct != null ? ` (${usd(Math.max(0, (100 - w.usedPct) / 100 * size))} of ${usd(size)})` : '';
+      return [windowTitle(w), `${left}${dollars}`, reset];
     });
     const head = ['WINDOW', 'LEFT', 'RESETS IN'];
     const width = head.map((h, i) => Math.max(h.length, ...rows.map(r => r[i]!.length)));
@@ -110,11 +117,11 @@ export function formatTable(subs: Subscription[], now = Date.now()): string {
 }
 
 const USAGE = `usage: air usage [--refresh] [--json] [--config FILE] [--state-dir DIR]
-       air usage spend NAME AMOUNT   record spend against a manual subscription (its budget's unit)
+       air usage spend NAME USD      record spend against a manual subscription, in US dollars at API prices
        air usage reset-ledger        start a fresh manual ledger after a corrupt one was moved aside`;
 
 /** `air usage`. Returns the exit code. */
-export async function usageCommand(argv: string[], io: { out?: (s: string) => void; err?: (s: string) => void } & ReadOpts = {}): Promise<number> {
+export async function usageCommand(argv: string[], io: { out?: (s: string) => void; err?: (s: string) => void; windowUsd?: (name: string) => number | undefined } & ReadOpts = {}): Promise<number> {
   const out = io.out ?? (s => console.log(s)), err = io.err ?? (s => console.error(s));
   let a;
   try {
@@ -131,11 +138,11 @@ export async function usageCommand(argv: string[], io: { out?: (s: string) => vo
     const cfg = cfgs.find(c => c.name === rest[0]);
     const amount = /^\d+(\.\d+)?$/.test(rest[1] ?? '') ? Number(rest[1]) : NaN;
     if (!cfg || cfg.harness !== 'manual' || rest.length !== 2 || !Number.isFinite(amount)) {
-      err(`${USAGE}\n(NAME must be a manual subscription; AMOUNT a finite number >= 0)`); return 2;
+      err(`${USAGE}\n(NAME must be a manual subscription; USD a number >= 0)`); return 2;
     }
     let after: Subscription;
     try { after = spend(ledgerFile(dir), cfg, amount, io.now); } catch (e) { err((e as Error).message); return 1; }
-    out(formatTable([after], io.now));
+    out(formatTable([after], io.now, io.windowUsd));
     return 0;
   }
   if (sub === 'reset-ledger') {
@@ -146,6 +153,6 @@ export async function usageCommand(argv: string[], io: { out?: (s: string) => vo
   }
   if (sub !== undefined) { err(USAGE); return 2; }
   const subs = await readAll(cfgs, { ...io, stateDir: dir, refresh: a.values.refresh });
-  out(a.values.json ? JSON.stringify(subs, null, 2) : formatTable(subs, io.now));
+  out(a.values.json ? JSON.stringify(subs, null, 2) : formatTable(subs, io.now, io.windowUsd));
   return 0;
 }

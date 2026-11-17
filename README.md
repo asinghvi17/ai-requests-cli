@@ -85,8 +85,8 @@ max_jobs = 1
 
 [subscriptions.claude]
 harness = "claude"
-scale = 4        # a Max 20x plan absorbs 4x the effort of a 5x one
-reserve = 0.3    # keep 30% of each window for yourself
+window_usd = 1000  # what a full weekly window is worth at API prices (see below)
+reserve = 0.3      # keep 30% of each window for yourself
 
 [models.claude]  # tier -> model; a request is never run below its tier
 small = "haiku"
@@ -99,19 +99,49 @@ args = ["--permission-mode", "acceptEdits"]   # whatever lets it work unattended
 # Codex works the same way: [subscriptions.codex] with harness = "codex", [models.codex] and [agents.codex].
 ```
 
-air reads each subscription's quota from its CLI. For a login whose usage it can't read, give it a manual
-budget in `~/.config/air/subscriptions.json`, under the same name as in `config.toml`, and record spend
-with `air usage spend NAME AMOUNT`:
+Everything air budgets is in **US dollars at API prices**: the tokens an agent uses, priced at the model
+provider's published per-token rates, whatever your plan actually costs. A request's `effort` is such an
+estimate (XS $1, S $3, M $10, L $30, XL $100), so air claims a request when what a window has left, in
+dollars, covers it plus the reserve.
+
+air reads each subscription's quota from its CLI as a percentage of the window. `window_usd` says what the
+whole (weekly) window is worth, so that 60% used of a $1000 window leaves $400. To estimate it, run a job or
+two: each final comment gives the job's cost at API prices and the window's usage before and after, and
+`window_usd` is about the cost divided by the share it used (a $12 job that moved the window from 40% to
+41.5% puts it near $800). Without `window_usd` a readable subscription takes no requests.
+
+For a login whose usage it can't read, give it a manual budget in dollars in
+`~/.config/air/subscriptions.json`, under the same name as in `config.toml`:
 
 ```json
-[{ "name": "claude", "harness": "manual", "reset": { "every": "weekly", "day": 0 }, "budget": { "percent": 100 } }]
+[{ "name": "claude", "harness": "manual", "reset": { "every": "weekly", "day": 0 }, "budget": { "usd": 500 } }]
 ```
 
+`air serve` charges a manual budget each job's cost when the job ends (delivered, failed, stopped early as
+partial, or cancelled), and the final comment says "Charged $X to manual budget `claude`." It prices the
+tokens in the agent's own records:
+
+- **Claude Code:** the transcripts of the job's sessions, `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/*/<session>.jsonl`
+  and its subagents' files beside them. Every API call counts once, its input, 5-minute and 1-hour cache
+  writes, cache reads and output priced at its model's rates (fast mode and US-only inference included).
+  Claude Code writes its own total only when a session exits, so air prices the tokens itself; for a
+  finished session the two agree.
+- **Codex:** the rollouts `<CODEX_HOME or ~/.codex>/sessions/*/*/*/rollout-*.jsonl` that the job's sessions
+  wrote in its workspace. Each increase of a session's `token_count` total is priced at the model then in
+  use, cached input at the cached rate.
+
+The prices are one table in [`src/usage/prices.ts`](src/usage/prices.ts), keyed by model id, with the page
+each came from. A model that isn't in it is not charged: `air serve` logs a warning naming the model and
+the final comment says its calls were left out. A job whose agent left no record air can read isn't
+charged either, and the final comment says so. A job that costs more than twice its effort's dollars is
+stopped early as partial. Spend made outside air (your own use of the login) goes in with
+`air usage spend NAME USD`.
+
 The agent runs unattended in a fresh workspace under `workspace_root`, so start Claude Code there once by
-hand: finish its first-run screens and trust `workspace_root` (subfolders inherit the trust). The agent gets
-an empty environment apart from basics such as `PATH`, `HOME` and `TMPDIR`, plus `CLAUDE_CONFIG_DIR` or
-`CODEX_HOME`: its git identity comes from `~/.gitconfig`, and proxy variables such as `HTTPS_PROXY` don't
-reach it.
+hand: finish its first-run screens and trust `workspace_root` (subfolders inherit the trust). The agent
+inherits the environment you start `air serve` in, every variable of it (git identity, proxy settings,
+tokens), so it works as it would in your own shell. air only adds `AIR_WORKSPACE`, `AIR_CONTEXT` and
+`AIR_OUT`, plus the subscription's `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when `subscriptions.json` sets one.
 
 Then check what quota air sees, and start serving:
 
