@@ -47,14 +47,16 @@ export async function checkRepos(o: RepoCheckOptions): Promise<RepoCheck> {
     const name = `\`repos[${i}]\` (${code(entry.path)})`;
     const target = githubRepo(entry.url, o.ghHost);
     if ('error' in target) return { ok: false, requester: true, message: `${name}: ${target.error}; \`deliver: pr\` can only push there` };
+    // Our own access first: without push, GitHub won't tell us anyone's role (403, read as none), and the
+    // requester would be blamed for the server's lack.
+    const mine = await role(target.repo, o.viewer);
+    if (mine !== 'write' && mine !== 'maintain' && mine !== 'admin') {
+      return { ok: false, requester: false, message: `${name}: this server's account (${o.viewer}) can't push to ${target.repo} (${typeof mine === 'string' ? `${mine} access` : mine.error})` };
+    }
     const author = await role(target.repo, o.author);
     if (typeof author !== 'string') return { ok: false, requester: false, message: `${name}: could not read @${o.author}'s permission on ${target.repo}: ${author.error}` };
     if (!WRITE.includes(author)) {
       return { ok: false, requester: true, message: `${name}: @${o.author} has ${author} access to ${target.repo}; \`deliver: pr\` needs write or admin there` };
-    }
-    const mine = await role(target.repo, o.viewer);
-    if (mine !== 'write' && mine !== 'maintain' && mine !== 'admin') {
-      return { ok: false, requester: false, message: `${name}: this server's account (${o.viewer}) can't push to ${target.repo} (${typeof mine === 'string' ? `${mine} access` : mine.error})` };
     }
   }
   const resolve = o.resolve ?? resolveRepo;

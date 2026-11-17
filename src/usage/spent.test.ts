@@ -39,6 +39,10 @@ test('callCost prices each kind of token at the model\'s rates', () => {
   near(callCost('gpt-5.3-codex', { ...none, input: 1e6, cacheRead: 1e6, output: 1e6 }), 1.75 + 0.175 + 14);
   near(callCost('gpt-5.4', { ...none, input: 1e6 }, { prompt: 300_000 }), 5);
   assert.equal(callCost('gpt-5.6-sol', { ...none, input: 1 }), undefined);
+  // Every model `codex debug models` lists for the API (Codex 0.164.0) has a price, gpt-5.6-sol's promotion apart.
+  for (const m of ['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5']) assert.ok(priceOf(m), m);
+  near(callCost('gpt-6-luna', { ...none, input: 1e6, cacheRead: 1e6, output: 1e6 }, { prompt: 100_000 }), 0.1 + 0.01 + 0.5);
+  near(callCost('gpt-6-astra', { ...none, input: 1e6 }, { prompt: 300_000 }), 20);
   assert.equal(priceOf('claude-opus-5-5-preview'), undefined);
   for (const [model, p] of Object.entries(PRICES)) {
     for (const r of [p, ...(p.over ? [p.over.rates] : [])]) {

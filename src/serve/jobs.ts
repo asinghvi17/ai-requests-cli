@@ -259,10 +259,13 @@ export function settleSpend(ctx: ServeContext, dir: string, request: Request): s
   return lines;
 }
 
-function costLine(spend: { usd?: number; unpriced?: string[] }, request: Request): string {
+export function costLine(spend: { usd?: number; unpriced?: string[] }, request: Request): string {
   const expects = `effort ${request.effort} expects ${usd(EFFORT_USD[request.effort as Effort])}`;
   const unpriced = spend.unpriced?.length ? ` Calls on ${spend.unpriced.map(code).join(', ')} are not counted: air's price table has no price for ${spend.unpriced.length === 1 ? 'it' : 'them'}.` : '';
-  return spend.usd === undefined ? `Cost at API prices: unknown, the agent left no usage record; ${expects}.` : `Cost at API prices: ${usd(spend.usd)}; ${expects}.${unpriced}`;
+  if (spend.usd === undefined) return `Cost at API prices: unknown, the agent left no usage record; ${expects}.`;
+  // Nothing priced is not free: every call was on a model the table lacks.
+  if (spend.usd === 0 && spend.unpriced?.length) return `Cost at API prices: unknown, air's price table has no price for ${spend.unpriced.map(code).join(', ')}; ${expects}.`;
+  return `Cost at API prices: ${usd(spend.usd)}; ${expects}.${unpriced}`;
 }
 
 /**

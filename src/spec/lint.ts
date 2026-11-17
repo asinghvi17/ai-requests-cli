@@ -25,6 +25,24 @@ export interface LintResult {
   warnings: Diagnostic[];
 }
 
+/** The longest issue title air derives from `## Task`. */
+export const TITLE_LIMIT = 80;
+
+/** The first line of `## Task`'s text (HTML comments and list or quote marks removed): the issue title's source. */
+export function taskSummary(sections: Sections): string | undefined {
+  const text = (sections.Task?.text ?? '').replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+  return text.split('\n').map((l) => l.replace(/^[#>*\-\s]+/, '').trim()).find((l) => l !== '');
+}
+
+/** `line` as an issue title: within TITLE_LIMIT, a longer one cut at a word boundary and ended with `...`. */
+export function fitTitle(line: string): string {
+  if (line.length <= TITLE_LIMIT) return line;
+  const room = line.slice(0, TITLE_LIMIT - 2); // a space at TITLE_LIMIT - 3 still ends a whole word
+  const cut = room.search(/\s\S*$/);
+  const head = (cut > 0 ? room.slice(0, cut) : room.slice(0, TITLE_LIMIT - 3)).replace(/[\s,;:.-]+$/, '');
+  return `${head}...`;
+}
+
 export function lint(body: string): LintResult {
   const fm = parseFrontMatter(body);
   const errors: Diagnostic[] = fm.ok ? [] : [...fm.errors];
@@ -51,6 +69,10 @@ export function lint(body: string): LintResult {
     for (const name of required) {
       const s = sections[name];
       if (s && visible.get(name)!.trim() === '') errors.push({ line: s.line, code: 'section', message: `\`## ${name}\` is empty` });
+    }
+    const summary = taskSummary(sections);
+    if (summary && summary.length > TITLE_LIMIT) {
+      warnings.push({ line: sections.Task!.line, code: 'section', message: `the first line of \`## Task\` becomes the issue title and is ${summary.length} characters, over ${TITLE_LIMIT}; without --title it is cut to "${fitTitle(summary)}"` });
     }
     const done = sections['Done when'];
     const doneText = visible.get('Done when') ?? '';

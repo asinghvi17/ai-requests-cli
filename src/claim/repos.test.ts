@@ -121,7 +121,14 @@ test("a server whose account can't push to a repo to deliver to leaves the reque
   const { gh, opts, comments } = world(body(['deliver: pr', ...TWO]), [['o/service', 'alice', 'write'], ['o/service', 'bot', 'read']]);
   const r = await claim(opts);
   assert.equal(r.status === 'refused' && r.reason, 'cannot-push');
-  assert.match(r.status === 'refused' ? r.message : '', /this server's account \(bot\) can't push to o\/service \(read access\)/);
+  // GitHub won't show a read-only account even its own role (403): it reads as none.
+  assert.match(r.status === 'refused' ? r.message : '', /this server's account \(bot\) can't push to o\/service \(none access\)/);
   assert.deepEqual(comments(), []);
   assert.deepEqual(gh.issues.get(7)!.labels, ['ai-request']);
+  // Without push, no one's role is visible: the requester is not blamed for it.
+  const blind = world(body(['deliver: pr', ...TWO]), [['o/service', 'alice', 'read']]);
+  const b = await claim(blind.opts);
+  assert.equal(b.status === 'refused' && b.reason, 'cannot-push');
+  assert.deepEqual(blind.comments(), []);
+  assert.ok(!blind.gh.log.includes('permission o/service alice'));
 });

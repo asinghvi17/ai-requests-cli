@@ -9,13 +9,15 @@ import { loadConfig, span, usageCommand } from './index.ts';
 const recorded = readFileSync(join(import.meta.dirname, 'fixtures', 'claude-usage.stream.jsonl'), 'utf8');
 const now = Date.parse('2026-11-07T18:45:00Z');
 
-function setup(subs: unknown) {
+const CONFIGURED = { work: { window_usd: 2000 }, home: {}, codex: {}, team: {} };
+
+function setup(subs: unknown, configured: Record<string, { window_usd?: number }> = CONFIGURED) {
   const dir = mkdtempSync(join(tmpdir(), 'air-usage-cmd-'));
   const config = join(dir, 'subscriptions.json');
   writeFileSync(config, JSON.stringify(subs));
   const lines: string[] = [], errs: string[] = [];
   const run = (argv: string[]) => usageCommand([...argv, '--config', config, '--state-dir', join(dir, 'state')], {
-    now, out: s => lines.push(s), err: s => errs.push(s), windowUsd: name => (name === 'work' ? 2000 : undefined),
+    now, out: s => lines.push(s), err: s => errs.push(s), configured: () => configured,
     readers: {
       claude: async cfg => cfg.name === 'work' ? { windows: parseClaudeUsage(recorded) } : { windows: [], note: 'not logged in' },
       codex: async () => ({ windows: [], note: 'codex: timeout' }),
@@ -48,6 +50,23 @@ test('prints a table per subscription', async () => {
     '  WINDOW   LEFT                        RESETS IN',
     '  Weekly   100% ($200.00 of $200.00)   1d 5h',
   ].join('\n'));
+});
+
+test('only the subscriptions config.toml names are shown, and spend takes only those', async () => {
+  const { run, lines, errs } = setup(subs, { work: { window_usd: 2000 }, team: {}, elsewhere: {} });
+  assert.equal(await run([]), 0);
+  assert.deepEqual(lines.pop()!.split('\n').filter(l => !l.startsWith(' ')), ['work (claude) · read <1m ago', 'team (manual) · read <1m ago']);
+  assert.equal(await run(['--json']), 0);
+  assert.deepEqual(JSON.parse(lines.pop()!).map((s: any) => s.name), ['work', 'team']);
+  const none = setup(subs, {});
+  assert.equal(await none.run([]), 0);
+  assert.match(none.lines.pop()!, /^no subscriptions: config\.toml names none/);
+  assert.equal(await none.run(['spend', 'team', '1']), 2);
+  const broken = setup(subs);
+  const bad = await usageCommand(['--config', '/nonexistent/x.json'], { out: () => {}, err: s => errs.push(s), configured: () => { throw new Error('config.toml: bad'); } });
+  assert.equal(bad, 1);
+  assert.equal(errs.pop(), 'config.toml: bad');
+  assert.equal(await usageCommand(['--help'], { out: s => broken.lines.push(s), configured: () => { throw new Error('unread'); } }), 0);
 });
 
 test('spend decrements a manual budget in dollars; --json prints subscriptions', async () => {
@@ -88,7 +107,7 @@ test('stale readings serialize no numbers in --json', async () => {
   const lines: string[] = [];
   let ok = true;
   const run = (at: number) => usageCommand(['--json', '--config', config, '--state-dir', join(dir, 'state')], {
-    now: at, out: s => lines.push(s),
+    now: at, out: s => lines.push(s), configured: () => ({ work: {} }),
     readers: { claude: async () => ok ? { windows: parseClaudeUsage(recorded) } : { windows: [], note: 'claude /usage failed' } } });
   await run(now);
   assert.equal(JSON.parse(lines.pop()!)[0].windows[0].usedPct, 30);

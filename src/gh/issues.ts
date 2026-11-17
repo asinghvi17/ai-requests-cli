@@ -33,6 +33,14 @@ export interface PullHead {
   cloneUrl: string;
 }
 
+/** A repo label as `ensureLabels` creates it. */
+export interface LabelSpec {
+  name: string;
+  /** Six hex digits, no `#`. */
+  color: string;
+  description: string;
+}
+
 /** A role from `collaborators/{login}/permission`, or `none`. */
 export type Permission = 'admin' | 'maintain' | 'write' | 'triage' | 'read' | 'none';
 
@@ -50,9 +58,15 @@ export interface RequestsRepo {
   addLabels(n: number, labels: string[]): Promise<void>;
   /** Removing a label the issue doesn't carry is not an error. */
   removeLabel(n: number, label: string): Promise<void>;
+  /** Creates each of `labels` the repo lacks (one created meanwhile is not an error); returns the names it created. */
+  ensureLabels(labels: readonly LabelSpec[]): Promise<string[]>;
   assign(n: number, login: string): Promise<void>;
   unassign(n: number, login: string): Promise<void>;
-  /** `login`'s role on any repo (`owner/name`) on the same host; `none` when GitHub says it has none. */
+  /**
+   * `login`'s role on any repo (`owner/name`) on the same host; `none` when GitHub says it has none. GitHub
+   * refuses (403) a caller without push access: for the caller's own role that means none too, for anyone
+   * else's it is unknown and throws.
+   */
   permission(repo: string, login: string): Promise<Permission>;
   /** The head of pull request `n` of any repo (`owner/name`) on the same host. */
   pullHead(repo: string, n: number): Promise<PullHead>;
@@ -89,7 +103,7 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
   checkRepo(repo);
   const base = `repos/${repo}`;
   let viewer: string | undefined;
-  return {
+  const self: RequestsRepo = {
     repo,
     async viewer() {
       if (viewer === undefined) {
@@ -129,6 +143,21 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
         if (!(e instanceof GhError && e.kind === 'not_found')) throw e;
       }
     },
+    async ensureLabels(labels) {
+      const have = new Set((await gh.paginate<{ name: string }>(`${base}/labels?per_page=100`)).map((l) => l.name.toLowerCase()));
+      const created: string[] = [];
+      for (const l of labels) {
+        if (have.has(l.name.toLowerCase())) continue;
+        try {
+          await gh.api(`${base}/labels`, { method: 'POST', body: { name: l.name, color: l.color, description: l.description } });
+          created.push(l.name);
+        } catch (e) {
+          // 422 `already_exists`: another server or requester created it since the list.
+          if (!(e instanceof GhError && e.kind === 'validation')) throw e;
+        }
+      }
+      return created;
+    },
     async assign(n, login) {
       checkLogin(login);
       await gh.api(`${base}/issues/${n}/assignees`, { method: 'POST', body: { assignees: [login] } });
@@ -145,6 +174,8 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
         r = await gh.api(`repos/${target}/collaborators/${encodeURIComponent(login)}/permission`);
       } catch (e) {
         if (e instanceof GhError && e.kind === 'not_found') return 'none';
+        // The caller lacks push access to `target`: that is its own role, but says nothing of another's.
+        if (e instanceof GhError && e.kind === 'forbidden' && login === (await self.viewer())) return 'none';
         throw e;
       }
       // `permission` folds maintain into write and triage into read; `role_name` keeps them.
@@ -158,4 +189,5 @@ export function requestsRepo(repo: string, gh: Gh = createGh()): RequestsRepo {
       return { ref: p.head.ref, sha: p.head.sha, cloneUrl: p.head.repo.clone_url };
     },
   };
+  return self;
 }

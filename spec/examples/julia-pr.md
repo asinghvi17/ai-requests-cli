@@ -16,6 +16,8 @@ timeout: 3h
 
 ## Task
 
+Add `resample` to TimeSeriesKit.jl.
+
 Add a `resample` function to TimeSeriesKit.jl that aggregates a `TimeSeries` onto a regular time grid.
 
 Signature, exported from the package:

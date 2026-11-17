@@ -33,6 +33,7 @@ say yes. It gives you the issue's URL and number. Follow it with:
 air status 12             # state, who holds it, latest result
 air wait 12 --timeout 4h  # block until there's a result
 air fetch 12              # report, PR branches and artifacts into ./air-12/
+air cancel 12             # stop it: the server holding it stops its agent and gives it back
 ```
 
 ## Volunteer
@@ -70,6 +71,7 @@ The skill runs these for you; they also work on their own.
 air submit --repo org/requests ./inputs           # prompts for the request, zips ./inputs, files the issue
 air submit --body request.md --dry-run ./inputs   # print the final body and the zip's file list
 air lint request.md                               # check a body against spec/v0.md
+air cancel 12                                     # cancel it (adds the air:cancel label)
 air retry 12                                      # offer it again after a cancel, failure or partial result (--effort L to raise it)
 ```
 
@@ -82,10 +84,16 @@ give one. `air sweep` (which `air serve` runs daily) deletes expired zips.
 `air wait` exits 0 for done, 3 for partial, 1 for failed or released and 4 on timeout. `air fetch` lays the
 result out like the volunteer's workspace: `REPORT.md`, `repo/<path>/` for each pull request's branch (or, for
 a partial result, each checkpoint branch), `artifact/` for an artifact zip and `out/` for a checkpoint's files.
+An artifact zip holds the agent's `out/` without `out/PROGRESS.md` (its notes for resuming); a checkpoint
+keeps it, since the resumed agent reads it.
 Zips are checked against their size and SHA-256 and extracted with the same zip-slip and size checks a server
 uses. `air retry` is the only way to offer a request again: it refuses while a server holds the request,
 points a partial result's checkpoint into the body's `resume` so the next server continues from it, then
-removes every `air:*` label (`air:cancel` too). To stop a running request, add the `air:cancel` label.
+removes every `air:*` label (`air:cancel` too). `air cancel` is the one way to cancel: it adds the
+`air:cancel` label (creating it if the repo lacks it), the server holding the request stops its agent,
+comments and gives it back, and no server claims it until `air retry`. Like `air retry`, it is for the
+issue's author or anyone with write access to the requests repo. `air serve` creates every air label a
+fresh requests repo lacks when it starts.
 
 `air skill install --dir .claude/skills/ai-request` installs the skill into one project; `--print` shows
 where it would go. Re-run it after upgrading air to replace the older copy. It refuses to replace a directory
@@ -152,12 +160,19 @@ stopped early as partial. Spend made outside air (your own use of the login) goe
 The agent inherits the environment you start `air serve` in, every variable of it (git identity, proxy
 settings, tokens), so it works as it would in your own shell. air only adds `AIR_WORKSPACE`, `AIR_CONTEXT`
 and `AIR_OUT`, plus the login's `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when `subscriptions.json` sets one.
+It removes the variables that Claude Code and Codex set for the commands they run, so `air serve` can be
+started from inside either: `CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_SESSION_ID`,
+`CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_PID`, `CLAUDE_EFFORT`, `AI_AGENT`, `CLAUDE_CODE_ENTRYPOINT`,
+`CLAUDE_CODE_EXECPATH`, `CODEX_THREAD_ID`, `CODEX_TOOL_CALL_ID`, `CODEX_SANDBOX`,
+`CODEX_SANDBOX_NETWORK_DISABLED` and `CODEX_CI`. Left in place, they make the agent take itself for a
+child of that session: a Claude Code that inherits `CLAUDE_CODE_CHILD_SESSION` saves no transcript, so its
+job would have no usage record and no cost.
 `air doctor` checks each agent with that same environment and config dir.
 
 ### Serving
 
 ```sh
-air usage            # quota air reads for each subscription
+air usage            # quota air reads for each subscription config.toml names
 air serve            # tick every 60 s: claim what fits, set it up, start the agent in tmux, deliver
 air serve --manual   # claim and set up, but wait for `air run ISSUE`
 air serve --once     # one tick, then wait for its jobs to finish (re-polls for up to 60 s if it finds nothing: --once-wait)
@@ -178,6 +193,9 @@ With curl instead of gh:
 curl -fLo ~/.local/bin/air https://github.com/asinghvi17/ai-requests-cli/releases/latest/download/air-darwin-arm64
 chmod +x ~/.local/bin/air
 ```
+
+`air --version` prints the version a binary was built from: `package.json`'s version, plus the git short
+SHA (`0.1.0+5c79762`) for a build that isn't a tagged release.
 
 **macOS:** a binary downloaded with a browser is quarantined; clear that with
 `xattr -d com.apple.quarantine ~/.local/bin/air`. curl, gh and scp installs aren't quarantined.

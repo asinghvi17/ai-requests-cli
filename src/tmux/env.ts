@@ -1,6 +1,7 @@
 // Job environments and command lines. A job inherits the environment air runs in, the volunteer's: every
-// variable is passed through, and the caller only adds or overrides variables (the AIR_* ones, an agent's
-// config dir). The tmux client and server get an allowlisted environment of their own.
+// variable is passed through but the markers of a parent agent session, and the caller only adds or
+// overrides variables (the AIR_* ones, an agent's config dir). The tmux client and server get an
+// allowlisted environment of their own.
 
 /** Copied from the caller's environment for the tmux client when set. */
 export const ALLOWED_VARS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TZ'];
@@ -9,12 +10,26 @@ export const ALLOWED_VARS = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER
 const PANE_VARS = ['TMUX', 'TMUX_PANE'];
 
 /**
- * The job's whole environment: every variable of `base`, then `extra` on top. TMUX and TMUX_PANE are
- * left to tmux. Throws on a malformed name in `extra`.
+ * What Claude Code and Codex set for the commands they run, marking those as inside their session. An
+ * `air serve` started from such a session would pass them on, and the agent would take itself for a
+ * child of that session: Claude Code with CLAUDE_CODE_CHILD_SESSION saves no transcript ("Transcript saving
+ * is off — inherited CLAUDE_CODE_CHILD_SESSION marker"), so the job leaves no usage record and no cost.
+ * Names read from the binaries: Claude Code 2.1.311 sets the first eight on its children (and ENTRYPOINT
+ * and EXECPATH on itself), Codex 0.164.0 the CODEX_ ones on each command.
+ */
+export const SESSION_MARKERS = [
+  'CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_PID',
+  'CLAUDE_EFFORT', 'AI_AGENT', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_EXECPATH',
+  'CODEX_THREAD_ID', 'CODEX_TOOL_CALL_ID', 'CODEX_SANDBOX', 'CODEX_SANDBOX_NETWORK_DISABLED', 'CODEX_CI',
+];
+
+/**
+ * The job's whole environment: every variable of `base` but the SESSION_MARKERS, then `extra` on top.
+ * TMUX and TMUX_PANE are left to tmux. Throws on a malformed name in `extra`.
  */
 export function jobEnv(extra: Record<string, string> = {}, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [name, v] of Object.entries(base)) if (v !== undefined && !PANE_VARS.includes(name)) env[name] = v;
+  for (const [name, v] of Object.entries(base)) if (v !== undefined && !PANE_VARS.includes(name) && !SESSION_MARKERS.includes(name)) env[name] = v;
   for (const [name, value] of Object.entries(extra)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`tmux: bad environment variable name ${JSON.stringify(name)}`);
     env[name] = value;

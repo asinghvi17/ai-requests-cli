@@ -120,8 +120,12 @@ const USAGE = `usage: air usage [--refresh] [--json] [--config FILE] [--state-di
        air usage spend NAME USD      record spend against a manual subscription, in US dollars at API prices
        air usage reset-ledger        start a fresh manual ledger after a corrupt one was moved aside`;
 
-/** `air usage`. Returns the exit code. */
-export async function usageCommand(argv: string[], io: { out?: (s: string) => void; err?: (s: string) => void; windowUsd?: (name: string) => number | undefined } & ReadOpts = {}): Promise<number> {
+/**
+ * `air usage`. Returns the exit code. `configured` reads config.toml's `[subscriptions]` (after --help, so a
+ * broken config.toml doesn't hide the help): only the logins it names are read and shown, a primary window in
+ * dollars when it gives their `window_usd`.
+ */
+export async function usageCommand(argv: string[], io: { out?: (s: string) => void; err?: (s: string) => void; configured: () => Readonly<Record<string, { window_usd?: number }>> } & ReadOpts): Promise<number> {
   const out = io.out ?? (s => console.log(s)), err = io.err ?? (s => console.error(s));
   let a;
   try {
@@ -132,7 +136,12 @@ export async function usageCommand(argv: string[], io: { out?: (s: string) => vo
   if (a.values.help) { out(USAGE); return 0; }
   const dir = a.values['state-dir'] ?? io.stateDir ?? stateDir();
   let cfgs: SubscriptionConfig[];
-  try { cfgs = loadConfig(a.values.config ?? configFile()); } catch (e) { err((e as Error).message); return 1; }
+  let configured: Readonly<Record<string, { window_usd?: number }>>;
+  try {
+    configured = io.configured();
+    cfgs = loadConfig(a.values.config ?? configFile()).filter(c => Object.hasOwn(configured, c.name));
+  } catch (e) { err((e as Error).message); return 1; }
+  const windowUsd = (name: string) => configured[name]?.window_usd;
   const [sub, ...rest] = a.positionals;
   if (sub === 'spend') {
     const cfg = cfgs.find(c => c.name === rest[0]);
@@ -142,7 +151,7 @@ export async function usageCommand(argv: string[], io: { out?: (s: string) => vo
     }
     let after: Subscription;
     try { after = spend(ledgerFile(dir), cfg, amount, io.now); } catch (e) { err((e as Error).message); return 1; }
-    out(formatTable([after], io.now, io.windowUsd));
+    out(formatTable([after], io.now, windowUsd));
     return 0;
   }
   if (sub === 'reset-ledger') {
@@ -153,6 +162,10 @@ export async function usageCommand(argv: string[], io: { out?: (s: string) => vo
   }
   if (sub !== undefined) { err(USAGE); return 2; }
   const subs = await readAll(cfgs, { ...io, stateDir: dir, refresh: a.values.refresh });
-  out(a.values.json ? JSON.stringify(subs, null, 2) : formatTable(subs, io.now, io.windowUsd));
+  if (!subs.length && !a.values.json) {
+    out('no subscriptions: config.toml names none that subscriptions.json (or its default logins) has; `air config init` writes [subscriptions.claude] and [subscriptions.codex]');
+    return 0;
+  }
+  out(a.values.json ? JSON.stringify(subs, null, 2) : formatTable(subs, io.now, windowUsd));
   return 0;
 }

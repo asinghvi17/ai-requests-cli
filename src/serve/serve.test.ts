@@ -8,7 +8,7 @@ import type { Subscription } from '../usage/types.ts';
 import { extractZip } from '../workspace/zip.ts';
 import { agentArgv, codexTrust, findCodexSession, restartInstruction } from './agent.ts';
 import { COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
-import { exitDetail } from './jobs.ts';
+import { costLine, exitDetail } from './jobs.ts';
 import { committedUsage, exhausted } from './server.ts';
 import { acquireServeLock, LOCK_GRACE_MS, readServerState, updateServerState } from './state.ts';
 import { zipDir } from './zipout.ts';
@@ -176,4 +176,12 @@ test('exitDetail: a status of 128 + N reads as killed by signal N', () => {
   assert.equal(exitDetail(130, null, ''), 'The agent was killed by signal 2 (SIGINT) (status 130 = 128 + 2) without finishing.');
   assert.equal(exitDetail(137, null, ''), 'The agent was killed by signal 9 (SIGKILL) (status 137 = 128 + 9) without finishing.');
   assert.equal(exitDetail(null, 15, 'last'), 'The agent was killed by signal 15 (SIGTERM) without finishing.\n\nLast lines of its window:\n\n```\nlast\n```');
+});
+
+test('costLine: no record, no priced call and a partly priced job each say what is known', () => {
+  const request = { effort: 'S' } as Parameters<typeof costLine>[1];
+  assert.equal(costLine({}, request), 'Cost at API prices: unknown, the agent left no usage record; effort S expects $3.00.');
+  assert.equal(costLine({ usd: 0, unpriced: ['gpt-9'] }, request), "Cost at API prices: unknown, air's price table has no price for `gpt-9`; effort S expects $3.00.");
+  assert.equal(costLine({ usd: 1.5, unpriced: ['gpt-9'] }, request), "Cost at API prices: $1.50; effort S expects $3.00. Calls on `gpt-9` are not counted: air's price table has no price for it.");
+  assert.equal(costLine({ usd: 0 }, request), 'Cost at API prices: $0.00; effort S expects $3.00.');
 });

@@ -39,6 +39,7 @@ test('maps errors by HTTP status', async () => {
     [{ code: 1, stdout: '{"message":"Not Found","status":"404"}', stderr: 'gh: Not Found (HTTP 404)\n' }, 'not_found', 404, /^Not Found \(HTTP 404\)$/],
     [{ code: 1, stderr: 'To get started with GitHub CLI, please run:  gh auth login\n' }, 'auth', undefined, /gh auth login/],
     [{ code: 1, stdout: '{"message":"API rate limit exceeded"}', stderr: 'gh: API rate limit exceeded (HTTP 403)' }, 'rate_limited', 403, /rate limit/],
+    [{ code: 1, stdout: '{"message":"Must have push access to view repository collaborator permission."}', stderr: 'gh: Must have push access to view repository collaborator permission. (HTTP 403)' }, 'forbidden', 403, /push access/],
     [{ code: 1, stdout: '{"message":"Validation Failed","errors":[{"message":"bad label"}]}', stderr: 'gh: Validation Failed (HTTP 422)' }, 'validation', 422, /Validation Failed: bad label/],
     [{ code: 1, stderr: 'gh: Server Error (HTTP 502)' }, 'server', 502, /Server Error/],
     [{ code: 1, stderr: '' }, 'other', undefined, /gh exited 1/],

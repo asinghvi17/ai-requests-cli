@@ -56,6 +56,7 @@ test('refusals: held, closed, not a request, no permission, a body that does not
   // Someone else needs write access; the author doesn't.
   const other = requestIssue({ labels: ['air:failed'], claimed: false });
   other.issues.get(1)!.author = 'bob';
+  other.setPermission('o/requests', 'alice', 'read'); // GitHub won't show a reader its role: none
   await no(retry({ gh: other, issue: 1 }), /only the issue's author \(bob\) or someone with write access.*alice has none/);
   other.setPermission('o/requests', 'alice', 'maintain');
   assert.deepEqual((await retry({ gh: other, issue: 1 })).removed, ['air:failed']);

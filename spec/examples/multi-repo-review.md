@@ -19,6 +19,8 @@ timeout: 1h
 
 ## Task
 
+Review billing-service#212 and billing-client#87 together.
+
 Review two pull requests that ship together: billing-service#212 replaces the mid-cycle plan-change
 logic in `src/billing/proration.ts` with a day-based calculation, and billing-client#87 updates the
 client to the new `ProrationQuote` response. Neither has been reviewed against the other.
