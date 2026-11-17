@@ -86,18 +86,33 @@ args = ["--permission-mode", "acceptEdits"]   # whatever lets it work unattended
 ```
 
 air reads each subscription's quota from its CLI. For a login whose usage it can't read, give it a manual
-budget in `~/.config/air/subscriptions.json`, under the same name as in `config.toml`, and record spend
-with `air usage spend NAME AMOUNT`:
+budget in `~/.config/air/subscriptions.json`, under the same name as in `config.toml`:
 
 ```json
-[{ "name": "claude", "harness": "manual", "reset": { "every": "weekly", "day": 0 }, "budget": { "percent": 100 } }]
+[{ "name": "claude", "harness": "manual", "reset": { "every": "weekly", "day": 0 }, "budget": { "tokens": 50000000 } }]
 ```
 
+`air serve` charges a manual budget what each job actually spent when the job ends (delivered, failed,
+stopped early as partial, or cancelled), and the final comment says how much. It reads the spend from the
+agent's own records:
+
+- **Claude Code:** the transcripts of the job's sessions, `<CLAUDE_CONFIG_DIR or ~/.claude>/projects/*/<session>.jsonl`
+  and its subagents' files beside them. Every API call counts once, with its input, cache-write, cache-read
+  and output tokens.
+- **Codex:** the rollouts `<CODEX_HOME or ~/.codex>/sessions/*/*/*/rollout-*.jsonl` that the job's sessions
+  wrote in its workspace, each session at its last `token_count` total (`total_tokens`: input, cached input
+  included, plus output).
+
+Both report tokens, so only a budget in `tokens` is charged. A budget in `percent` is never charged by
+`air serve`, since no agent reports what share of a plan a job used, and neither is a job whose agent left
+no record air can read: the final comment says so. Spend made outside air (your own use of the login)
+goes in with `air usage spend NAME AMOUNT`, in the budget's unit.
+
 The agent runs unattended in a fresh workspace under `workspace_root`, so start Claude Code there once by
-hand: finish its first-run screens and trust `workspace_root` (subfolders inherit the trust). The agent gets
-an empty environment apart from basics such as `PATH`, `HOME` and `TMPDIR`, plus `CLAUDE_CONFIG_DIR` or
-`CODEX_HOME`: its git identity comes from `~/.gitconfig`, and proxy variables such as `HTTPS_PROXY` don't
-reach it.
+hand: finish its first-run screens and trust `workspace_root` (subfolders inherit the trust). The agent
+inherits the environment you start `air serve` in, every variable of it (git identity, proxy settings,
+tokens), so it works as it would in your own shell. air only adds `AIR_WORKSPACE`, `AIR_CONTEXT` and
+`AIR_OUT`, plus the subscription's `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when `subscriptions.json` sets one.
 
 Then check what quota air sees, and start serving:
 

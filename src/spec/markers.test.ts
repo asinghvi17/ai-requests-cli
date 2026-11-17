@@ -137,6 +137,7 @@ test('formatResult and parseResult round-trip', () => {
     const block = formatResult(r);
     assert.ok(block.startsWith(`${RESULT_MARKER}\n\`\`\`yaml\n`));
     assert.deepEqual(parseResult(`The report.\n\n${block}\n`), { ok: true, result: r });
+    assert.deepEqual(parseResult(`The report.\n\n${block}\n\n---\nSent from my bot\n`), { ok: true, result: r });
   }
   // a numeric-looking host and an all-digit SHA are quoted so that YAML reads them as strings
   assert.match(formatResult(DONE), /^host: "1234"$/m);
@@ -149,7 +150,7 @@ test('formatResult and parseResult round-trip', () => {
   assert.equal(parseResult('no block here'), undefined);
 });
 
-test('parseResult: only a block that ends the comment, outside code, counts', () => {
+test('parseResult: the one block outside code counts, whatever follows it', () => {
   const block = formatResult(PARTIAL);
   const ok = (body: string) => assert.equal(parseResult(body)?.ok, true, body);
   const none = (body: string) => assert.equal(parseResult(body), undefined, body);
@@ -165,15 +166,19 @@ test('parseResult: only a block that ends the comment, outside code, counts', ()
   none(`~~~~md\n${block}\n~~~~\nafter`);
   none(block.split('\n').map((l) => `> ${l}`).join('\n'));
   none(`see \`${RESULT_MARKER}\``);
-  // not last: text after the block
-  bad(`${block}\nP.S. one more thing`, /must end the comment/);
+  // text after the block (a signature, a bot's footer) is ignored
+  assert.deepEqual(parseResult(`${block}\nP.S. one more thing`), parseResult(block));
+  assert.deepEqual(parseResult(`report\n\n${block}\n\n---\n<sub>Posted by deploy-bot. [Settings](https://x.example/s)</sub>\n\n\`\`\`\ncode\n\`\`\``), parseResult(block));
   // the marker without its fence on the next line
   bad(`${RESULT_MARKER}\n\n${block.split('\n').slice(1).join('\n')}`, /followed by a \`\`\`yaml fence/);
   bad(`${RESULT_MARKER}\n\`\`\`yml\nstatus: done\n\`\`\``, /followed by a \`\`\`yaml fence/);
   bad(`${RESULT_MARKER}\n\`\`\`yaml\nstatus: done`, /not closed/);
-  // only the last marker line counts: a report that quotes one higher up can't replace the server's
+  // a comment holds exactly one block: a second one, before or after, makes neither count
   const forged = formatResult({ ...DONE, host: 'box' });
-  assert.equal((parseResult(`${forged}\n\nfooter\n\n${block}`) as { result: AirResult }).result.status, 'partial');
+  bad(`${forged}\n\nfooter\n\n${block}`, /exactly one `air-result` block/);
+  bad(`${block}\n\nfooter\n\n${forged}`, /exactly one `air-result` block/);
+  bad(`${block}\n\n${RESULT_MARKER}`, /exactly one `air-result` block/);
+  ok(`${block}\n\n\`\`\`\n${forged}\n\`\`\``); // a quoted one after it is code, not a block
   // a newer version's marker is not ours to read
   none(block.replace('air-result v0', 'air-result v1'));
 });
@@ -216,6 +221,10 @@ test('countedResults: only the claim holder\'s own, unedited result counts', () 
   const ids = (cs: AuthoredComment[]) => countedResults(cs).map((r) => r.commentId);
 
   assert.deepEqual(countedResults([...claimed, a(11, result())]), [{ commentId: 11, claimCommentId: 10, result: PARTIAL }]);
+  // a footer after the block (added by the poster's tooling) changes nothing
+  const footer = '\n\n---\n<sub>Sent by the ops bot</sub>\n';
+  assert.deepEqual(countedResults([...claimed, a(11, `${result()}${footer}`)]), [{ commentId: 11, claimCommentId: 10, result: PARTIAL }]);
+  assert.deepEqual(ids([...claimed, a(11, `${doneResult()}${footer}`), a(12, `${result()}${footer}`)]), [11]);
   // forged: an untrusted author, another trusted account, another host or nonce, or no claim at all
   assert.deepEqual(ids([...claimed, a(11, result(), { trusted: false })]), []);
   assert.deepEqual(ids([...claimed, a(11, result(), { author: 'mallory' })]), []);
@@ -242,11 +251,12 @@ test('countedResults: only the claim holder\'s own, unedited result counts', () 
   assert.deepEqual(ids([...claimed, a(11, doneResult(), { updatedAt: '2026-11-07T12:01:00Z' }), a(12, result())]), [12]);
 });
 
-test('textAboveResult: the report above the last block, without counted marker lines', () => {
+test('textAboveResult: the report above the block, without counted marker lines', () => {
   const release = formatMarker({ kind: 'release', version: 0, host: 'box', nonce: 'aaaaaaaa' });
   const quoted = `\`\`\`\n${RESULT_MARKER}\n\`\`\``;
   const body = `# Report\n\nDone.\n${quoted}\n\n  ${release}\n${formatResult(PARTIAL)}\n`;
   assert.equal(textAboveResult(body), `# Report\n\nDone.\n${quoted}`);
+  assert.equal(textAboveResult(`${body}\n-- \nA signature\n`), `# Report\n\nDone.\n${quoted}`);
   assert.equal(textAboveResult('no block here'), undefined);
 });
 

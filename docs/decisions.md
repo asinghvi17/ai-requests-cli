@@ -315,3 +315,26 @@ Alternatives considered:
 - Delivery and checkpoints keep a record per repo path (`job.delivery.repos`: branch, pushed SHA, PR, linked),
   so a retry repeats nothing. Commits count from the SHA recorded at claim time, not the branch's current tip.
   The final comment lists the PRs and the delivered repos that got none, and why.
+
+## 2026-11-17: trailing text after results, real spend, the agent's environment, resumes keep their branch
+
+- Spec §10: text may follow a comment's `air-result` block (signatures, bot footers) and is ignored. The block is
+  the one `<!-- air-result v0 -->` line outside code, the ```` ```yaml ```` fence after it, and the line closing
+  that fence. A comment holds exactly one block: a second marker line outside code makes the comment hold no
+  result, where before the last one won. Only a claim's first counted result counts, as before.
+- Manual budgets are charged what a job actually spent, when it ends (delivered, failed, partial, cancelled or
+  lost), once. One source per agent, its own records: Claude Code's session transcripts (`message.usage` of each
+  API call, once per message id, subagents included), Codex's rollouts (the largest `total_token_usage` per
+  session started in the workspace). Both give tokens, so only budgets in `tokens` are charged; a budget in
+  `percent` is not, since no agent reports a share of a plan. No estimate (say, the effort's expected cost) stands
+  in for a missing record: the final comment says the job wasn't charged and why.
+- The agent inherits the volunteer's whole environment: the launcher no longer runs `env -i` with an allowlist.
+  air adds or overrides only `AIR_WORKSPACE`, `AIR_CONTEXT`, `AIR_OUT`, a subscription's `CLAUDE_CONFIG_DIR` or
+  `CODEX_HOME`, and `TERM` (tmux's); `TMUX` and `TMUX_PANE` are tmux's own for the pane. `setup` and `check` keep
+  their allowlisted environment.
+- A resumed request pushes to its checkpoint's branch (`resume.branches[].branch`) instead of the next free
+  `air/<N>-<k>`, for its PR or its next checkpoint, so no branch is left over. The push is
+  `--force-with-lease` on the checkpoint's commit (or on the branch being absent): if someone moved the branch
+  since, air leaves it alone and that repo gets no push, with the reason in the final comment.
+- A PR body holds the agent's report (§6 already said so). One too long for GitHub's 65,536-character body is now
+  cut, with the full report uploaded as the report asset, where before `createPull` failed.

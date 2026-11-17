@@ -63,7 +63,7 @@ export interface StartJobInput {
   issue: number;
   cwd: string;
   argv: string[];
-  /** Added to the allowlisted environment; denied names (GH_TOKEN, AWS_*, ...) throw. */
+  /** Added to (or overriding) the caller's environment, which the job inherits whole. */
   env?: Record<string, string>;
   /**
    * The full task. Written to `<cwd>/AIR_TASK.md`; argv gets TASK_INSTRUCTION as its last argument, so a long
@@ -376,10 +376,11 @@ export function createTmux(options: TmuxOptions = {}) {
       argv = [...argv, TASK_INSTRUCTION];
     }
     await ensureSession();
-    if (env.TERM === undefined) env.TERM = (await run(['show-options', '-sv', 'default-terminal'])).stdout.trim() || 'tmux-256color';
-    checkJob(argv, env);
+    // The pane is a tmux terminal, whatever terminal air itself runs in.
+    env.TERM = (await run(['show-options', '-sv', 'default-terminal'])).stdout.trim() || 'tmux-256color';
+    checkJob(argv);
     // argv, env and cwd go into a launcher script; the tmux command line below holds only our own words.
-    const launcher = writeLauncher({ argv, env, cwd: input.cwd, clearEnv: true, status: true });
+    const launcher = writeLauncher({ argv, env, cwd: input.cwd, status: true });
     const nonce = randomBytes(12).toString('hex');
     // Commands later in a chain default to the session's current pane, not the new one: target the
     // new window by an exact, unique temporary name.

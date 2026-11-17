@@ -4,7 +4,8 @@
   (no enums, namespaces or parameter properties); import local files with their `.ts` extension.
 - Zero runtime dependencies. devDependencies (typescript, @types/node, build tools) are fine.
 - All GitHub access goes through the user's `gh` CLI (`src/gh/`). Never read, store or log a token, and
-  don't pass credentials into child environments that don't need them.
+  don't pass credentials into child environments that don't need them. The agent is the exception: it
+  inherits the volunteer's whole environment (`src/tmux/env.ts`).
 - Tests are `*.test.ts` next to their sources, using `node:test` and `node:assert/strict`.
   `npm test` = typecheck + `node --test`.
 

@@ -19,7 +19,8 @@ import { releaseDownload } from '../workspace/context.ts';
 import { requestsRepo } from '../gh/issues.ts';
 import { currentClaim, formatMarker, parseResult } from '../spec/markers.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
-import type { Subscription } from '../usage/types.ts';
+import { ledgerFile, loadLedger } from '../usage/index.ts';
+import type { ManualConfig, Subscription } from '../usage/types.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
 import { allWorkspaces, readState, updateState } from '../workspace/state.ts';
 import { claim } from '../claim/claim.ts';
@@ -75,7 +76,7 @@ interface World {
 let bare: BareRepo, service: BareRepo, guide: BareRepo;
 const tmuxClient = createTmux({ socket });
 
-function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
+function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig['budget'] } = {}): World {
   const store = fakeGitHub();
   // This server's account can push to the repos requests deliver to; each test grants the requester's access.
   for (const r of ['o/target', 'o/service', 'o/guide']) store.setPermission(r, 'bot', 'write');
@@ -98,6 +99,12 @@ function world(o: { manual?: boolean; timeoutMs?: number } = {}): World {
     now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, claimWaitMs: 0,
     download: releaseDownload(gh, 'github.com'),
   };
+  if (o.budget) {
+    // `max` is a manual budget, and the fake agent leaves Claude Code transcripts in a config dir of its own.
+    const claudeDir = tmp('air-serve-claude-');
+    ctx.manual = (name) => (name === 'max' ? { name, harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: o.budget! } : undefined);
+    ctx.agentEnv = () => ({ CLAUDE_CONFIG_DIR: claudeDir, FAKE_TRANSCRIPT: '1' });
+  }
   return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root };
 }
 
@@ -190,6 +197,34 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(order, ['addLabels 1 air:claimed', 'addLabels 1 air:running', 'removeLabel 1 air:claimed', 'addLabels 1 air:done', 'removeLabel 1 air:running']);
   });
 
+  test('a manual budget in tokens is charged what each job spent, by its transcripts; one in percent is not', async () => {
+    const w = world({ budget: { tokens: 1_000_000 } });
+    const spent = () => (loadLedger(ledgerFile(w.ctx.stateDir)).ledger?.subscriptions.max?.spent);
+    w.store.addIssue({ number: 80, body: body('comment Done.') });
+    await until(w, 'delivered', () => status(w, 80) === 'done');
+    // one API call (its line repeated, counted once) and one subagent call
+    assert.equal(spent(), 1170);
+    assert.deepEqual(job(w, 80)!.state.job!.spend, { tokens: 1170, charged: true });
+    assert.match(comments(w, 80).at(-1)!, /Charged 1,170 tokens to manual budget `max`\./);
+    // A partial job is charged for both its starts: the fresh one and the resumed session.
+    w.store.addIssue({ number: 81, body: body('quit 3') });
+    await until(w, 'partial', () => status(w, 81) === 'partial');
+    assert.equal(job(w, 81)!.state.job!.starts, 2);
+    assert.equal(spent(), 1170 + 2340);
+    // A cancelled job too.
+    w.store.addIssue({ number: 82, body: body('hang') });
+    await running(w, 82);
+    w.store.issues.get(82)!.labels.push('air:cancel');
+    await until(w, 'cancelled', () => status(w, 82) === 'cancelled');
+    assert.equal(spent(), 1170 + 2340 + 1170);
+
+    const p = world({ budget: { percent: 100 } });
+    p.store.addIssue({ number: 83, body: body('comment Done.') });
+    await until(p, 'delivered', () => status(p, 83) === 'done');
+    assert.equal(loadLedger(ledgerFile(p.ctx.stateDir)).ledger?.subscriptions.max, undefined);
+    assert.match(comments(p, 83).at(-1)!, /Not charged to manual budget `max` \(the agent used 1,170 tokens\): its budget is in percent, and the agent reports tokens\./);
+  });
+
   test('comment: an over-long report is truncated and the full text uploaded', async () => {
     const w = world();
     w.store.addIssue({ number: 2, body: body('big 70000') });
@@ -228,6 +263,22 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(stateLabels(w, 4), ['air:failed']);
     assert.match(comments(w, 4).at(-1)!, /No changes were produced/);
     assert.equal(await holder(w, 4), undefined, 'a failure releases the claim');
+  });
+
+  test('pr: the report is the PR body; an over-long one is cut to fit and uploaded whole', async () => {
+    const w = world();
+    w.store.setPermission('o/target', 'alice', 'write');
+    w.store.addIssue({ number: 5, title: 'Big', body: body('prbig 70000', PR, CONTEXT) });
+    await until(w, 'delivered', () => status(w, 5) === 'done');
+    const nonce = job(w, 5)!.state.nonce;
+    const url = `https://github.com/o/requests/releases/download/air-artifacts/air-5-${nonce}-report.md`;
+    const pr = w.fg.pulls.find((p) => p.title.endsWith('(#5)'))!;
+    assert.ok(pr.body.length <= COMMENT_LIMIT, String(pr.body.length));
+    assert.ok(pr.body.startsWith(`Part of o/requests#5\n\n**Truncated:** the full report is ${url}\n\n\`\`\`\nyyyy`));
+    // the report's open fence is closed before the cut, so it can't swallow what follows
+    assert.match(pr.body, /y\n```\n\n\[\.\.\. cut \.\.\.\]\n$/);
+    const asset = w.fg.releases.find((r) => r.tag === 'air-artifacts')!.assets.find((a) => a.name === `air-5-${nonce}-report.md`)!;
+    assert.equal(asset.data.toString(), `\`\`\`\n${'y'.repeat(70000)}`);
   });
 
   test("pr: the agent's repo config can't run code or redirect the push; a PR whose response was lost is found", async () => {
@@ -310,10 +361,12 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
       '  out:', `    url: ${r.resume!.out!.url}`, `    sha256: ${r.resume!.out!.sha256}`, `    bytes: ${r.resume!.out!.bytes}`], CONTEXT);
     issue.labels = issue.labels.filter((l) => !l.startsWith('air:'));
     await until(w, 'delivered', () => status(w, 63) === 'done');
+    // Each repo's checkpoint branch moved on; no second branch is left behind.
     for (const [b, repo] of [[service, 'o/service'], [bare, 'o/target']] as const) {
-      assert.equal(execFileSync('git', ['--git-dir', b.bare, 'log', '--format=%s', 'main..air/63-2'], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n', repo);
+      assert.equal(execFileSync('git', ['--git-dir', b.bare, 'log', '--format=%s', 'main..air/63'], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n', repo);
+      assert.equal(spawnSync('git', ['--git-dir', b.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/63-2']).status, 1, repo);
     }
-    assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#63)')).map((p) => [p.repo, p.head]), [['o/service', 'air/63-2'], ['o/target', 'air/63-2']]);
+    assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#63)')).map((p) => [p.repo, p.head]), [['o/service', 'air/63'], ['o/target', 'air/63']]);
     assert.equal(readFileSync(join(job(w, 63)!.dir, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
   });
 
@@ -750,12 +803,34 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.match(task, /## Continuing earlier work/);
     assert.match(task, new RegExp(`checked out at the earlier work's checkpoint, \`${sha}\` on branch \`air/31\``));
     assert.match(task, /Keep `out\/PROGRESS\.md` up to date/);
-    // The PR carries the checkpoint's commits and the new one, on the next free branch.
+    // The PR carries the checkpoint's commits and the new one, on the checkpoint's own branch: nothing is left over.
     assert.equal(w.fg.pulls.length, 1);
-    assert.equal(w.fg.pulls[0]!.head, 'air/31-2');
-    const head = execFileSync('git', ['--git-dir', bare.bare, 'rev-parse', 'refs/heads/air/31-2'], { encoding: 'utf8' }).trim();
+    assert.equal(w.fg.pulls[0]!.head, 'air/31');
+    const head = execFileSync('git', ['--git-dir', bare.bare, 'rev-parse', 'refs/heads/air/31'], { encoding: 'utf8' }).trim();
     assert.equal(execFileSync('git', ['--git-dir', bare.bare, 'log', '--format=%s', `main..${head}`], { encoding: 'utf8' }), 'the change\nwip 2\nwip 1\n');
+    assert.equal(spawnSync('git', ['--git-dir', bare.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/31-2']).status, 1, 'no second branch');
     assert.equal(resultOf(w, 31)?.status, 'done');
+  });
+
+  test("pr: a resumed request never overwrites a checkpoint branch someone moved since", async () => {
+    const w = world();
+    w.store.setPermission('o/target', 'alice', 'write');
+    w.store.addIssue({ number: 34, title: 'Long change', body: body('quit 3', PR, CONTEXT) });
+    await until(w, 'partial', () => status(w, 34) === 'partial');
+    const r = resultOf(w, 34)!;
+    const git = (...a: string[]) => execFileSync('git', ['--git-dir', bare.bare, ...a], { encoding: 'utf8' }).trim();
+    const checkpointSha = git('rev-parse', 'refs/heads/air/34');
+    // Someone else pushes to the checkpoint branch before the request is resumed.
+    const moved = git('commit-tree', `${checkpointSha}^{tree}`, '-p', checkpointSha, '-m', 'by hand');
+    git('update-ref', 'refs/heads/air/34', moved);
+    const issue = w.store.issues.get(34)!;
+    issue.body = body('pr', [...PR, 'resume:', '  branches:', '    - repo: target', '      branch: air/34', `      sha: "${checkpointSha}"`,
+      '  out:', `    url: ${r.resume!.out!.url}`, `    sha256: ${r.resume!.out!.sha256}`, `    bytes: ${r.resume!.out!.bytes}`], CONTEXT);
+    issue.labels = issue.labels.filter((l) => !l.startsWith('air:'));
+    await until(w, 'failed', () => status(w, 34) === 'failed');
+    assert.equal(git('rev-parse', 'refs/heads/air/34'), moved, 'the moved branch is left as it is');
+    assert.equal(w.fg.pulls.length, 0);
+    assert.match(comments(w, 34).at(-1)!, /checkpoint branch `air\/34` moved since the checkpoint/);
   });
 
   test('a resume whose checkpoint zip is missing fails before setup runs', async () => {

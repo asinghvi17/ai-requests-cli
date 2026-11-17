@@ -8,7 +8,8 @@ Adapted (not imported) from factory `packages/coordinator-mcp/src/heads.ts`:
   same tmux command queue as the write; `display-message -p` in the branch reports whether it ran.
 - `new-window -d -P -F '#{window_id} #{pane_id}'` to learn the created ids; `pane_dead` checks before acting.
 - "no server running" / "error connecting" means no jobs, not an error.
-- `env -u ...` launch wrapper became `env -i` with an allowlist (heads.ts strips a few vars; we start from nothing).
+- `env -u ...` launch wrapper became `env K=V ... argv`: the job inherits the caller's whole environment, with the
+  caller's extras on top (TMUX and TMUX_PANE are tmux's own for the pane; TERM is tmux's `default-terminal`).
 New here: one tmux invocation creates the window on a placeholder, tags it `@air_state=starting`, sets remain-on-exit,
 `respawn-pane -k`s the agent and marks it `running`. Chained commands default to the session's *current* pane, so each
 targets the new window by an exact unique temp name (`=air:=air-new-<nonce>`). Leftover `starting` panes are killed.
@@ -16,9 +17,10 @@ Caller words (argv, env values, cwd) never go on a tmux command line: a word equ
 separator, so `x;` `run-shell ...` would run tmux commands. They go into a private self-deleting sh launcher
 (`launcher.ts`); tmux runs only `/bin/sh <tmpdir>/air-launch-*/run.sh`.
 
-Env scope: the scrub covers the inherited environment only (`env -i` + allowlist; `BASH_ENV`/`ENV` are denied). HOME
-is the volunteer's real one on purpose (the agent needs their login and config), so dotfiles their shell sources and
-files readable under HOME are the volunteer's responsibility. A filesystem sandbox is out of scope by design.
+Env scope (decided 2026-11-17): the agent runs as the volunteer would run it, so it gets their whole environment,
+credentials included. The launcher script therefore holds every variable's value: it lives in a 0700 directory under
+tmpdir and removes itself when it runs. Only the tmux client and server get an allowlisted environment (`clientEnv`).
+A filesystem sandbox is out of scope by design.
 
 Pane death (fixed after CI flakes under bun on ubuntu): tmux sets `pane_dead` when the pty closes, but `pane_dead_status`
 and `pane_dead_signal` only once it has reaped the child (`PANE_STATUSREADY`). A pane in between is reported as alive, so

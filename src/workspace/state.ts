@@ -54,6 +54,8 @@ export interface JobRecord {
   expectedCost?: number;
   /** The agent's own session id, for `claude --resume` / `codex resume`. */
   sessionId?: string;
+  /** Every Claude Code session id the job started, for reading what it spent. */
+  sessions?: string[];
   /** `@air_nonce` of the job's tmux pane, so a different pane for the same issue is never adopted. */
   paneNonce?: string;
   /** Start of the current run; agent time before it is in `runMs`. */
@@ -81,6 +83,11 @@ export interface JobRecord {
   deliveryAttempts?: number;
   /** Why the job is `failing`, so a retried failure posts the same reason. */
   failure?: { step: string; detail: string };
+  /**
+   * What the job spent, once it ended, for a manual subscription: the tokens the agent's records show, and
+   * whether they were charged to the budget, or why not. Recorded so the job is charged once.
+   */
+  spend?: { tokens?: number; charged: boolean; why?: string };
 }
 
 /** A `repos` entry (by `path`) and the commit its `ref` or `pr` resolved to when the claim was made (spec §5). */
