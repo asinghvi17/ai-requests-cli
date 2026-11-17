@@ -34,7 +34,8 @@
   id is read from its rollout file (`$CODEX_HOME/sessions/**/rollout-*.jsonl`, `session_meta.cwd` = workspace)
   when stopping. A resume that dies within `resumeCheckMs` falls back to a fresh start told to read `out/` and
   the git log first.
-- Restart: live tagged panes are re-adopted (matched by `@air_nonce` recorded in `job.paneNonce`). A `running`
+- Restart: live tagged panes are re-adopted (matched by `@air_nonce` recorded in `job.paneNonce`; only panes whose
+  `@air_repo` is this server's requests repo are seen at all, so servers for two repos can share the socket). A `running`
   job whose window is gone at startup is resumed; one whose window disappears while the server runs was closed
   by the volunteer and becomes an operator pause. A setup cut off by a restart is released as failed.
 - Quota stop: a running job whose subscription has an all-model window (or the window scoped to its model) at
@@ -61,6 +62,8 @@
   finds one at startup, or one older than `CLAIM_STALE_MS`, releases the claim if it still holds (else marks it
   `lost`), so a crash during the claim wait never leaves an issue held by nobody. A claim attempt that throws
   (withdrawn by `claim()`) leaves that issue alone for `CLAIM_RETRY_MS` instead of re-posting every tick.
+- Delivery is single-entry: `finishJob` and `partialJob` hold the workspace's `.air-deliver.lock` (`pidLock`), so
+  `air serve` and an `air start/run` that finds `AIR_DONE` never both push, upload or comment; the loser backs off.
 - Failure paths are retryable states: `delivering` (up to 5 attempts, then `air:failed`), `failing` (until the
   release posts), and orphaned `setting-up` workspaces (until released). Labels are repaired from the job state
   each tick. Report text is defused: marker-like lines (after any whitespace), including `air-result` lines,

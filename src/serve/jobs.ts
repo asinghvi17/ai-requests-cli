@@ -23,10 +23,11 @@ import type { Subscription } from '../usage/types.ts';
 import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../workspace/task.ts';
-import { readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
+import { ENDED, readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
 import { agentArgv, exitResumeInstruction, findCodexSession, type Harness, restartInstruction, RESUME_INSTRUCTION } from './agent.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import { checkpoint, deliver } from './deliver.ts';
+import { pidLock } from './state.ts';
 
 /** A job paused this long is given back (not a quota pause: see QUOTA_WAIT_MS). */
 export const PAUSE_LIMIT_MS = 48 * 3600_000;
@@ -190,9 +191,10 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
 
 /**
  * Starts the agent, unless it already finished (AIR_DONE is there, say because its window closed as it
- * exited): then closes any window left and delivers instead. Checks the claim before either.
+ * exited): then closes any window left and delivers instead, or leaves the delivery to another process
+ * already making it (`delivering-elsewhere`). Checks the claim before either.
  */
-export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | 'delivered'> {
+export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | 'delivered' | 'delivering-elsewhere'> {
   if (!isDone(dir)) {
     await startAgent(ctx, dir);
     return 'started';
@@ -201,8 +203,7 @@ export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'s
   const n = readState(dir).issue;
   if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
   ctx.log(`#${n}: AIR_DONE is already there; delivering instead of starting the agent`);
-  await finishJob(ctx, dir);
-  return 'delivered';
+  return (await finishJob(ctx, dir)) ? 'delivered' : 'delivering-elsewhere';
 }
 
 /** Interrupts the agent, waits the grace period, closes its window; labels `air:paused`. Claim and workspace stay. */
@@ -343,8 +344,39 @@ export async function failJob(ctx: ServeContext, dir: string, step: string, deta
 /** Delivery attempts (one per tick) before a delivery that keeps failing fails the request. */
 export const MAX_DELIVERY_ATTEMPTS = 5;
 
-/** Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. */
-export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
+/** The workspace's delivery lock (`pidLock`): one process at a time delivers or checkpoints its job. */
+export const DELIVERY_LOCK = '.air-deliver.lock';
+
+/**
+ * Runs `step` (a delivery or a checkpoint) holding the workspace's delivery lock, so `air serve` and
+ * `air start/run` never both push, upload or comment for one job. Whoever finds the lock held backs off and
+ * resolves false: the holder is delivering, and the next tick sees its outcome. A job that has
+ * ended already (the last holder delivered it) is left as it is.
+ */
+async function withDeliveryLock(ctx: ServeContext, dir: string, what: string, step: () => Promise<void>): Promise<boolean> {
+  const lock = pidLock(join(dir, DELIVERY_LOCK));
+  if ('held' in lock) {
+    ctx.log(`#${readState(dir).issue}: ${what} is already in progress (${lock.held}); leaving it to that process`);
+    return false;
+  }
+  try {
+    const job = readState(dir).job;
+    if (!job || !ENDED.includes(job.status)) await step();
+    return true;
+  } finally {
+    lock.release();
+  }
+}
+
+/**
+ * Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. Resolves false,
+ * having done nothing, when another process is delivering it (`withDeliveryLock`).
+ */
+export function finishJob(ctx: ServeContext, dir: string): Promise<boolean> {
+  return withDeliveryLock(ctx, dir, 'delivery', () => deliverJob(ctx, dir));
+}
+
+async function deliverJob(ctx: ServeContext, dir: string): Promise<void> {
   const state0 = readState(dir);
   const n = state0.issue;
   if (jobOf(state0).status !== 'delivering') saveJob(ctx, dir, { status: 'delivering', runMs: agentMs(jobOf(state0), ctx.now()), startedAt: undefined });
@@ -381,9 +413,13 @@ export async function finishJob(ctx: ServeContext, dir: string): Promise<void> {
  * (why it stopped, what the checkpoint keeps, usage) with a release and a `partial` result, labelling the
  * issue `air:partial`. A timeout whose checkpoint keeps nothing fails instead (rule 5). The job is
  * `checkpointing` until the comment is posted, so a failing push, upload or comment is retried next tick;
- * after MAX_DELIVERY_ATTEMPTS the request fails.
+ * after MAX_DELIVERY_ATTEMPTS the request fails. Holds the delivery lock like `finishJob`.
  */
 export async function partialJob(ctx: ServeContext, dir: string, reason?: { why: string; timeout?: boolean }): Promise<void> {
+  await withDeliveryLock(ctx, dir, 'checkpoint', () => checkpointJob(ctx, dir, reason));
+}
+
+async function checkpointJob(ctx: ServeContext, dir: string, reason?: { why: string; timeout?: boolean }): Promise<void> {
   const state0 = readState(dir);
   const n = state0.issue;
   const job0 = jobOf(state0);

@@ -34,9 +34,20 @@ const HELD_PHASES = ['claiming', 'claimed', 'setting-up', 'ready'];
 export const CLAIM_STALE_MS = 10 * 60_000;
 /** After a claim attempt throws (GitHub refused a step, an outage), the issue is left alone this long. */
 export const CLAIM_RETRY_MS = 60 * 60_000;
-/** `--once`: how long to keep polling when the first poll finds nothing, and how often. */
+/**
+ * `--once`, list lag: GitHub's issue list can miss a request filed seconds ago, so a poll that finds no
+ * candidates polls again every ONCE_POLL_MS for up to ONCE_WAIT_MS before giving up.
+ */
 export const ONCE_WAIT_MS = 60_000;
 export const ONCE_POLL_MS = 10_000;
+/**
+ * `--once`, errors: a poll that fails (a network error, a 5xx from gh) is tried ONCE_POLL_TRIES times in all,
+ * ONCE_RETRY_MS apart and doubling, before `air serve --once` fails.
+ */
+export const ONCE_POLL_TRIES = 3;
+export const ONCE_RETRY_MS = 2_000;
+/** `tick()`'s result when its poll threw. */
+export const POLL_FAILED = 'poll-failed';
 const STOPPING_LIMIT_MS = 5 * 60_000;
 /** `air serve` runs `air sweep` at most this often (spec §7: once a day). */
 export const SWEEP_INTERVAL_MS = 24 * 3600_000;
@@ -118,8 +129,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-  function track(n: number, what: string, p: Promise<void>): void {
-    const t = p.catch((e) => ctx.log(e instanceof ClaimLost ? `#${n}: ${what} skipped: ${err(e)}` : `#${n}: ${what} failed: ${err(e)}`)).finally(() => {
+  function track(n: number, what: string, p: Promise<unknown>): void {
+    const t = p.then(() => {}, (e) => ctx.log(e instanceof ClaimLost ? `#${n}: ${what} skipped: ${err(e)}` : `#${n}: ${what} failed: ${err(e)}`)).finally(() => {
       if (inflight.get(n) === t) inflight.delete(n);
     });
     inflight.set(n, t);
@@ -385,7 +396,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     // A quota pause is bounded by QUOTA_WAIT_MS instead (§8: it is exempt from the 48 h release).
     if (job.pauseReason !== 'quota' && job.pausedAt && now.getTime() - Date.parse(job.pausedAt) > PAUSE_LIMIT_MS) return track(n, 'release', expirePause(ctx, dir));
     // watch() checked the claim this tick; startAgent checks it again before it touches the issue.
-    if (job.pauseReason === 'restart' || job.pauseReason === 'exit') return track(n, 'restart', startOrDeliver(ctx, dir).then(() => {}));
+    if (job.pauseReason === 'restart' || job.pauseReason === 'exit') return track(n, 'restart', startOrDeliver(ctx, dir));
     if (job.pauseReason !== 'quota') return;
     if (now.getTime() > quotaDeadline(job)) {
       ctx.log(`#${n}: quota did not come back within 24 hours; stopping early`);
@@ -396,7 +407,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     if (job.resumeAfter) sub = (await ctx.usage({ refresh: true })).find((s) => s.name === job.subscription);
     if (!sub || sub.stale || exhausted(sub, job.model)) return;
     ctx.log(`#${n}: quota is back; restarting`);
-    track(n, 'restart', startOrDeliver(ctx, dir).then(() => {}));
+    track(n, 'restart', startOrDeliver(ctx, dir));
   }
 
   /** Poll, match, claim. Returns how many open requests were candidates (unclaimed, not ours), if it polled. */
@@ -479,9 +490,10 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   /**
    * One tick. Never throws: every failure is logged and the next tick tries again. Returns the number of
-   * candidate requests its poll saw, or undefined when it did not poll (or the poll failed).
+   * candidate requests its poll saw, POLL_FAILED when the poll threw, or undefined when it did not poll (or
+   * the tick failed before it).
    */
-  async function tick(o: { poll?: boolean } = {}): Promise<number | undefined> {
+  async function tick(o: { poll?: boolean } = {}): Promise<number | typeof POLL_FAILED | undefined> {
     try {
       let usage: Subscription[] = [];
       try {
@@ -508,7 +520,12 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         ctx.log(`tmux status: ${err(e)}`);
       }
       if (o.poll === false || readServerState(ctx.stateDir).paused) return undefined;
-      return await poll(usage, held());
+      try {
+        return await poll(usage, held());
+      } catch (e) {
+        ctx.log(`poll failed: ${err(e)}`);
+        return POLL_FAILED;
+      }
     } catch (e) {
       ctx.log(`tick failed: ${err(e)}`);
       return undefined;
@@ -556,9 +573,12 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   /**
    * Runs ticks until `signal` aborts. With `once`, runs one full tick, then only watches (every `watchMs`)
    * until no job needs it any more. A `once` poll that finds no candidates polls again every `oncePollMs`
-   * for up to `onceWaitMs`: GitHub's issue list lags a request filed seconds ago.
+   * for up to `onceWaitMs` (list lag, ONCE_WAIT_MS). A `once` poll that fails is tried `oncePollTries` times in
+   * all, `onceRetryMs` apart and doubling; then the run fails.
    */
-  async function run(o: { once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number } = {}): Promise<void> {
+  async function run(o: {
+    once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number; oncePollTries?: number; onceRetryMs?: number;
+  } = {}): Promise<void> {
     const tickMs = o.tickMs ?? ctx.config.tick_seconds * 1000;
     ctx.log(`air serve on ${ctx.host}: ${repo}, ${opts.manual ? 'manual' : 'auto'} start, max ${ctx.config.max_jobs} job(s), tick ${tickMs / 1000} s`);
     // Every air label exists from the start, `air:cancel` included, so a requester can always add one.
@@ -568,7 +588,23 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     } catch (e) {
       ctx.log(`labels: can't create the missing air labels on ${repo}: ${err(e)}`);
     }
-    let found = await tick();
+    // `--once`: one tick whose poll is retried with backoff (ONCE_POLL_TRIES) when it fails.
+    const onceTick = async () => {
+      const tries = o.oncePollTries ?? ONCE_POLL_TRIES;
+      for (let attempt = 1; ; attempt++) {
+        const r = await tick();
+        if (r !== POLL_FAILED || o.signal?.aborted) return r;
+        if (attempt >= tries) {
+          await idle();
+          throw new Error(`--once: polling ${repo} for requests failed ${tries} times; giving up (the log has each error)`);
+        }
+        const ms = (o.onceRetryMs ?? ONCE_RETRY_MS) * 2 ** (attempt - 1);
+        ctx.log(`--once: the poll failed; trying again in ${ms / 1000} s (attempt ${attempt + 1} of ${tries})`);
+        await sleep(ms, undefined, { signal: o.signal }).catch(() => {});
+        if (o.signal?.aborted) return undefined;
+      }
+    };
+    let found = o.once ? await onceTick() : await tick();
     if (o.once) {
       const waitMs = o.onceWaitMs ?? ONCE_WAIT_MS;
       const pollMs = Math.max(1, Math.min(o.oncePollMs ?? ONCE_POLL_MS, waitMs));
@@ -582,7 +618,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         ctx.log(`--once: no open requests to claim yet; polling again in ${Math.min(pollMs, left) / 1000} s (${Math.ceil(left / 1000)} s left)`);
         await sleep(Math.min(pollMs, left), undefined, { signal: o.signal }).catch(() => {});
         if (o.signal?.aborted) break;
-        found = await tick();
+        found = await onceTick();
       }
       while (!o.signal?.aborted && busy()) {
         await sleep(o.watchMs ?? 2000, undefined, { signal: o.signal }).catch(() => {});

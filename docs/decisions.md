@@ -540,3 +540,25 @@ Claude Code:
   tick finish the release too.
 - `spawn.test.ts` accepts ENOTCONN as well as EPIPE from a gh that exits without reading its input. On macOS
   node's stdio pipes are socket pairs, and that write can fail with either (it failed one macOS CI run).
+
+## 2026-11-17: PR #9 review follow-ups: single-entry delivery, `@air_repo`, `--once` retries
+
+- Delivery is single-entry. `air start N` (or `air run N`) on a job whose agent already created `AIR_DONE`
+  delivers in place of starting it, and so does `air serve`'s tick: both could push the PR branch, upload the
+  artifact and post the result at once. `finishJob` and `partialJob` now run under the workspace's delivery
+  lock, `.air-deliver.lock`: `pidLock` (src/serve/state.ts), the same pid lock file `serve.lock` uses, made
+  with an atomic `link` and taken over only when its pid is dead. Whoever finds it held backs off without
+  writing anything: the server logs it and the next tick sees the outcome; `air start` says another process is
+  delivering. Inside the lock a job that has already ended is left alone, so the loser's later retry does
+  nothing either. The lock was chosen over a phase transition in state.json: a read-check-rename on that file
+  is not atomic between two processes, and the lock comes with stale handling already.
+- Job panes are tagged `@air_repo` (`owner/name`) at launch, with the other tags, and `createTmux` needs the
+  repo: `listJobs` (so adoption, `findJob`, stop, attach and the leftover-`starting` cleanup) sees only panes
+  tagged with its own repo. Two servers for different requests repos share the `tmux -L air` socket; before,
+  each adopted (and could stop, or kill as a duplicate) the other's window of the same issue number. A pane
+  without the tag is not ours: there is no fallback, as nothing was deployed with untagged panes.
+- `air serve --once` retries a poll that fails (a network error, a 5xx from gh): `ONCE_POLL_TRIES` (3) tries in
+  all, `ONCE_RETRY_MS` (2 s) apart and doubling, then the command fails. Before, a failed first poll looked
+  like "nothing to do" and `--once` exited 0. `tick()` now returns `POLL_FAILED` for a poll that threw. The
+  list-lag re-poll (`ONCE_WAIT_MS`, `ONCE_POLL_MS`: GitHub's list can miss a request filed seconds ago) was
+  already named; its constants now say why they exist.

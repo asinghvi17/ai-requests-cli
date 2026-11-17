@@ -175,7 +175,8 @@ job would have no usage record and no cost.
 air usage            # quota air reads for each subscription config.toml names
 air serve            # tick every 60 s: claim what fits, set it up, start the agent in tmux, deliver
 air serve --manual   # claim and set up, but wait for `air run ISSUE`
-air serve --once     # one tick, then wait for its jobs to finish (re-polls for up to 60 s if it finds nothing: --once-wait)
+air serve --once     # one tick, then wait for its jobs to finish (re-polls for up to 60 s if it finds nothing: --once-wait;
+                     # a poll that fails is tried 3 times, 2 s then 4 s apart)
 air attach [ISSUE]   # watch the server log (window 0) or a job
 air stop ISSUE       # interrupt the agent; keeps the claim and workspace (air:paused)
 air start ISSUE      # resume the agent's own session

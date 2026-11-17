@@ -1,12 +1,14 @@
 // tmux control on the private `air` socket: one session, window 0 for the server log, one window per job.
-// Every job pane carries pane options @air_job=<issue> and @air_nonce=<random>; those tags are the only
-// source of truth, so a restarted server re-adopts its jobs and never touches the volunteer's own windows.
+// Every job pane carries pane options @air_repo=<owner/name>, @air_job=<issue> and @air_nonce=<random>; those
+// tags are the only source of truth, so a restarted server re-adopts its own jobs and never touches the
+// volunteer's windows or the jobs of a server for another requests repo on the same socket.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { checkRepo } from '../gh/issues.ts';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
 import { launcherPid, launcherStatus, removeLauncher, writeLauncher } from './launcher.ts';
 
@@ -19,6 +21,8 @@ export interface RunResult { code: number; stdout: string; stderr: string }
 export type TmuxRunner = (args: string[]) => Promise<RunResult>;
 
 export interface TmuxOptions {
+  /** The requests repo (`owner/name`) whose jobs this client starts and sees: panes are tagged `@air_repo`. */
+  repo: string;
   /** Socket name for `tmux -L` (default `air`); tests use a throwaway one. */
   socket?: string;
   /** Session name (default `air`). */
@@ -29,6 +33,8 @@ export interface TmuxOptions {
 }
 
 export interface Job {
+  /** `@air_repo`: the requests repo the job belongs to. */
+  repo: string;
   issue: number;
   nonce: string;
   windowId: string;
@@ -81,7 +87,7 @@ export interface StopOptions {
 
 const SEP = '\t';
 const LIST_FORMAT = ['#{@air_job}', '#{@air_nonce}', '#{window_id}', '#{pane_id}', '#{window_name}',
-  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}', '#{pane_dead_signal}'].join(SEP);
+  '#{pane_pid}', '#{pane_dead}', '#{pane_dead_status}', '#{@air_state}', '#{@air_launcher}', '#{pane_dead_signal}', '#{@air_repo}'].join(SEP);
 
 /**
  * `-u`: the client is UTF-8 whatever the caller's locale. A client tmux thinks is not UTF-8 (no `UTF-8` in
@@ -139,7 +145,7 @@ function checkIssue(issue: number) {
 }
 
 /** Tagged panes still in `starting`: a start that never completed (the chain failed, or we crashed). */
-export interface Stale { issue: number; nonce: string; windowId: string; paneId: string; panePid: number; launcher?: string }
+export interface Stale { repo: string; issue: number; nonce: string; windowId: string; paneId: string; panePid: number; launcher?: string }
 
 type LauncherRead = (launcher: string | undefined) => number | null;
 
@@ -174,11 +180,11 @@ export function parsePanes(out: string, statusOf: LauncherRead = launcherStatus,
     // Every row has separators; a row without any is tmux's sanitised output (see defaultRunner), and
     // reading it as "no panes" would close every job.
     if (line.trim() && !line.includes(SEP)) throw new Error(`tmux list-panes: unparseable row ${JSON.stringify(line.slice(0, 200))} (tabs replaced: is the tmux client UTF-8?)`);
-    const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher, signal] = line.split(SEP);
+    const [job, nonce, windowId, paneId, name, pid, dead, status, state, launcher, signal, repo = ''] = line.split(SEP);
     if (!job || !nonce || !/^\d+$/.test(job) || !windowId || !paneId) continue;
     const extra = launcher ? { launcher } : {};
     if (state !== 'running') {
-      stale.push({ issue: Number(job), nonce, windowId, paneId, panePid: Number(pid), ...extra });
+      stale.push({ repo, issue: Number(job), nonce, windowId, paneId, panePid: Number(pid), ...extra });
       continue;
     }
     let code = status !== undefined && /^\d+$/.test(status) ? Number(status) : null;
@@ -187,7 +193,7 @@ export function parsePanes(out: string, statusOf: LauncherRead = launcherStatus,
     if (dead === '1' && code === null && sig === null) code = statusOf(launcher);
     const isDead = dead === '1' && (code !== null || sig !== null);
     jobs.push({
-      issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: pidOf(launcher) ?? Number(pid), panePid: Number(pid),
+      repo, issue: Number(job), nonce, windowId, paneId, windowName: name ?? '', pid: pidOf(launcher) ?? Number(pid), panePid: Number(pid),
       dead: isDead, exitStatus: isDead ? code : null, exitSignal: isDead ? sig : null, ...extra,
     });
   }
@@ -244,7 +250,9 @@ export function tmuxVersionProblem(v: string): string | undefined {
   return `${v.trim()} is too old: air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer (tested with 3.0a to 3.8). Install a newer tmux.`;
 }
 
-export function createTmux(options: TmuxOptions = {}) {
+export function createTmux(options: TmuxOptions) {
+  const repo = options.repo;
+  checkRepo(repo); // goes on the tmux command line: owner/name only, never a separator
   const socket = options.socket ?? 'air';
   const session = options.session ?? 'air';
   const run = options.run ?? defaultRunner(socket);
@@ -304,9 +312,11 @@ export function createTmux(options: TmuxOptions = {}) {
   }
 
   /**
-   * All running job panes on the server, found by their tags alone (this is also re-adoption after a
-   * restart). Panes left in `starting` (a start that never finished) are killed, never adopted; a start in
-   * progress is never seen there, since it tags and respawns in one tmux command queue.
+   * This repo's running job panes on the server, found by their tags alone (this is also re-adoption after a
+   * restart): `@air_repo` must be this client's repo, so a server for another requests repo on the same socket
+   * and ours never see (or adopt, stop or kill) each other's jobs. Our panes left in `starting` (a start that
+   * never finished) are killed, never adopted; a start in progress is never seen there, since it tags and
+   * respawns in one tmux command queue.
    */
   async function listJobs(): Promise<Job[]> {
     const r = await run(['list-panes', '-a', '-F', LIST_FORMAT]);
@@ -315,8 +325,8 @@ export function createTmux(options: TmuxOptions = {}) {
       throw new Error(`tmux list-panes: ${r.stderr.trim()}`);
     }
     const { jobs, stale } = parsePanes(r.stdout);
-    for (const p of stale) await killOwned(p);
-    return jobs;
+    for (const p of stale) if (p.repo === repo) await killOwned(p);
+    return jobs.filter(j => j.repo === repo);
   }
 
   /** `tmux -V`, e.g. "tmux 3.4". Throws if tmux can't be run. */
@@ -387,6 +397,7 @@ export function createTmux(options: TmuxOptions = {}) {
     const tmp = `air-new-${nonce}`, w = `${target}:=${tmp}`;
     const r = await run(['new-window', '-d', '-P', '-F', '#{window_id} #{pane_id}', '-t', `${target}:`, '-n', tmp,
       '--', 'sleep', '2147483647', ';',
+      'set-option', '-p', '-t', w, '@air_repo', repo, ';',
       'set-option', '-p', '-t', w, '@air_job', String(input.issue), ';',
       'set-option', '-p', '-t', w, '@air_nonce', nonce, ';',
       'set-option', '-p', '-t', w, '@air_state', 'starting', ';',
