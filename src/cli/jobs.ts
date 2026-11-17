@@ -4,12 +4,13 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, type Config } from '../config.ts';
+import { configPath, loadConfig, type Config } from '../config.ts';
 import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
 import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent } from '../serve/jobs.ts';
 import { acquireServeLock, readServerState, updateServerState } from '../serve/state.ts';
-import { stateDir as usageStateDir } from '../usage/index.ts';
+import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../usage/index.ts';
+import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, type AgentCheck } from '../serve/preflight.ts';
 import { clientEnv } from '../tmux/env.ts';
 import { socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
@@ -22,6 +23,7 @@ export const jobDeps = {
   context: (config: Config, repo: string, echo: (line: string) => void): ServeContext => serveContext(config, repo, { echo }),
   attach: (argv: string[]): number => spawnSync(argv[0]!, argv.slice(1), { stdio: 'inherit' }).status ?? 1,
   stateDir: (): string => usageStateDir(),
+  preflight: (config: Config): AgentCheck[] => preflight(config, loginsOf(loadSubscriptions(subscriptionsFile()), config), defaultPreflightDeps(configPath())),
 };
 
 function contextFor(inv: Invocation): ServeContext {
@@ -52,6 +54,11 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   const onceWaitMs = typeof raw === 'string' ? Number(raw) * 1000 : undefined;
   const ctx = contextFor(inv);
   if (!(await tmuxUsable(ctx, inv))) return 1;
+  // An agent that can't run unattended would sit at a prompt with the claim held: take no work for it.
+  const checks = jobDeps.preflight(ctx.config);
+  ctx.refused = refusals(checks);
+  inv.io.err(formatPreflight(checks));
+  for (const [name, why] of Object.entries(ctx.refused)) ctx.log(`not serving ${name}: ${why} (\`air doctor\` shows the fix)`);
   const unlock = acquireServeLock(ctx.stateDir);
   const server = createServer(ctx, { manual: inv.flags.manual === true });
   if (ctx.logFile) {
@@ -87,6 +94,13 @@ async function tmuxUsable(ctx: ServeContext, inv: Invocation): Promise<boolean> 
     inv.io.err(`air: ${(e as Error).message}\n`);
     return false;
   }
+}
+
+/** `air doctor`: can each configured agent run unattended? Exit 1 if any can't. */
+export function doctorCommand(inv: Invocation): number {
+  const checks = jobDeps.preflight(jobDeps.loadConfig());
+  inv.io.out(formatPreflight(checks));
+  return Object.keys(refusals(checks)).length ? 1 : 0;
 }
 
 export async function runCommand(inv: Invocation): Promise<number> {

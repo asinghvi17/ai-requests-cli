@@ -45,6 +45,8 @@ export interface MatchConfig {
   /** `[models.<harness>]`: tier to model name. */
   models: Record<string, Partial<Record<Tier, string>>>;
   maxJobs?: number;
+  /** Subscription name -> why it takes no new work (its agent can't run unattended). */
+  refused?: Record<string, string>;
 }
 
 export interface Choice { subscription: Subscription; model: string; cost: number; reason: string }
@@ -105,6 +107,7 @@ export function evaluate(
       ? 'manual subscription declares no harness (claude or codex), ignored'
       : `harness ${harness} cannot run requests, ignored`);
   }
+  if (config.refused && Object.hasOwn(config.refused, sub.name)) return no(`not served: ${config.refused[sub.name]}`);
   const settings = config.subscriptions?.[sub.name];
   const baseReserve = settings?.reserve ?? DEFAULT_RESERVE;
   if (!finite(baseReserve) || baseReserve < 0) return no(`invalid reserve ${baseReserve}, takes nothing`);

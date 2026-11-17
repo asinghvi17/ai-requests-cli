@@ -44,6 +44,10 @@ export type SubscriptionConfig =
 export interface ManualConfig {
   name: string;
   harness: 'manual';
+  /** The login of the agent it runs, by the harness config.toml gives it: Claude Code's CLAUDE_CONFIG_DIR. */
+  configDir?: string;
+  /** Likewise Codex's CODEX_HOME. */
+  codexHome?: string;
   /** weekly: `day` 0-6 (Sunday 0); monthly: `day` 1-28. `hour` 0-23, default 0. Local time unless `utc`. */
   reset: { every: 'weekly' | 'monthly'; day: number; hour?: number; utc?: boolean };
   /** US dollars at API prices (src/usage/prices.ts) per period; spend is recorded in the same dollars. */

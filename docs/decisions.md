@@ -372,3 +372,58 @@ Alternatives considered:
 - Spec §11 rule 4: a job is stopped early once its cost passes twice its effort's dollars, measured from the
   agent's records rather than the window's meter. The final comment says "Cost at API prices: $X; effort E
   expects $Y." and, for a manual budget, "Charged $X to manual budget `name`."
+
+## 2026-11-17: unattended agents by default, `air config init`, `air doctor` and stuck-prompt detection
+
+- Before this, an `[agents.X]` table left out meant `claude` or `codex` with no extra args. Claude Code then
+  ran in its default permission mode and Codex with its default approval policy, so each stopped at its first
+  prompt, and nothing checked for that. Now `DEFAULT_AGENTS` (`src/config.ts`) fills in any missing key, and
+  `air config init` writes all of it out, generated from the same constants. It writes once and never
+  overwrites; `--print` shows the file instead.
+- Flags, checked against the installed CLIs (Claude Code 2.1.311, Codex CLI 0.164.0):
+  - Claude Code: `--permission-mode auto`. `claude --help` lists the modes `acceptEdits`, `auto`,
+    `bypassPermissions`, `manual`, `dontAsk` and `plan`. Started in tmux with `--permission-mode auto` in a
+    trusted folder, it opened no dialog. `bypassPermissions` opens "WARNING: Claude Code running in Bypass
+    Permissions mode" until it is accepted once, which sets `skipDangerousModePermissionPrompt` in
+    `settings.json`.
+  - Codex: `--ask-for-approval never --sandbox workspace-write -c sandbox_workspace_write.network_access=true`.
+    `codex --help` gives `-a never` as "Never ask for user approval", and the sandbox keeps writes inside the
+    workspace. `--approve-for-me` (automatic review) is closer to Claude's auto mode, but this CLI also says
+    "Approve for me is unavailable" on some accounts, and nothing then answers its prompts.
+- `air doctor`, which `air serve` also runs at startup (`src/serve/preflight.ts`), checks each claude or codex
+  login listed in subscriptions.json. The agent's binary must be found and `--version` must print a version.
+  Its args must carry an unattended mode. For Claude Code, the login's `.claude.json` (`$CLAUDE_CONFIG_DIR`
+  or `~/.claude.json`) must have `hasCompletedOnboarding` and must trust `workspace_root` or a folder above it
+  (`projects[path].hasTrustDialogAccepted`). Trust is inherited: tested by trusting a parent, and also the
+  home directory. Bypass mode also needs `skipDangerousModePermissionPrompt`. For Codex, when
+  `workspace_root` is in a git repo, that repo's root must be `trust_level = "trusted"` in `config.toml`.
+  Tested: Codex asks "Trust this folder?" in a git repo even with `-a never`, not outside one, and saves the
+  answer under the repo root. Only those keys are read, and no file content is printed. Credential stores
+  (`.credentials.json`, `auth.json`, keychains) are never opened, so a missing Codex login isn't caught here;
+  the runtime check below catches its sign-in screen. Each problem comes with the command or setting that
+  fixes it.
+- A manual subscription in subscriptions.json may set `configDir` or `codexHome`, and they apply to the
+  harness config.toml gives it: a second Claude account whose usage air can't read runs on its own login.
+  `loginsOf` resolves this in one place, and `agentEnv` (the agent's environment and the transcripts its spend
+  is priced from) and the preflight both use it. Under the full-environment launch the agent sees the
+  server's `CLAUDE_CONFIG_DIR`/`CODEX_HOME` unless the login sets its own, and the preflight checks the same
+  directory.
+- A login that fails is refused through `MatchConfig.refused`. It takes no new requests ("not served: ..."
+  in the no-fit log), and the other logins carry on. Jobs already running on it are left alone.
+- At runtime, each tick reads the running job's visible pane (`capture-pane -p -J`). A prompt in
+  `PROMPTS` (`src/serve/prompts.ts`) is matched against the last 20 non-blank lines, whitespace collapsed,
+  and its footer (where captured: "Esc to cancel", "enter continue", ...) must be in the last 3. It counts
+  once it has stayed for 60 s, so output that merely quotes a prompt scrolls on, or sits above an idle input
+  box without the footer, and never does. A screen unchanged for 15 minutes counts as `idle`: long enough for
+  a quiet build. Each pattern records its source. Most were captured from the installed CLIs in tmux with
+  throwaway config dirs (`src/serve/fixtures/panes/`). The permission and approval prompts need a working
+  model to appear, so their fixtures are built from the CLIs' strings. The Codex approval has no footer
+  check. Its screen couldn't be produced: Codex 0.164.0 sends model calls over a websocket and runs shell
+  commands inside its code-mode `exec` tool, so a fake model would have to emulate both. Its binary holds the
+  footer only as fragments ("to confirm", "to cancel") that other popups share, and the trust screen captured
+  from the same build uses another style ("enter continue · esc back").
+- Each waiting episode is logged once with its fix, recorded as `job.waiting` (which `air status` shows on the
+  serving machine) and put in the tmux status bar. An episode ends when its prompt leaves the screen, or for
+  `idle` when the screen changes; a restart keeps it until then. A prompt, never `idle`, posts an issue
+  comment: once per episode, at most 3 per job (`waitingComments`), so one false match can't silence the
+  real prompts after it. None of this stops the job: the timeout and cut-off rules do.

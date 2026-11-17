@@ -12,6 +12,10 @@
 //   quit N         note the start in out/PROGRESS.md (and commit a WIP change on branch `work` in every repo),
 //                  then exit N after 700 ms without creating AIR_DONE
 //   progress       write out/PROGRESS.md, then never finish
+//   prompt NAME    show the captured prompt screen fixtures/panes/NAME.txt until the file `go` exists, then
+//                  clear the screen, report "answered" and create AIR_DONE
+//   screen NAME    never finish; show fixtures/panes/NAME.txt while the file `screen` is missing or says
+//                  `prompt`, and "working <n>" (n counting up) otherwise
 // A start with --resume (or `resume`) exits 3 at once if the file `resume-fails` exists.
 // With FAKE_TRANSCRIPT set, each start with a Claude session id writes a Claude Code transcript of one API call
 // on claude-sonnet-5-5 ($0.500325 at API prices, its line repeated as Claude Code does per content block) and
@@ -76,6 +80,28 @@ else if (mode === 'exitdone') {
     report('finished');
     done();
     process.exit(0);
+  }, 50);
+}
+else if (mode === 'prompt') {
+  process.stdout.write(readFileSync(new URL(`panes/${arg}.txt`, import.meta.url), 'utf8'));
+  const t = setInterval(() => {
+    if (!existsSync(join(ws, 'go'))) return;
+    clearInterval(t);
+    process.stdout.write('\x1b[2J\x1b[Hanswered; working\n');
+    report('answered');
+    done();
+    idle();
+  }, 50);
+}
+else if (mode === 'screen') {
+  const prompt = readFileSync(new URL(`panes/${arg}.txt`, import.meta.url), 'utf8');
+  let shown = '';
+  let n = 0;
+  setInterval(() => {
+    const want = existsSync(join(ws, 'screen')) ? readFileSync(join(ws, 'screen'), 'utf8').trim() : 'prompt';
+    const text = want === 'prompt' ? prompt : `working ${++n}\n`;
+    if (text !== shown) process.stdout.write(`\x1b[2J\x1b[H${text}`);
+    shown = text;
   }, 50);
 }
 else if (mode === 'wait') {

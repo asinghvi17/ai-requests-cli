@@ -89,6 +89,13 @@ export interface JobRecord {
    * Recorded so the job is settled once.
    */
   spend?: { usd?: number; unpriced?: string[]; charged: boolean; why?: string };
+  /**
+   * The running agent seems to wait on a person (a prompt on its screen, or a screen that stopped changing):
+   * what for, the fix, since when, and whether the issue was told. Cleared when its screen moves on.
+   */
+  waiting?: { prompt: string; what: string; fix: string; since: string; notified?: boolean };
+  /** Issue comments posted so far about waiting on the volunteer (at most MAX_WAITING_COMMENTS). */
+  waitingComments?: number;
 }
 
 /** A `repos` entry (by `path`) and the commit its `ref` or `pr` resolved to when the claim was made (spec §5). */

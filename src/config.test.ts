@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConfigError, configPath, loadConfig, parseConfig } from './config.ts';
+import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS, loadConfig, parseConfig } from './config.ts';
 
 const HOME = '/home/u';
 
@@ -20,7 +20,10 @@ test('defaults', () => {
     tick_seconds: 60,
     subscriptions: {},
     models: { claude: { small: 'haiku', medium: 'sonnet', large: 'opus' } },
-    agents: {},
+    agents: {
+      claude: { command: ['claude'], args: ['--permission-mode', 'auto'] },
+      codex: { command: ['codex'], args: ['--ask-for-approval', 'never', '--sandbox', 'workspace-write', '-c', 'sandbox_workspace_write.network_access=true'] },
+    },
   });
 });
 
@@ -68,9 +71,23 @@ args = ["--permission-mode", "acceptEdits"]
     },
     agents: {
       claude: { command: ['/opt/claude/bin/claude'], args: ['--permission-mode', 'acceptEdits'] },
-      codex: { command: ['codex'], args: [] },
+      codex: DEFAULT_AGENTS.codex,
     },
   });
+});
+
+test('configTemplate parses to both agents, unattended, spelled out', () => {
+  const c = parseConfig(configTemplate('acme/requests'), HOME);
+  assert.equal(c.repo, 'acme/requests');
+  assert.equal(c.workspace_root, '/home/u/air');
+  assert.deepEqual(c.agents, DEFAULT_AGENTS);
+  assert.deepEqual(c.subscriptions, {
+    claude: { harness: 'claude', window_usd: 1000, reserve: 0.3 },
+    codex: { harness: 'codex', window_usd: 1000, reserve: 0.3 },
+  });
+  assert.deepEqual(Object.keys(c.models).sort(), ['claude', 'codex']);
+  assert.match(configTemplate('acme/requests'), /args = \["--permission-mode", "auto"\]/);
+  assert.equal(parseConfig(configTemplate(), HOME).repo, undefined);
 });
 
 test('validation errors', () => {

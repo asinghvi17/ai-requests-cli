@@ -1,0 +1,13 @@
+● Update(src/serve/prompts.ts)
+  ⎿  Updated src/serve/prompts.ts with 2 additions
+       93 +    match: [/Would you like to run the following command\?/],
+       94 +    // Claude shows "Do you want to proceed?" above "Esc to cancel".
+● The tests print the prompts they match:
+  ⎿  ok 1 - matches "Do you want to proceed?" … "Esc to cancel"
+     ok 2 - matches "Would you like to run the following command?"
+     ok 3 - matches "Trust this folder? … Trust and continue"
+✻ Baked for 2m 10s · done 9:41 AM
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

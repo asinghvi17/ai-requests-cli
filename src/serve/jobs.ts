@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HELD_LABELS, release } from '../claim/claim.ts';
+import { DEFAULT_AGENTS } from '../config.ts';
 import { code, fenced, tail } from '../claim/text.ts';
 import { markedComments } from '../claim/trust.ts';
 import { choose, EFFORT_USD, primaryWindow, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
@@ -130,7 +131,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   if (!['ready', 'paused', 'running'].includes(job.status)) throw new Error(`#${n} is ${job.status}; it can't be started`);
   await ensureHeld(ctx, dir);
   const request = requestOf(dir);
-  const agent = ctx.config.agents[job.harness] ?? { command: [job.harness], args: [] };
+  const agent = ctx.config.agents[job.harness] ?? DEFAULT_AGENTS[job.harness];
   const resume = !opts.fresh && job.starts > 0 ? job.sessionId : undefined;
   let sessionId = resume;
   let argv: string[];
@@ -151,7 +152,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   const pane = (await ctx.tmux.listJobs()).find((j) => j.issue === n);
   job = saveJob(ctx, dir, {
     status: 'running', sessionId, sessions, paneNonce: pane?.nonce, startedAt: startedAt.toISOString(), starts: job.starts + 1,
-    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, ...(usageBefore ? { usageBefore } : {}),
+    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, waiting: undefined, ...(usageBefore ? { usageBefore } : {}),
   });
   ctx.log(`#${n}: started ${job.harness} (${job.model}) ${resume ? `resuming session ${resume}` : 'fresh'}: ${argv.map((a) => JSON.stringify(a)).join(' ')}`);
   await moveLabel(ctx, dir, 'air:running');
