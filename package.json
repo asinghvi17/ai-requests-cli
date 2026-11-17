@@ -14,6 +14,7 @@
     "typecheck": "node scripts/typecheck.ts",
     "test": "npm run typecheck && node --test",
     "build": "node scripts/build.ts",
+    "skill:bundle": "node scripts/bundle-skill.ts",
     "test:bun": "bun test ./src"
   },
   "devDependencies": {

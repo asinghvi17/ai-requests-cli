@@ -16,6 +16,7 @@ import { statusCommand } from './status.ts';
 import { waitCommand } from './wait.ts';
 import { fetchCommand } from './fetch.ts';
 import { retryCommand } from './retry.ts';
+import { skillCommand } from './skill.ts';
 import { attachCommand, debugCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
@@ -97,6 +98,13 @@ export const COMMANDS: Record<string, Command> = {
   },
   release: { usage: 'release [--repo OWNER/NAME] ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: REPO, run: releaseCommand },
   lint: { usage: 'lint [FILE|-]', summary: 'check a request body against the spec', args: [], flags: {}, run: lintCommand },
+  skill: {
+    usage: 'skill install [--dir DIR] [--print]',
+    summary: 'install the Claude Code skill that files AI requests into ~/.claude/skills/ai-request (or DIR), replacing an older copy; --print shows where',
+    args: ['ACTION'],
+    flags: { dir: { type: 'string' }, print: { type: 'boolean' } },
+    run: skillCommand,
+  },
   sweep: { usage: 'sweep [--repo OWNER/NAME] [--dry-run]', summary: 'delete expired context and artifact assets', args: [], flags: { ...REPO, 'dry-run': { type: 'boolean' } }, run: sweepCommand },
 };
 
