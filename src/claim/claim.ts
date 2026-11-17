@@ -5,10 +5,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type { Issue, RequestsRepo } from '../gh/issues.ts';
+import { GhError } from '../gh/gh.ts';
+import type { Issue, IssueComment, RequestsRepo } from '../gh/issues.ts';
 import { lint } from '../spec/lint.ts';
 import { SPEC_VERSION, type Deliver, type Request } from '../spec/frontmatter.ts';
-import { countedMarkers, currentClaim, formatMarker, formatResult, type AirResult } from '../spec/markers.ts';
+import { countedMarkers, currentClaim, formatMarker, formatResult, type AirResult, type Marker } from '../spec/markers.ts';
 import { createWorkspace, findWorkspaces, REQUEST_FILE, updateState, type State } from '../workspace/state.ts';
 import { checkRepos, type RepoCheckOptions } from './repos.ts';
 import { createTrust, markedComments, type Trust } from './trust.ts';
@@ -202,11 +203,8 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
     throw e;
   }
   if (!holder || holder.commentId !== mine.id || holder.nonce !== nonce || holder.host !== host) {
-    await gh.deleteComment(mine.id);
+    await backOff(gh, n, viewer, mine.id, comments, holder);
     updateState(dir, { phase: 'lost' }, now());
-    // Another server on the same account shares our assignment: leave it.
-    const holderAuthor = holder && comments.find((c) => c.id === holder.commentId)?.author;
-    if (holderAuthor !== viewer) await gh.unassign(n, viewer);
     return { status: 'lost', holder: holder ? holder.host : 'nobody (our claim did not count)' };
   }
 
@@ -219,6 +217,18 @@ export async function claim(opts: ClaimOptions): Promise<ClaimResult> {
   }
   const state = updateState(dir, { phase: 'claimed' }, now());
   return { status: 'won', dir, state, request, body };
+}
+
+/**
+ * Backs off a claim that does not hold: deletes its comment (if it was posted and is still there) and
+ * unassigns, unless the holding claim is from the same account, which shares our assignment.
+ */
+export async function backOff(
+  gh: RequestsRepo, n: number, viewer: string, commentId: number | undefined, comments: IssueComment[], holder: (Marker & { commentId: number }) | undefined,
+): Promise<void> {
+  if (commentId !== undefined) await gh.deleteComment(commentId).catch((e) => { if (!(e instanceof GhError && e.kind === 'not_found')) throw e; });
+  const holderAuthor = holder && holder.commentId !== commentId ? comments.find((c) => c.id === holder.commentId)?.author : undefined;
+  if (holderAuthor !== viewer) await gh.unassign(n, viewer);
 }
 
 /**

@@ -4,7 +4,9 @@
 // delivery) is tracked per issue, so one bad issue or one failing gh call only costs a log line.
 import { createHash } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { claim, claimable, deadlineTime, release } from '../claim/claim.ts';
+import { backOff, claim, claimable, deadlineTime, release } from '../claim/claim.ts';
+import { markedComments } from '../claim/trust.ts';
+import { currentClaim } from '../spec/markers.ts';
 import { canTakeMore, choose, primaryWindow, recordActual, type Effort } from '../match/match.ts';
 import { code, fenced } from '../claim/text.ts';
 import { lint } from '../spec/lint.ts';
@@ -146,7 +148,12 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       if (!first && ctx.now().getTime() - Date.parse(state.updatedAt) < CLAIM_STALE_MS) return;
       const r = await release({ gh: ctx.gh, issue: n, root: ctx.root, host: state.host, trust: ctx.trust, now: ctx.now, nonce: state.nonce,
         message: `Released by ${code(state.host)}: its claim was cut off before work started.` });
-      if (r.status !== 'released') updateState(dir, { phase: 'lost' }, ctx.now());
+      if (r.status !== 'released') {
+        // It does not hold (a rival's claim does, or ours never counted): back off as a claim that lost does.
+        const comments = await ctx.gh.comments(n);
+        await backOff(ctx.gh, n, await ctx.gh.viewer(), state.claimCommentId, comments, currentClaim(await markedComments(comments, ctx.trust)));
+        updateState(dir, { phase: 'lost' }, ctx.now());
+      }
       ctx.log(`#${n}: interrupted claim ${r.status === 'released' ? 'released' : `dropped (${r.message})`}`);
       return;
     }
