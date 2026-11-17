@@ -316,6 +316,21 @@ Alternatives considered:
   so a retry repeats nothing. Commits count from the SHA recorded at claim time, not the branch's current tip.
   The final comment lists the PRs and the delivered repos that got none, and why.
 
+## 2026-11-17: the `ai-request` Claude Code skill and `air skill install`
+
+- `skills/ai-request/` is a Claude Code skill (`SKILL.md` plus a body skeleton, `template.md`) that turns
+  work in any project into a request. It gathers the task, repos and context files, picks `effort` and
+  `deliver` and says why, writes the body, checks it with `air lint` and `air submit --dry-run`, files it only
+  after the user says yes, and offers `air status`, `wait` and `fetch`. It links to spec/v0.md rather than
+  restating it.
+- Users get the binary, not the repo, so the skill ships inside it. `scripts/bundle-skill.ts`
+  (`npm run skill:bundle`) writes the files into `src/skill/bundle.ts` as strings, which Node and
+  `bun build --compile` both load the same way. A test fails when the bundle and `skills/ai-request/` differ.
+- `air skill install` writes the skill to `~/.claude/skills/ai-request/`, or to `--dir DIR` itself (not a
+  parent), and `--print` only prints that path. It replaces only an empty directory or one whose `SKILL.md`
+  says `name: ai-request`. Anything else is refused (exit 1), so `--dir ~` can't wipe a home directory. The
+  new copy is built in a sibling directory and swapped in by rename.
+
 ## 2026-11-17: trailing text after results, real spend, the agent's environment, resumes keep their branch
 
 - Spec §10: text may follow a comment's `air-result` block (signatures, bot footers) and is ignored. The block is
