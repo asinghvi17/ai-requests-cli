@@ -196,7 +196,7 @@ chmod +x ~/.local/bin/air
 ```
 
 `air --version` prints the version a binary was built from: `package.json`'s version, plus the git short
-SHA (`0.1.0+5c79762`) for a build that isn't a tagged release.
+SHA (`0.2.0+5c79762`) for a build that isn't a tagged release.
 
 **macOS:** a binary downloaded with a browser is quarantined; clear that with
 `xattr -d com.apple.quarantine ~/.local/bin/air`. curl, gh and scp installs aren't quarantined.
