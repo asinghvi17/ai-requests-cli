@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { cliEnv, command, isoOrNull, killGroup, windowOfMinutes } from './run.ts';
 import type { Reading, Window } from './types.ts';
+import { VERSION } from '../version.ts';
 
 export interface CodexOpts {
   /** Default `codex` on PATH. */
@@ -64,7 +65,7 @@ export function appServerRequest(o: CodexOpts, method: string, params: object): 
         finish(m.error ? { error: String(m.error.message ?? 'request failed') } : { result: m.result });
       }
     });
-    write({ id: 1, method: 'initialize', params: { clientInfo: { name: 'air', title: 'air', version: '0.1.0' },
+    write({ id: 1, method: 'initialize', params: { clientInfo: { name: 'air', title: 'air', version: VERSION },
       capabilities: { experimentalApi: false } } });
   });
 }
