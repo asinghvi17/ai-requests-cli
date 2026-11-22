@@ -3,7 +3,7 @@
 import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -60,7 +60,8 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
   const saved = process.env.AIR_TEST_INHERITED;
 
   before(async () => {
-    dir = mkdtempSync(join(tmpdir(), 'air-tmux-'));
+    // Real path: on macOS tmpdir is under /var, a symlink to /private/var, and a pane's pwd prints the latter.
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'air-tmux-')));
     // The caller's environment reaches jobs whole (the tmux server itself gets an allowlisted one).
     process.env.AIR_TEST_INHERITED = 'from the volunteer';
     assert.equal(await t.ensureSession(), true);
