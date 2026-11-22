@@ -19,8 +19,7 @@ import { fetchCommand } from './fetch.ts';
 import { retryCommand } from './retry.ts';
 import { cancelCommand } from './cancel.ts';
 import { skillCommand } from './skill.ts';
-import { configCommand } from './config.ts';
-import { attachCommand, debugCommand, doctorCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
+import { attachCommand, debugCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
 export type Io = { out: (s: string) => void; err: (s: string) => void };
 export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
@@ -86,29 +85,15 @@ export const COMMANDS: Record<string, Command> = {
   },
   serve: {
     usage: 'serve [--repo OWNER/NAME] [--manual] [--once [--once-wait SECONDS]]',
-    summary: 'poll the requests repo, claim fitting requests and start agents (--manual: wait for `air run`; --once: one tick, then wait for its jobs; a --once that finds no request polls again every 10 s for --once-wait seconds, default 60)',
+    summary: 'serve: on a terminal, first sets up what is missing (gh login, config, folder trust; it asks), then runs in its own tmux session, or joins the running one. --manual: wait for `air run`; --once: one tick, then wait for its jobs (a --once that finds no request polls again every 10 s for --once-wait seconds, default 60)',
     args: [],
     flags: { ...REPO, manual: { type: 'boolean' }, once: { type: 'boolean' }, 'once-wait': { type: 'string' } },
     run: serveCommand,
   },
-  config: {
-    usage: 'config init [--repo OWNER/NAME] [--print]',
-    summary: 'write the default config (Claude Code and Codex agents, both unattended) to ~/.config/air/config.toml; --print shows it instead',
-    args: ['ACTION'],
-    flags: { ...REPO, print: { type: 'boolean' } },
-    run: configCommand,
-  },
-  doctor: {
-    usage: 'doctor [--fix]',
-    summary: 'check that each configured agent can run unattended (binary, version, launch flags, onboarding, folder trust); `air serve` runs it at startup. --fix offers to write each missing folder trust',
-    args: [],
-    flags: { fix: { type: 'boolean' } },
-    run: doctorCommand,
-  },
   claim: { usage: 'claim [--repo OWNER/NAME] ISSUE', summary: 'claim a request', args: ['ISSUE'], flags: REPO, run: claimCommand },
   setup: { usage: 'setup [--repo OWNER/NAME] ISSUE', summary: 'prepare the workspace for a claimed request', args: ['ISSUE'], flags: REPO, run: setupCommand },
   run: { usage: 'run [--repo OWNER/NAME] ISSUE', summary: 'start the agent for a set-up request', args: ['ISSUE'], flags: REPO, run: runCommand },
-  attach: { usage: 'attach [--repo OWNER/NAME] [ISSUE]', summary: "attach to the air tmux session, or a request's window", args: [], flags: REPO, run: attachCommand },
+  attach: { usage: 'attach [--repo OWNER/NAME] ISSUE', summary: "open a request's agent window, to watch it or answer a prompt", args: ['ISSUE'], flags: REPO, run: attachCommand },
   stop: { usage: 'stop [--repo OWNER/NAME] ISSUE', summary: "stop a request's agent (keeps the claim and workspace)", args: ['ISSUE'], flags: REPO, run: stopCommand },
   start: { usage: 'start [--repo OWNER/NAME] ISSUE', summary: 'resume a stopped agent', args: ['ISSUE'], flags: REPO, run: startCommand },
   pause: { usage: 'pause', summary: 'stop claiming new requests (running jobs continue)', args: [], flags: {}, run: pauseCommand },
@@ -124,10 +109,10 @@ export const COMMANDS: Record<string, Command> = {
   release: { usage: 'release [--repo OWNER/NAME] ISSUE', summary: 'give a claimed request back', args: ['ISSUE'], flags: REPO, run: releaseCommand },
   lint: { usage: 'lint [FILE|-]', summary: 'check a request body against the spec', args: [], flags: {}, run: lintCommand },
   skill: {
-    usage: 'skill install [--dir DIR] [--print]',
-    summary: 'install the Claude Code skill that files AI requests into ~/.claude/skills/ai-request (or DIR), replacing an older copy; --print shows where',
+    usage: 'skill install [--repo OWNER/NAME] [--dir DIR] [--print]',
+    summary: 'install the Claude Code skill that files AI requests into ~/.claude/skills/ai-request (or DIR), replacing an older copy; on first run it also writes the config, asking for the requests repo. --print shows where',
     args: ['ACTION'],
-    flags: { dir: { type: 'string' }, print: { type: 'boolean' } },
+    flags: { ...REPO, dir: { type: 'string' }, print: { type: 'boolean' } },
     run: skillCommand,
   },
   sweep: { usage: 'sweep [--repo OWNER/NAME] [--dry-run]', summary: 'delete expired context and artifact assets', args: [], flags: { ...REPO, 'dry-run': { type: 'boolean' } }, run: sweepCommand },

@@ -164,32 +164,24 @@ export function parseConfig(src: string, home = homedir()): Config {
 const tomlArray = (xs: string[]) => `[${xs.map((x) => JSON.stringify(x)).join(', ')}]`;
 
 /**
- * What `air config init` writes: both harnesses, each with a subscription, model tiers and its unattended
- * agent command. Every value is spelled out, so the file shows what air runs.
+ * The config air writes on first run (`ensureConfig`): the requests repo, a subscription per login it found
+ * (`subscriptions`, named as in subscriptions.json), and both harnesses' model tiers and unattended agent
+ * commands. Every value is spelled out, so the file shows what air runs. See docs/config.md.
  */
-export function configTemplate(repo?: string): string {
+export function configTemplate(repo: string | undefined, subscriptions: { name: string; harness: string }[]): string {
   const agent = (h: keyof typeof DEFAULT_AGENTS) => `command = ${tomlArray(DEFAULT_AGENTS[h].command)}\nargs = ${tomlArray(DEFAULT_AGENTS[h].args)}`;
-  return `# air serve's config. \`air doctor\` checks that each agent below can run unattended.
-${repo ? `repo = "${repo}"` : '# repo = "OWNER/NAME"   # the requests repo to serve (or pass --repo)'}
-workspace_root = "~/air"   # each job gets a fresh directory under it; trust it in Claude Code once
+  const key = (name: string) => (/^[A-Za-z0-9_-]+$/.test(name) ? name : JSON.stringify(name));
+  const subs = subscriptions.map((s) => `[subscriptions.${key(s.name)}]\nharness = "${s.harness}"\nwindow_usd = 1000\nreserve = 0.3      # share of each window kept for yourself\n`);
+  return `# air's config, written by its first run; docs/config.md explains each key.
+${repo ? `repo = "${repo}"` : '# repo = "OWNER/NAME"   # the requests repo (or pass --repo)'}
+workspace_root = "~/air"   # each job gets a fresh directory under it
 max_jobs = 1               # jobs running at once
 tick_seconds = 60          # how often air serve polls; a job's time limit is its request's \`timeout\`
 
-# One table per login, named as in subscriptions.json (default: one \`claude\` and one \`codex\` login).
-# Budgets are US dollars at API prices. window_usd is what a login's whole weekly window is worth: a
-# starting guess here, to calibrate from your first jobs' final comments (cost / share of the window used).
-# A login whose usage air can't read gets a manual budget in subscriptions.json instead,
-# "budget": { "usd": N }, and its harness here.
-[subscriptions.claude]
-harness = "claude"
-window_usd = 1000
-reserve = 0.3      # share of each window kept for yourself
-
-[subscriptions.codex]
-harness = "codex"
-window_usd = 1000
-reserve = 0.3
-
+# One table per login air serves, named as in subscriptions.json. Budgets are US dollars at API prices.
+# window_usd is what a login's whole weekly window is worth: a starting guess, to calibrate from your
+# first jobs' final comments (cost / share of the window used).
+${subs.length ? subs.join('\n') : '# (no subscription found when this was written)\n'}
 # Request tier -> model. A request never runs below its tier.
 [models.claude]
 small = "haiku"

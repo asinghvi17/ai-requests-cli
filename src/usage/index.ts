@@ -163,7 +163,7 @@ export async function usageCommand(argv: string[], io: { out?: (s: string) => vo
   if (sub !== undefined) { err(USAGE); return 2; }
   const subs = await readAll(cfgs, { ...io, stateDir: dir, refresh: a.values.refresh });
   if (!subs.length && !a.values.json) {
-    out('no subscriptions: config.toml names none that subscriptions.json (or its default logins) has; `air config init` writes [subscriptions.claude] and [subscriptions.codex]');
+    out('no subscriptions: config.toml names none that subscriptions.json (or its default logins) has; add a [subscriptions.NAME] table for each (docs/config.md)');
     return 0;
   }
   out(a.values.json ? JSON.stringify(subs, null, 2) : formatTable(subs, io.now, windowUsd));

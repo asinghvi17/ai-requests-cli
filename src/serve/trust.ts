@@ -1,4 +1,4 @@
-// `air doctor --fix`: the one write air makes to an agent's own state, and only after the volunteer says yes.
+// Folder trust, offered by `air serve` on a terminal: the one write air makes to an agent's own state, and only after the volunteer says yes.
 // It sets `projects[<dir>].hasTrustDialogAccepted = true` in Claude Code's `.claude.json`, as answering
 // "Yes, I trust this folder" there would. Every other key is kept as it was (Claude Code itself writes the file
 // with JSON.stringify, so a parse and stringify round trip loses nothing), and nothing else is touched. The
@@ -48,7 +48,7 @@ export function writeClaudeTrust(stateFile: string, dir: string, opts: { beforeR
       if (!renamed) rmSync(tmp, { force: true });
     }
   }
-  throw new Error(`${stateFile} kept changing while air wrote it: close Claude Code, then run \`air doctor --fix\` again`);
+  throw new Error(`${stateFile} kept changing while air wrote it: close Claude Code, then run \`air serve\` again`);
 }
 
 /** `text` (a `.claude.json`) with `projects[key].hasTrustDialogAccepted` set, and nothing else changed. */

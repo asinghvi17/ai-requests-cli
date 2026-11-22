@@ -116,6 +116,14 @@ export function pidLock(file: string, now = () => Date.now()): { release: () => 
   }
 }
 
+/** Whether an `air serve` holds this state dir's lock now (tried and released at once). */
+export function serving(dir: string): boolean {
+  const lock = pidLock(join(dir, LOCK_FILE));
+  if ('held' in lock) return true;
+  lock.release();
+  return false;
+}
+
 /** One `air serve` per state dir (`pidLock` on `serve.lock`). Returns the release function. */
 export function acquireServeLock(dir: string, now = () => Date.now()): () => void {
   const file = join(dir, LOCK_FILE);

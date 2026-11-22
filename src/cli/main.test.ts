@@ -29,7 +29,7 @@ test('--help lists every command; no args prints help to stderr and fails', asyn
 
 test('routes the full command set', () => {
   assert.deepEqual(Object.keys(COMMANDS).sort(), [
-    'attach', 'cancel', 'claim', 'config', 'doctor', 'fetch', 'lint', 'pause', 'release', 'resume', 'retry', 'run', 'serve', 'setup', 'skill', 'start', 'status', 'stop', 'submit',
+    'attach', 'cancel', 'claim', 'fetch', 'lint', 'pause', 'release', 'resume', 'retry', 'run', 'serve', 'setup', 'skill', 'start', 'status', 'stop', 'submit',
     'sweep', 'usage', 'wait',
   ]);
 });
@@ -99,7 +99,7 @@ test('runs as a script', () => {
 });
 
 test('commands on one issue validate ISSUE and --repo', async () => {
-  for (const name of ['claim', 'setup', 'release', 'run', 'stop', 'start', 'status', 'wait', 'fetch', 'retry']) {
+  for (const name of ['claim', 'setup', 'release', 'run', 'attach', 'stop', 'start', 'status', 'wait', 'fetch', 'retry']) {
     const bad = await call(name, 'abc');
     assert.equal(bad.code, 2, name);
     assert.match(bad.err, new RegExp(`^air ${name}: ISSUE must be an issue number`), name);

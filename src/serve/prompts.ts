@@ -50,7 +50,7 @@ const CLAUDE = 'Claude Code 2.1.311';
 const CODEX = 'Codex CLI 0.164.0';
 
 const onboarding = (c: FixContext) =>
-  `run \`mkdir -p ${c.workspaceRoot} && cd ${c.workspaceRoot} && claude\` once by hand, finish the first-run screens and log in, then answer "Yes, I trust this folder" (\`air doctor\` checks it)`;
+  `run \`mkdir -p ${c.workspaceRoot} && cd ${c.workspaceRoot} && claude\` once by hand, finish the first-run screens and log in, then answer "Yes, I trust this folder" (\`air serve\` checks it at startup)`;
 
 export const PROMPTS: PromptPattern[] = [
   {
@@ -66,9 +66,9 @@ export const PROMPTS: PromptPattern[] = [
   {
     harness: 'claude', id: 'claude-trust', what: 'Claude Code folder trust ("Quick safety check")',
     match: [/Is this a project you created or one you trust\?/i, /Yes, I trust this folder/], footer: /Esc to cancel/,
-    // `air doctor` makes every job dir inherit trust; a job dir the agent made a git repo doesn't (a git root is
-    // a boundary), and then only answering helps.
-    fix: (c) => `attach and answer it ("Yes, I trust this folder"); if it recurs, run \`air doctor\`: jobs under workspace_root ${c.workspaceRoot} inherit its trust, unless the job dir is itself a git repo`,
+    // Trusting workspace_root (which `air serve` offers at startup) makes every job dir inherit trust; a job
+    // dir the agent made a git repo doesn't (a git root is a boundary), and then only answering helps.
+    fix: (c) => `attach and answer it ("Yes, I trust this folder"); if it recurs, restart \`air serve\` in a terminal and let it trust workspace_root ${c.workspaceRoot}: jobs under it inherit its trust, unless the job dir is itself a git repo`,
     source: `${CLAUDE}, captured: claude-trust.txt (onboarded config, untrusted folder)`,
   },
   {
@@ -105,7 +105,7 @@ export const PROMPTS: PromptPattern[] = [
   {
     harness: 'codex', id: 'codex-approval', what: 'a Codex approval request',
     match: [/Would you like to (run the following command|make the following edits|grant these permissions|send input to the existing terminal)\?|Approve app tool call\?/],
-    fix: (c) => `attach and answer it; to stop it recurring, set args = ["--ask-for-approval", "never", ...] under [agents.codex] in ${c.configFile} (\`air config init --print\` shows the default)`,
+    fix: (c) => `attach and answer it; to stop it recurring, set args = ["--ask-for-approval", "never", ...] under [agents.codex] in ${c.configFile}`,
     source: `${CODEX}, binary: "Would you like to run the following command?", "Would you like to make the following edits?", "Would you like to grant these permissions?", "Approve app tool call?"`,
   },
 ];

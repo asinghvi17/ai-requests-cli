@@ -13,7 +13,7 @@
 
 | Path | Contents |
 | --- | --- |
-| `src/cli/` | entry point (`main.ts`) and one module per command |
+| `src/cli/` | entry point (`main.ts`) and one module per command; `firstrun.ts` is the setup `air serve` and `air skill install` do on first run (gh login, config, folder trust) |
 | `src/spec/` | request front-matter parser and lint |
 | `src/usage/` | subscription usage readers (Claude, Codex) |
 | `src/match/` | effort matching against local quota |

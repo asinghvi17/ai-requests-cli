@@ -58,6 +58,6 @@ test('usage errors exit 2', async () => {
     const r = await call(...argv);
     assert.equal(r.code, 2, argv.join(' '));
     assert.equal(r.out, '');
-    assert.match(r.err, /\nusage: air skill install \[--dir DIR\] \[--print\]\n$/, argv.join(' '));
+    assert.match(r.err, /\nusage: air skill install \[--repo OWNER\/NAME\] \[--dir DIR\] \[--print\]\n$/, argv.join(' '));
   }
 });

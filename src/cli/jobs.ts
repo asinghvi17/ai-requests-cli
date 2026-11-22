@@ -3,20 +3,18 @@
 // whether or not a server is running.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline/promises';
 import { configPath, loadConfig, type Config } from '../config.ts';
 import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
 import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent } from '../serve/jobs.ts';
-import { acquireServeLock, readServerState, updateServerState } from '../serve/state.ts';
+import { acquireServeLock, readServerState, serving, updateServerState } from '../serve/state.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../usage/index.ts';
 import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, type AgentCheck } from '../serve/preflight.ts';
-import { writeClaudeTrust } from '../serve/trust.ts';
-import { clientEnv } from '../tmux/env.ts';
+import { clientEnv, jobEnv } from '../tmux/env.ts';
 import { socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
+import { ensureConfig, ensureGh, firstRunDeps, fixTrust } from './firstrun.ts';
 import type { Invocation } from './main.ts';
 import { CommandError, UsageError } from './requests.ts';
 
@@ -26,20 +24,27 @@ export const jobDeps = {
   context: (config: Config, repo: string, echo: (line: string) => void): ServeContext => serveContext(config, repo, { echo }),
   attach: (argv: string[]): number => spawnSync(argv[0]!, argv.slice(1), { stdio: 'inherit' }).status ?? 1,
   stateDir: (): string => usageStateDir(),
-  preflight: (config: Config): AgentCheck[] => preflight(config, loginsOf(loadSubscriptions(subscriptionsFile()), config), defaultPreflightDeps(configPath())),
-  writeClaudeTrust: (stateFile: string, dir: string): string => writeClaudeTrust(stateFile, dir),
-  home: (): string => homedir(),
-  isTTY: (): boolean => Boolean(process.stdin.isTTY),
-  /** Opens a prompt session on the terminal; prompts go to stderr so stdout stays clean. */
-  prompter: (): { ask: (question: string) => Promise<string>; close: () => void } => {
-    const rl = createInterface({ input: process.stdin, output: process.stderr });
-    return { ask: (q) => rl.question(q), close: () => rl.close() };
-  },
+  /** Checks the logins config.toml serves. */
+  preflight: (config: Config): AgentCheck[] => preflight(config, loginsOf(loadSubscriptions(subscriptionsFile()).filter((s) => Object.hasOwn(config.subscriptions, s.name)), config), defaultPreflightDeps(configPath())),
+  env: (): NodeJS.ProcessEnv => process.env,
+  /** argv that runs this air: the single binary, or node and the entry script. */
+  self: (): string[] => (process.argv[1]?.startsWith('/$bunfs/') ? [process.execPath] : [process.execPath, ...process.execArgv, process.argv[1]!]),
 };
 
-function contextFor(inv: Invocation): ServeContext {
+/**
+ * Wraps the server in its tmux window: a no-op INT trap keeps this shell up while air shuts down on C-c, and
+ * after a failure the window stays open until Enter, so its last words can be read.
+ */
+const HOLD = ['/bin/sh', '-c', 'trap : INT; "$@"; s=$?; [ "$s" -eq 0 ] || { printf "\\nair serve exited with status %s; press Enter to close this window\\n" "$s"; read -r _; }; exit "$s"', 'air'];
+
+function repoFlag(inv: Invocation): string | undefined {
   const flag = typeof inv.flags.repo === 'string' ? inv.flags.repo : undefined;
   if (flag !== undefined && !/^[\w.-]+\/[\w.-]+$/.test(flag)) throw new UsageError('--repo must be OWNER/NAME');
+  return flag;
+}
+
+function contextFor(inv: Invocation): ServeContext {
+  const flag = repoFlag(inv);
   const config = jobDeps.loadConfig();
   const repo = flag ?? config.repo;
   if (!repo) throw new UsageError('no requests repo: pass --repo OWNER/NAME or set `repo` in the config');
@@ -63,13 +68,36 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   if (raw !== undefined && inv.flags.once !== true) throw new UsageError('--once-wait needs --once');
   if (raw !== undefined && (typeof raw !== 'string' || !/^\d+$/.test(raw))) throw new UsageError(`--once-wait must be a number of seconds, got ${JSON.stringify(raw)}`);
   const onceWaitMs = typeof raw === 'string' ? Number(raw) * 1000 : undefined;
+  const env = jobDeps.env();
+  // On the volunteer's own terminal: join a running server, or set up what's missing and start one in tmux.
+  // In air's tmux (where that server runs) and off a terminal, just serve.
+  const interactive = firstRunDeps.isTTY() && env.TMUX?.split(',')[0] !== socketPath('air', env);
+  if (interactive) {
+    if (serving(jobDeps.stateDir())) {
+      inv.io.out('air serve is already running; attaching (detach with C-b d)\n');
+      return jobDeps.attach(await contextFor(inv).tmux.attachArgs(undefined, env));
+    }
+    if (!(await ensureGh(inv.io, true))) return 1;
+    await ensureConfig(inv.io, repoFlag(inv), true);
+  }
   const ctx = contextFor(inv);
   if (!(await tmuxUsable(ctx, inv))) return 1;
   // An agent that can't run unattended would sit at a prompt with the claim held: take no work for it.
-  const checks = jobDeps.preflight(ctx.config);
+  let checks = jobDeps.preflight(ctx.config);
+  inv.io.err(formatPreflight(checks, interactive));
+  if (interactive && (await fixTrust(inv.io, checks))) {
+    checks = jobDeps.preflight(ctx.config);
+    inv.io.err(`\n${formatPreflight(checks, true)}`);
+  }
+  if (interactive && !env.TMUX && inv.flags.once !== true) {
+    const serverEnv = jobEnv({}, env);
+    delete serverEnv.TERM; // the window's is tmux's
+    const window = await ctx.tmux.startServer([...HOLD, ...jobDeps.self(), 'serve', ...inv.argv], serverEnv);
+    inv.io.out('air serve runs in tmux: detach with C-b d and it keeps serving; `air serve` again comes back\n');
+    return jobDeps.attach(await ctx.tmux.attachArgs(window, env));
+  }
   ctx.refused = refusals(checks);
-  inv.io.err(formatPreflight(checks));
-  for (const [name, why] of Object.entries(ctx.refused)) ctx.log(`not serving ${name}: ${why} (\`air doctor\` shows the fix)`);
+  for (const [name, why] of Object.entries(ctx.refused)) ctx.log(`not serving ${name}: ${why} (the startup report gives the fix)`);
   const unlock = acquireServeLock(ctx.stateDir);
   const server = createServer(ctx, { manual: inv.flags.manual === true });
   if (ctx.logFile) {
@@ -107,66 +135,6 @@ async function tmuxUsable(ctx: ServeContext, inv: Invocation): Promise<boolean> 
   }
 }
 
-/**
- * `air doctor [--fix]`: can each configured agent run unattended? Exit 1 if any can't. Read-only, except that
- * `--fix` asks, for each missing folder trust, whether to write it, and then checks again.
- */
-export async function doctorCommand(inv: Invocation): Promise<number> {
-  const config = jobDeps.loadConfig();
-  const fixing = inv.flags.fix === true;
-  let checks = jobDeps.preflight(config);
-  inv.io.out(formatPreflight(checks, fixing));
-  if (fixing && (await fixTrust(inv, checks))) {
-    checks = jobDeps.preflight(config);
-    inv.io.out(`\n${formatPreflight(checks, fixing)}`);
-  }
-  return Object.keys(refusals(checks)).length ? 1 : 0;
-}
-
-/** Asks before writing each folder trust `checks` found missing; true if it wrote any. */
-async function fixTrust(inv: Invocation, checks: AgentCheck[]): Promise<boolean> {
-  // One question per state file and folder, naming the logins that share it when there are several.
-  const fixes = new Map<string, { stateFile: string; dir: string; logins: string[] }>();
-  let many = false;
-  for (const c of checks) {
-    many ||= Object.keys(c.logins).length > 1;
-    for (const [login, problems] of Object.entries(c.logins)) {
-      for (const { trust } of problems) {
-        if (!trust) continue;
-        const key = `${trust.stateFile}\0${trust.dir}`;
-        if (!fixes.has(key)) fixes.set(key, { ...trust, logins: [] });
-        fixes.get(key)!.logins.push(login);
-      }
-    }
-  }
-  if (!fixes.size) {
-    if (Object.keys(refusals(checks)).length) inv.io.out('--fix: no folder trust is missing; the problems above need the fixes they name\n');
-    return false;
-  }
-  if (!jobDeps.isTTY()) throw new CommandError('--fix asks before each change: run it in a terminal');
-  const home = jobDeps.home();
-  const tilde = (p: string) => (home && (p === home || p.startsWith(`${home}/`)) ? `~${p.slice(home.length)}` : p);
-  const p = jobDeps.prompter();
-  let wrote = false;
-  try {
-    for (const f of fixes.values()) {
-      const answer = await p.ask(`Trust ${tilde(f.dir)} for Claude Code${many ? ` (login${f.logins.length > 1 ? 's' : ''} ${f.logins.join(', ')}, ${tilde(f.stateFile)})` : ''}? [y/N] `);
-      if (!/^y(es)?$/i.test(answer.trim())) continue;
-      let key: string;
-      try {
-        key = jobDeps.writeClaudeTrust(f.stateFile, f.dir);
-      } catch (e) {
-        throw new CommandError((e as Error).message);
-      }
-      inv.io.out(`wrote projects[${JSON.stringify(key)}].hasTrustDialogAccepted = true in ${f.stateFile}\n`);
-      wrote = true;
-    }
-  } finally {
-    p.close();
-  }
-  return wrote;
-}
-
 export async function runCommand(inv: Invocation): Promise<number> {
   const n = issueArg(inv.positionals[0]);
   const ctx = contextFor(inv);
@@ -182,7 +150,7 @@ export async function runCommand(inv: Invocation): Promise<number> {
 }
 
 export async function attachCommand(inv: Invocation): Promise<number> {
-  const n = inv.positionals[0] === undefined ? undefined : issueArg(inv.positionals[0]);
+  const n = issueArg(inv.positionals[0]);
   const ctx = contextFor(inv);
   return jobDeps.attach(await ctx.tmux.attachArgs(n));
 }

@@ -1,4 +1,4 @@
-// `air doctor --fix`'s write to Claude Code's state file.
+// Writing folder trust to Claude Code's state file (what `air serve` offers on a terminal).
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -104,7 +104,7 @@ test('regression: a state file that keeps changing is left alone, with a message
   let n = 0;
   assert.throws(
     () => writeClaudeTrust(file, join(home, 'air'), { beforeRename: () => writeFileSync(file, `{"n": ${++n}}`) }),
-    new RegExp(`^Error: ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} kept changing while air wrote it: close Claude Code, then run \`air doctor --fix\` again$`),
+    new RegExp(`^Error: ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} kept changing while air wrote it: close Claude Code, then run \`air serve\` again$`),
   );
   assert.equal(readFileSync(file, 'utf8'), `{"n": ${n}}`);
   assert.deepEqual(readdirSync(home).sort(), ['.claude.json', 'air']);
@@ -125,7 +125,7 @@ test('regression: the file mode is kept under a umask that would mask it', () =>
   assert.equal(statSync(file).mode & 0o777, 0o644);
 });
 
-test('the problem doctor reports names what --fix writes, and writing it makes the login ready', () => {
+test('the trust problem the preflight reports names what air serve writes, and writing it makes the login ready', () => {
   const home = tmp();
   const file = join(home, '.claude.json');
   writeFileSync(file, JSON.stringify({ hasCompletedOnboarding: true }));
@@ -139,10 +139,10 @@ test('the problem doctor reports names what --fix writes, and writing it makes t
   const [problem] = c!.logins.claude!;
   assert.deepEqual(problem!.trust, { stateFile: file, dir: config.workspace_root });
   assert.match(problem!.fix, /^run `mkdir -p /);
-  // `air doctor` offers --fix first; `air doctor --fix`, about to ask, gives only the manual way.
-  assert.match(formatPreflight([c!]), /\n {4}fix: {5}run `air doctor --fix`, or run `mkdir -p /);
+  // Off a terminal the report offers `air serve` in one first; about to ask, it gives only the manual way.
+  assert.match(formatPreflight([c!]), /\n {4}fix: {5}run `air serve` in a terminal, or run `mkdir -p /);
   assert.match(formatPreflight([c!], true), /\n {4}fix: {5}run `mkdir -p /);
-  assert.doesNotMatch(formatPreflight([c!], true), /air doctor --fix/);
+  assert.doesNotMatch(formatPreflight([c!], true), /air serve/);
   writeClaudeTrust(problem!.trust!.stateFile, problem!.trust!.dir);
   assert.deepEqual(refusals(preflight(config, [{ name: 'claude', harness: 'claude' }], deps)), {});
 });

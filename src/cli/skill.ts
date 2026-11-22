@@ -1,6 +1,8 @@
-// `air skill install [--dir DIR] [--print]`: install the bundled Claude Code skill that files AI requests.
+// `air skill install [--repo OWNER/NAME] [--dir DIR] [--print]`: install the bundled Claude Code skill that
+// files AI requests, and on first run write the config that names the requests repo (asked for on a terminal).
 import { resolve } from 'node:path';
 import { defaultSkillDir, installSkill, InstallError, SKILL_NAME } from '../skill/install.ts';
+import { ensureConfig, firstRunDeps } from './firstrun.ts';
 import type { Invocation } from './main.ts';
 import { CommandError, UsageError } from './requests.ts';
 
@@ -9,12 +11,14 @@ export const skillDeps = {
   defaultDir: (): string => defaultSkillDir(),
 };
 
-export function skillCommand(inv: Invocation): number {
+export async function skillCommand(inv: Invocation): Promise<number> {
   const [action, ...extra] = inv.positionals;
   if (action !== 'install') throw new UsageError(`unknown action ${JSON.stringify(action)}; the only one is install`);
   if (extra.length > 0) throw new UsageError(`unexpected argument ${JSON.stringify(extra[0])}`);
   const flag = inv.flags.dir;
   if (flag === '') throw new UsageError('--dir must not be empty');
+  const repo = inv.flags.repo;
+  if (repo !== undefined && (typeof repo !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(repo))) throw new UsageError('--repo must be OWNER/NAME');
   const dir = typeof flag === 'string' ? resolve(flag) : skillDeps.defaultDir();
   if (inv.flags.print === true) {
     inv.io.out(`${dir}\n`);
@@ -27,5 +31,6 @@ export function skillCommand(inv: Invocation): number {
     throw e;
   }
   inv.io.out(`installed the ${SKILL_NAME} skill in ${dir}\n`);
+  await ensureConfig(inv.io, repo, firstRunDeps.isTTY());
   return 0;
 }
