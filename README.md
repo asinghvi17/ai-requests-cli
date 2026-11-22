@@ -10,7 +10,7 @@ Claude Code or Codex on it unattended, and posts the result back on the issue.
 ```sh
 air="air-$(uname -s | tr A-Z a-z)-$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')"
 gh release download --repo asinghvi17/ai-requests-cli --pattern "$air" --pattern SHA256SUMS --dir /tmp/air-dl --clobber
-(cd /tmp/air-dl && grep " $air\$" SHA256SUMS | shasum -a 256 -c -) && install -m 755 "/tmp/air-dl/$air" ~/.local/bin/air
+(cd /tmp/air-dl && grep " $air\$" SHA256SUMS | $(command -v sha256sum || echo shasum -a 256) -c -) && install -m 755 "/tmp/air-dl/$air" ~/.local/bin/air
 ```
 
 `~/.local/bin` must exist and be on your `PATH`. Run the same lines again to upgrade.
