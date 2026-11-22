@@ -28,7 +28,7 @@ function machine(o: { bins?: Record<string, string>; config?: string } = {}) {
   const bins = o.bins ?? { claude: 'echo "2.1.311 (Claude Code)"', codex: 'echo "codex-cli 0.164.0"' };
   for (const [name, script] of Object.entries(bins)) writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
   const config = parseConfig(o.config ?? '', home);
-  const deps: PreflightDeps = { ...defaultPreflightDeps(CONFIG_FILE), home, env: { PATH: bin } };
+  const deps: PreflightDeps = { ...defaultPreflightDeps(CONFIG_FILE), home, env: { PATH: bin }, os: 'debian' };
   return { home, bin, config, deps };
 }
 
@@ -61,7 +61,7 @@ test('a missing binary refuses every login of that harness, and only that harnes
   const checks = preflight(m.config, [claude, { name: 'max2', harness: 'claude', configDir: '/x' }, codex], m.deps);
   assert.deepEqual(Object.keys(refusals(checks)).sort(), ['claude', 'max2']);
   const out = formatPreflight(checks);
-  assert.match(out, /^claude: version unknown: NOT READY \(logins claude, max2\)\n    problem: `claude` was not found on PATH \(or is not executable\)\.\n    fix:     install it \(https:\/\/code\.claude\.com\/docs\/en\/setup\), or set command = \["\/path\/to\/claude"\] under \[agents\.claude\] in \/home\/u\/\.config\/air\/config\.toml\n/);
+  assert.match(out, /^claude: version unknown: NOT READY \(logins claude, max2\)\n    problem: `claude` was not found on PATH \(or is not executable\)\.\n    fix:     curl -fsSL https:\/\/claude\.ai\/install\.sh \| bash\n             or set command = \["\/path\/to\/claude"\] under \[agents\.claude\] in \/home\/u\/\.config\/air\/config\.toml\n/);
   assert.match(out, /\ncodex: codex-cli 0\.164\.0: ready/);
 });
 

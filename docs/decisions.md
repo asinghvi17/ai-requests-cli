@@ -606,3 +606,18 @@ Claude Code:
   by `air skill install`), not `main`, which may have moved past the binary.
 - The first line of `## Task` stays in the body although it is also the issue title. Dropping it would leave
   a one-line `## Task` empty, which spec §4 forbids, and would lose the rest of a summary cut to fit the title.
+
+## 2026-11-22: `air doctor`
+
+- `air doctor` is back, as a report of the checks `air serve` runs at startup, from the same functions in
+  `src/serve/preflight.ts` (gh login, config, workspace_root, the agent preflight) and `checkTmux` in
+  `src/tmux/tmux.ts`. It adds what only an installation check needs: the platform, git, `air` on PATH, and
+  each login's usage read straight from its CLI (`readUncached`), so it never writes the usage cache.
+- It writes nothing, and has no `--fix`. Folder trust stays with `air serve`'s first-run prompt, the one
+  place air writes it; doctor's fix for missing trust names that prompt.
+- Install fixes come from `src/serve/hints.ts`, by system: Homebrew on macOS (brew.sh first when it is
+  missing), apt, dnf (Fedora's own gh package; RHEL gets gh's dnf4 repo), pacman, else the tool's install
+  page. gh, Claude Code and Codex use their projects' own commands. `air serve` prints the same fixes.
+- `air serve` now refuses to start when workspace_root can't be made (not a directory, or not writable),
+  instead of failing at the first claim.
+- An agent or login problem fails doctor only when no login is ready; with one ready it is a warning (`!`).

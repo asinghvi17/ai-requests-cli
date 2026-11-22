@@ -23,7 +23,37 @@ air submit --body request.md --dry-run ./inputs  # print the final body and the 
 air lint request.md                              # check a body against spec/v0.md
 ```
 
-The request format is [spec/v0.md](../spec/v0.md).
+The request format is [spec/v0.md](../spec/v0.md). Longer examples are in
+[spec/examples/](../spec/examples/).
+
+### A short request
+
+```markdown
+---
+air: 0
+effort: S
+harness: [any]
+model: medium
+deliver: comment
+timeout: 1h
+---
+
+## Task
+
+Summarise the open issues labelled `bug` in acme/widgets.
+
+Group them by component and list the three that block the most users.
+
+## Done when
+
+- Every open `bug` issue appears in exactly one group.
+- The top three each say why they were picked.
+```
+
+### The title
+
+The issue title is the first line of `## Task`. A line over 80 characters is cut at a word and ends in
+`...`; `air lint` warns when that happens. Pass `--title "..."` to `air submit` to set the title yourself.
 
 ## Context files
 

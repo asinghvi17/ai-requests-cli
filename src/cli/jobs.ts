@@ -10,7 +10,8 @@ import { serveContext, type ServeContext } from '../serve/context.ts';
 import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent } from '../serve/jobs.ts';
 import { acquireServeLock, readServerState, serving, updateServerState } from '../serve/state.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../usage/index.ts';
-import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, type AgentCheck } from '../serve/preflight.ts';
+import { installHint } from '../serve/hints.ts';
+import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, workspaceRootProblem, type AgentCheck, type Problem } from '../serve/preflight.ts';
 import { clientEnv, jobEnv } from '../tmux/env.ts';
 import { attachTo, socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
@@ -26,6 +27,8 @@ export const jobDeps = {
   stateDir: (): string => usageStateDir(),
   /** Checks the logins config.toml serves. */
   preflight: (config: Config): AgentCheck[] => preflight(config, loginsOf(loadSubscriptions(subscriptionsFile()).filter((s) => Object.hasOwn(config.subscriptions, s.name)), config), defaultPreflightDeps(configPath())),
+  /** Why jobs can't be made in workspace_root, if they can't. */
+  workspaceRoot: (config: Config): Problem | undefined => workspaceRootProblem(config.workspace_root, configPath()),
   env: (): NodeJS.ProcessEnv => process.env,
   /** argv that runs this air: the single binary, or node and the entry script. */
   self: (): string[] => (process.argv[1]?.startsWith('/$bunfs/') ? [process.execPath] : [process.execPath, ...process.execArgv, process.argv[1]!]),
@@ -88,6 +91,11 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   }
   const ctx = contextFor(inv);
   if (!(await tmuxUsable(ctx, inv))) return 1;
+  const rootProblem = jobDeps.workspaceRoot(ctx.config);
+  if (rootProblem) {
+    inv.io.err(`air: ${rootProblem.what}\n  fix: ${rootProblem.fix}\n`);
+    return 1;
+  }
   // An agent that can't run unattended would sit at a prompt with the claim held: take no work for it.
   let checks = jobDeps.preflight(ctx.config);
   inv.io.err(formatPreflight(checks, interactive));
@@ -142,7 +150,7 @@ async function tmuxUsable(ctx: ServeContext, inv: Invocation): Promise<boolean> 
     await ctx.tmux.checkVersion();
     return true;
   } catch (e) {
-    inv.io.err(`air: ${(e as Error).message}\n`);
+    inv.io.err(`air: ${(e as Error).message}\n  fix: ${installHint('tmux', firstRunDeps.os())}\n`);
     return false;
   }
 }

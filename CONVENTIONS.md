@@ -21,7 +21,7 @@
 | `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`), release assets and repo-wide listings (`releases.ts`), and in-memory fakes for tests |
 | `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
-| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery |
+| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery; `preflight.ts` holds the startup checks `air serve` runs and `air doctor` reports, `hints.ts` the install command for each OS |
 | `src/submit/` | `air submit`: file collection (`.gitignore`), secrets check, zip writer |
 | `src/sweep/` | `air sweep`: expired release assets |
 | `src/skill/` | `air skill install`: the bundled Claude Code skill (`bundle.ts`, generated) and its installer |
