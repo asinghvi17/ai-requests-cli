@@ -8,7 +8,7 @@ import { buildVersion, versionDefine } from './version.ts';
 
 const root = join(import.meta.dirname, '..');
 
-test('a build is stamped with package.json\'s version, plus the short sha unless HEAD has the release tag', (t) => {
+test('a build is stamped with package.json\'s version plus the short sha, at a release tag too', (t) => {
   const d = mkdtempSync(join(tmpdir(), 'air-version-'));
   t.after(() => rmSync(d, { recursive: true, force: true }));
   const git = (...a: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', ...a], { cwd: d, encoding: 'utf8' }).trim();
@@ -18,11 +18,9 @@ test('a build is stamped with package.json\'s version, plus the short sha unless
   git('commit', '-q', '-m', 'one');
   const sha = git('rev-parse', '--short', 'HEAD');
   assert.equal(buildVersion(d), `1.2.3+${sha}`);
-  git('tag', 'v1.2.2');
-  assert.equal(buildVersion(d), `1.2.3+${sha}`, 'another version\'s tag is not a release of this one');
   git('tag', 'v1.2.3');
-  assert.equal(buildVersion(d), '1.2.3');
-  assert.deepEqual(versionDefine(d), ['--define', 'AIR_BUILD_VERSION="1.2.3"']);
+  assert.equal(buildVersion(d), `1.2.3+${sha}`, 'a release build keeps its commit');
+  assert.deepEqual(versionDefine(d), ['--define', `AIR_BUILD_VERSION="1.2.3+${sha}"`]);
 });
 
 const bun = join(root, 'node_modules', '.bin', 'bun');
@@ -34,5 +32,5 @@ test('the stamp reaches air --version in a bun build', { skip: existsSync(bun) ?
   assert.equal(built.status, 0, built.stderr);
   const r = spawnSync(bun, [out, '--version'], { encoding: 'utf8' });
   assert.equal(r.stdout, `${buildVersion(root)}\n`, r.stderr);
-  assert.match(r.stdout, /^\d+\.\d+\.\d+(\+[0-9a-f]{4,})?\n$/);
+  assert.match(r.stdout, /^\d+\.\d+\.\d+\+[0-9a-f]{4,}\n$/);
 });

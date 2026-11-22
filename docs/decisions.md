@@ -453,6 +453,7 @@ Alternatives considered:
 - `air usage` shows only the subscriptions config.toml names.
 - A build stamps its version (`scripts/version.ts`, `bun build --define AIR_BUILD_VERSION`): package.json's
   version, plus `+<short sha>` unless HEAD carries the tag `v<version>`. Run from source, it is `<version>+source`.
+  (Superseded 2026-11-21: release builds keep the sha too.)
 - A Task summary over 80 characters is a lint warning, and `air submit` cuts a derived title at a word
   boundary.
 - A `done` artifact zip leaves out `out/PROGRESS.md`. A partial checkpoint's zip keeps it, since resuming reads it.
