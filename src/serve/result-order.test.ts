@@ -2,7 +2,7 @@
 // labels: a reader that sees the new labels then sees the result too. Recorded with the fake gh's call log.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claim, release } from '../claim/claim.ts';
@@ -58,9 +58,9 @@ async function held(label: string, job: Partial<JobRecord> = {}) {
 test('done (finishJob): result comment, then air:done, then air:running removed', async () => {
   const { gh, ctx, dir, from } = await held('air:running', { status: 'delivering' });
   writeFileSync(join(dir, 'out', 'REPORT.md'), 'The summary.\n');
-  await finishJob(ctx, dir);
+  assert.equal(await finishJob(ctx, dir), 'delivered');
   assert.deepEqual(writes(gh, from), ['comment 7', 'addLabels 7 air:done', 'removeLabel 7 air:running', 'unassign 7 bot']);
-  assert.equal(readState(dir).phase, 'done');
+  assert.equal(existsSync(dir), false, 'the delivered workspace is removed');
 });
 
 test('done, retried after the label change failed: the comment is not posted twice', async () => {
@@ -68,14 +68,14 @@ test('done, retried after the label change failed: the comment is not posted twi
   writeFileSync(join(dir, 'out', 'REPORT.md'), 'The summary.\n');
   const add = gh.addLabels.bind(gh);
   gh.addLabels = async () => { throw new GhError('server', 'Bad Gateway (HTTP 502)', 502); };
-  await finishJob(ctx, dir);
+  assert.equal(await finishJob(ctx, dir), 'undelivered');
   assert.equal(writes(gh, from)[0], 'comment 7');
   gh.addLabels = add;
-  await finishJob(ctx, dir);
+  assert.equal(await finishJob(ctx, dir), 'delivered');
   const w = writes(gh, from);
   commentFirst(w);
   assert.deepEqual(w.slice(1), ['addLabels 7 air:done', 'removeLabel 7 air:running', 'unassign 7 bot']);
-  assert.equal(readState(dir).phase, 'done');
+  assert.equal(existsSync(dir), false);
 });
 
 test('failed (failJob): failure comment, then air:failed, then air:running removed', async () => {

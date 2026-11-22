@@ -53,11 +53,12 @@ Claude and Codex subscriptions and asks each one's per-window budget (default $2
 [budgets](docs/serving.md#budgets)), and asks before trusting `~/air` in Claude Code. Then it opens its own tmux session and shows you its log.
 
 Detach with `C-b d` and it keeps serving. Run `air serve` again to come back. `C-c` stops it.
+`air status` with no issue shows what air has on this machine, and whether it left anything behind.
 
 ## More
 
 - [docs/requesting.md](docs/requesting.md): filing by hand, cancel and retry, context files, results.
-- [docs/serving.md](docs/serving.md): how claiming works, budgets, prompts, job commands.
+- [docs/serving.md](docs/serving.md): how claiming works, budgets, prompts, job commands, cleaning up.
 - [docs/config.md](docs/config.md): every config setting.
 - [spec/v0.md](spec/v0.md): the request format. [docs/decisions.md](docs/decisions.md): why things are the
   way they are. [CONVENTIONS.md](CONVENTIONS.md): the code layout.

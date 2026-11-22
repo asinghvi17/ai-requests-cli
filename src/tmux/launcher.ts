@@ -1,7 +1,7 @@
 // Launcher scripts keep caller-controlled words (argv, env values, cwd) off the tmux command line, where a
 // word equal to or ending in `;` is a command separator (so `x;` `run-shell ...` would run tmux commands).
 // tmux only ever sees the fixed `/bin/sh <private dir>/run.sh`; the script quotes every word for sh.
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -88,6 +88,47 @@ export function removeLauncher(dir: string | undefined): void {
 /** Only our own `air-launch-*` directories directly under tmpdir, whatever a pane option claims. */
 function ownLauncher(dir: string | undefined): dir is string {
   return !!dir && dirname(dir) === tmpdir() && /^air-launch-[A-Za-z0-9]+$/.test(basename(dir));
+}
+
+/** A launcher dir no pane uses is left over once it is this old (a launcher runs, or is cleaned up, within seconds). */
+export const LAUNCHER_STALE_MS = 24 * 3600_000;
+
+/**
+ * Our launcher dirs left behind: `air-launch-*` directories (not symlinks) under tmpdir, older than
+ * LAUNCHER_STALE_MS, that no pane in `used` names, and whose agent (if one was recorded) has exited. They
+ * are left when a job's window went without air closing it (closed by hand, or the tmux server died).
+ */
+export function staleLaunchers(used: ReadonlySet<string>, now = Date.now()): string[] {
+  const out: string[] = [];
+  let names: string[];
+  try {
+    names = readdirSync(tmpdir());
+  } catch {
+    return out;
+  }
+  for (const name of names) {
+    const dir = join(tmpdir(), name);
+    if (!ownLauncher(dir) || used.has(dir)) continue;
+    try {
+      const st = lstatSync(dir);
+      if (!st.isDirectory() || now - st.mtimeMs < LAUNCHER_STALE_MS) continue;
+    } catch {
+      continue;
+    }
+    const pid = launcherPid(dir);
+    if (pid !== null && running(pid)) continue;
+    out.push(dir);
+  }
+  return out;
+}
+
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 function readNumber(dir: string | undefined, file: string, max: number): number | null {

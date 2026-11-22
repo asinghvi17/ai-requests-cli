@@ -132,6 +132,12 @@ export async function serveCommand(inv: Invocation): Promise<number> {
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
     unlock();
+    // With no job window left, air's tmux session and server end with it (from its `serve` window: as it closes).
+    try {
+      if (await ctx.tmux.closeIfIdle(inAir ? env.TMUX_PANE : undefined)) ctx.log('stopped; no job windows were left, so the air tmux session ends');
+    } catch (e) {
+      ctx.log(`tmux: ${(e as Error).message}`);
+    }
   }
   return 0;
 }
@@ -192,17 +198,17 @@ export async function startCommand(inv: Invocation): Promise<number> {
 }
 
 /** Reports a delivery `startOrDeliver` made (or left to another process) in place of a start (AIR_DONE was already there). */
-function delivered(inv: Invocation, dir: string, n: number, how: 'delivered' | 'delivering-elsewhere'): number {
+function delivered(inv: Invocation, dir: string, n: number, how: Exclude<Awaited<ReturnType<typeof startOrDeliver>>, 'started'>): number {
   if (how === 'delivering-elsewhere') {
     inv.io.out(`#${n} had already finished (AIR_DONE); another air process (such as \`air serve\`) is delivering it\n`);
     return 0;
   }
-  const state = readState(dir);
-  const job = state.job;
-  if (job?.status === 'done') {
-    inv.io.out(`#${n} had already finished (AIR_DONE); delivered it\n`);
+  if (how === 'delivered') {
+    inv.io.out(`#${n} had already finished (AIR_DONE); delivered it and removed its workspace\n`);
     return 0;
   }
+  const state = readState(dir);
+  const job = state.job;
   if (job?.status === 'delivering') {
     inv.io.err(`#${n} had already finished (AIR_DONE), but its delivery failed: ${job.lastError ?? 'unknown error'}; \`air serve\` retries it\n`);
   } else if (state.phase === 'lost') {

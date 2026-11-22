@@ -606,3 +606,29 @@ Claude Code:
   by `air skill install`), not `main`, which may have moved past the binary.
 - The first line of `## Task` stays in the body although it is also the issue title. Dropping it would leave
   a one-line `## Task` empty, which spec §4 forbids, and would lose the rest of a summary cut to fit the title.
+
+## 2026-11-22: cleaning up after jobs
+
+- A delivered job's workspace is deleted by `finishJob` right after delivery. Workspaces of jobs that ended
+  any other way are kept 7 days (`KEEP_MS`) for debugging, counted from their last state change. They are
+  removed by a cleanup pass (`serve/tidy.ts`) that runs inside the daily sweep `air serve` already ran, before
+  the asset sweep. That is one mechanism with one clock, not a second timer. It also runs at serve start
+  when a day has passed since the last one.
+- Every workspace deletion goes through `removeWorkspace`. It only removes
+  `<workspace_root>/<owner>__<name>/<issue>-<nonce>`, refuses symlinked directories and real paths outside
+  root, and keeps the repo directory, since a claim in another process may be creating a workspace there.
+- The cleanup pass also removes stale `.air-deliver.lock` files and `serve.lock`. A lock is stale when its pid
+  is dead, judged as `pidLock` judges it, and taken away through `pidLock`, so a live holder's lock is never
+  removed. It removes the state dir's temp files whose writer pid is dead, and `air-launch-*` dirs older than
+  a day that no pane names and whose agent is gone. The usage cache and ledger `.lock` files are left to
+  `withLock`, which already breaks a stale one on the next read, every tick.
+- A window whose pane an ended workspace's job recorded is closed on the next tick, and a job still marked
+  `running` there is marked `cancelled`. Only that positive match counts. Closing every window without a held
+  workspace would also close one that `air run` is starting, or one belonging to another workspace_root on
+  the same socket.
+- When `air serve` stops with no job window on the socket, it ends the tmux server (`closeIfIdle`). From its
+  own `serve` window it closes the other windows and sets `exit-empty`, so the server ends when that window
+  closes as air exits. It does not kill the server under itself. With job windows left, nothing is touched:
+  those agents run on and are re-adopted.
+- `air status` without ISSUE lists this machine's jobs and leftovers. It is read-only: it judges the serve
+  lock without taking it.

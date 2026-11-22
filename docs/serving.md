@@ -90,6 +90,26 @@ air serve --manual   # claim and set up, but wait for `air run ISSUE` to start e
 
 `air claim ISSUE` and `air setup ISSUE` do the first two steps of a job by hand, for one chosen request.
 
+## Cleaning up
+
+air removes what a job leaves behind:
+
+- A job's tmux window closes when the job ends, however it ends. A job ended outside the server (say
+  `air release` in another shell) has its window closed on the server's next tick.
+- A delivered job's workspace is deleted right after delivery. The workspace of a job that failed, was
+  cancelled, was released or lost its claim is kept 7 days for debugging, then deleted.
+- `air serve` runs a cleanup pass when it starts and then once a day, before its daily `air sweep`. It deletes
+  the workspaces past their 7 days, lock files whose process is dead, temp files of air processes that died,
+  and launcher dirs (`air-launch-*` in the temp dir) that no tmux window uses.
+- When `air serve` stops with no job window left, the air tmux session and its server end too. Jobs still
+  running in tmux (stopped with `C-c` while they ran) keep the session, and the next `air serve` re-adopts them.
+
+air only deletes inside `workspace_root`, its state dir and its own launcher dirs, never through a symlink.
+
+`air status` without an issue shows what is on this machine: the jobs it holds, its tmux windows, the
+workspaces kept for debugging (and when each goes), and anything left behind. It ends with
+`clean: nothing left behind` when there is nothing. `--json` gives the same as one object.
+
 ## The agent's environment
 
 The agent inherits the environment you start `air serve` in (git identity, proxy settings, tokens), so it

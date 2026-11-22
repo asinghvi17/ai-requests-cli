@@ -49,9 +49,9 @@ export const COMMANDS: Record<string, Command> = {
     run: submitCommand,
   },
   status: {
-    usage: 'status [--repo OWNER/NAME] [--json] ISSUE',
-    summary: "show a request's state label, holder and latest result; on the machine serving it, whether its agent waits on you",
-    args: ['ISSUE'],
+    usage: 'status [--repo OWNER/NAME] [--json] [ISSUE]',
+    summary: "show a request's state label, holder and latest result; on the machine serving it, whether its agent waits on you. Without ISSUE: this machine's jobs and what air left behind (workspaces kept, stale locks, tmux windows), or that it is clean",
+    args: [],
     flags: { ...REPO, json: { type: 'boolean' } },
     run: statusCommand,
   },

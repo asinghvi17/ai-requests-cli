@@ -13,7 +13,7 @@ import { lint } from '../spec/lint.ts';
 import { usd } from '../usage/prices.ts';
 import type { Subscription } from '../usage/types.ts';
 import { setup } from '../workspace/setup.ts';
-import { allWorkspaces, ENDED, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
+import { allWorkspaces, ENDED, isEnded, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import {
   agentMs, cancelJob, jobSpent, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
@@ -21,6 +21,7 @@ import {
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
+import { tidy } from './tidy.ts';
 import { matchPrompt, MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS, waitingFor } from './prompts.ts';
 import { configPath } from '../config.ts';
 
@@ -374,6 +375,23 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     saveJob(ctx, dir, { waiting: { ...waiting, notified: true }, waitingComments: posted + 1 });
   }
 
+  /**
+   * A job that has ended never keeps its window, whoever ended it (`air release` in another shell, say): each
+   * window of the tick's `jobs` whose pane an ended workspace's job recorded is closed, and a job left
+   * `running` there is cancelled.
+   */
+  async function closeEnded(jobs: Awaited<ReturnType<ServeContext['tmux']['listJobs']>>): Promise<void> {
+    if (!jobs.length) return;
+    const ended = allWorkspaces(ctx.root, repo).filter((w) => isEnded(w.state) && w.state.job?.paneNonce !== undefined && !inflight.has(w.state.issue));
+    for (const pane of jobs) {
+      const w = ended.find((x) => x.state.issue === pane.issue && x.state.job!.paneNonce === pane.nonce);
+      if (!w || !(await ctx.tmux.stopJob(pane.issue, { graceMs: ctx.stopGraceMs }))) continue;
+      const job = w.state.job!;
+      ctx.log(`#${pane.issue}: closed window ${pane.windowId}: its job is over (${w.state.phase}/${job.status})`);
+      if (!ENDED.includes(job.status)) saveJob(ctx, w.dir, { status: 'cancelled', runMs: agentMs(job, ctx.now()), startedAt: undefined });
+    }
+  }
+
   /** Puts the waiting jobs' notices in the tmux status bar, or clears it; only when that changes. */
   async function showNotices(running: Set<number>): Promise<void> {
     for (const n of [...screens.keys()]) if (!running.has(n)) screens.delete(n);
@@ -515,6 +533,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         }
       }
       try {
+        await closeEnded(jobs);
+      } catch (e) {
+        ctx.log(`tmux: ${err(e)}`);
+      }
+      try {
         await showNotices(new Set(held().filter((w) => w.state.job?.status === 'running').map((w) => w.state.issue)));
       } catch (e) {
         ctx.log(`tmux status: ${err(e)}`);
@@ -534,9 +557,10 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   let sweeping: Promise<void> | undefined;
   /**
-   * Starts the daily sweep in the background when the last one started a day or more ago (or never). The
-   * start time is saved first, so a failing sweep waits a day too; failures are only logged. Returns the
-   * running sweep, or undefined when none was due.
+   * Starts the daily sweep in the background when the last one started a day or more ago (or never): first
+   * the local cleanup pass (`tidy`: ended workspaces past their keep, stale locks, temp files, launcher
+   * dirs), then `air sweep` of the release assets. The start time is saved first, so a failing sweep waits a
+   * day too; failures are only logged. Returns the running sweep, or undefined when none was due.
    */
   function sweepIfDue(): Promise<void> | undefined {
     if (sweeping) return undefined;
@@ -549,8 +573,22 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       ctx.log(`sweep: can't record the run, skipping it: ${err(e)}`);
       return undefined;
     }
-    ctx.log('sweep: deleting expired context and artifact assets');
-    const p = sweep({ repo, trust: ctx.trust, now, log: (line) => ctx.log(`sweep: ${line}`), ...(ctx.releases ? { releases: ctx.releases } : {}) })
+    const cleanup = async () => {
+      let panes;
+      try {
+        panes = await ctx.tmux.panes();
+      } catch (e) {
+        ctx.log(`cleanup: tmux: ${err(e)}; launcher dirs are left for the next pass`);
+      }
+      const l = tidy({ root: ctx.root, stateDir: ctx.stateDir, now, panes, log: (line) => ctx.log(`cleanup: ${line}`) });
+      ctx.log(`cleanup: removed ${l.removed}${l.failed ? `, failed ${l.failed}` : ''}, kept ${l.kept} ended workspace(s) for debugging`);
+    };
+    const p = cleanup()
+      .catch((e) => ctx.log(`cleanup failed: ${err(e)}`))
+      .then(() => {
+        ctx.log('sweep: deleting expired context and artifact assets');
+        return sweep({ repo, trust: ctx.trust, now, log: (line) => ctx.log(`sweep: ${line}`), ...(ctx.releases ? { releases: ctx.releases } : {}) });
+      })
       .then((r) => ctx.log(`sweep: deleted ${r.deleted.length}, kept ${r.kept.length}${r.failed.length ? `, failed ${r.failed.length}` : ''}`))
       .catch((e) => ctx.log(`sweep failed: ${err(e)}`))
       .finally(() => { sweeping = undefined; });

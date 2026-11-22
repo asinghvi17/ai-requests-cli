@@ -342,4 +342,23 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.equal(created.filter(Boolean).length, 1);
     assert.deepEqual(await t.listJobs(), []);
   });
+
+  test('closeIfIdle: a job window keeps the server; without one it ends (run from a window of its own: as that closes)', async () => {
+    await t.ensureSession();
+    await t.startJob({ issue: 120, cwd: dir, argv: ['sleep', '60'] });
+    assert.equal(await t.closeIfIdle(), false);
+    assert.ok((await t.panes()).some((p) => p.issue === 120 && p.repo === 'o/requests'));
+    await t.stopJob(120, { graceMs: 0 });
+    // `air serve` in its `serve` window: the other windows go now, its own as it exits, and the server with it.
+    const { window } = await t.startServer(['sleep', '60'], {});
+    const self = (await t.panes()).find((p) => p.windowId === window)!.paneId;
+    assert.equal(await t.closeIfIdle(self), true);
+    assert.deepEqual((await t.panes()).map((p) => p.windowId), [window]);
+    await raw(['kill-pane', '-t', self]);
+    await until('the server ends', async () => (await t.panes()).length === 0);
+    // From outside the server (`air serve --once` off a terminal): the session and its log window go at once.
+    await t.ensureSession({ argv: ['sleep', '60'] });
+    assert.equal(await t.closeIfIdle(), true);
+    assert.deepEqual(await t.panes(), []);
+  });
 });

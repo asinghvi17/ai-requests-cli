@@ -12,7 +12,7 @@ import type { Config } from '../config.ts';
 import { fakeGitHub } from '../gh/fake.ts';
 import type { Tmux } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../workspace/task.ts';
-import { readState, updateState } from '../workspace/state.ts';
+import { updateState } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import type { Release, ServeGitHub } from './github.ts';
 import { DELIVERY_LOCK, finishJob, startOrDeliver } from './jobs.ts';
@@ -59,16 +59,11 @@ async function finished() {
 test('air serve and air start N delivering one job at once: one upload, one result comment', async () => {
   const { ctx, dir, uploads, comments, before } = await finished();
   const [server, cli] = await Promise.all([finishJob(ctx, dir), startOrDeliver(ctx, dir)]);
-  assert.equal(server, true);
+  assert.equal(server, 'delivered');
   assert.equal(cli, 'delivering-elsewhere');
   assert.deepEqual(uploads, ['air-7-aaaaaaaaaaaa.zip']);
   assert.equal(comments() - before, 1);
-  assert.equal(readState(dir).job!.status, 'done');
-  assert.equal(existsSync(join(dir, DELIVERY_LOCK)), false, 'the lock is released');
-  // A later attempt (the next tick) finds the job done and does nothing.
-  assert.equal(await finishJob(ctx, dir), true);
-  assert.equal(uploads.length, 1);
-  assert.equal(comments() - before, 1);
+  assert.equal(existsSync(dir), false, 'the delivered workspace is removed, its lock with it');
 });
 
 test('a delivery lock held by another live process: back off, nothing written', async () => {
@@ -76,7 +71,7 @@ test('a delivery lock held by another live process: back off, nothing written', 
   const other = spawn('sleep', ['30']);
   try {
     writeFileSync(join(dir, DELIVERY_LOCK), `${other.pid}\n`);
-    assert.equal(await finishJob(ctx, dir), false);
+    assert.equal(await finishJob(ctx, dir), 'delivering-elsewhere');
     assert.deepEqual(uploads, []);
     assert.equal(comments() - before, 0);
   } finally {
@@ -88,8 +83,7 @@ test('a delivery lock left by a dead process is taken over', async () => {
   const { ctx, dir, uploads, comments, before } = await finished();
   const dead = spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim();
   writeFileSync(join(dir, DELIVERY_LOCK), `${dead}\n`);
-  assert.equal(await finishJob(ctx, dir), true);
+  assert.equal(await finishJob(ctx, dir), 'delivered');
   assert.equal(uploads.length, 1);
   assert.equal(comments() - before, 1);
-  assert.equal(readState(dir).job!.status, 'done');
 });

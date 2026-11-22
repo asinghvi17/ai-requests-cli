@@ -39,7 +39,7 @@ export function updateServerState(dir: string, patch: Partial<ServerState>): Ser
 
 export const LOCK_FILE = 'serve.lock';
 
-function alive(pid: number): boolean {
+export function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
@@ -50,6 +50,38 @@ function alive(pid: number): boolean {
 
 /** A lock file whose content isn't a pid is someone's lock being written, until it is this old. */
 export const LOCK_GRACE_MS = 30_000;
+
+const lockPid = (content: string): number | undefined => {
+  const pid = /^\d+\n$/.test(content) ? Number(content) : NaN;
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+};
+
+/** Whether a `pidLock` file with `content`, last written `age` ms ago, is stale: its pid is dead, or it is unreadable past LOCK_GRACE_MS. */
+function isStale(content: string, age: number): boolean {
+  const pid = lockPid(content);
+  return pid !== undefined ? !alive(pid) : age > LOCK_GRACE_MS;
+}
+
+/** Whether `file` is a stale `pidLock` (read-only; false when there is none). */
+export function staleLock(file: string, now = () => Date.now()): boolean {
+  try {
+    return isStale(readFileSync(file, 'utf8'), now() - statSync(file).mtimeMs);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Removes `file` if it is a stale `pidLock`, the way a new holder takes one over (so a live holder's lock is
+ * never removed). Returns whether it was removed.
+ */
+export function clearStaleLock(file: string, now = () => Date.now()): boolean {
+  if (!staleLock(file, now)) return false;
+  const lock = pidLock(file, now);
+  if ('held' in lock) return false;
+  lock.release();
+  return true;
+}
 
 /**
  * An exclusive lock file holding our pid. It is written to a private temp file and hard-linked into place, so
@@ -88,9 +120,7 @@ export function pidLock(file: string, now = () => Date.now()): { release: () => 
         if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue; // released meanwhile: try again
         throw e;
       }
-      const pid = /^\d+\n$/.test(content) ? Number(content) : NaN;
-      const stale = Number.isSafeInteger(pid) && pid > 0 ? !alive(pid) : age > LOCK_GRACE_MS;
-      if (!stale) return { held: Number.isNaN(pid) ? 'lock being written' : `pid ${pid}` };
+      if (!isStale(content, age)) return { held: lockPid(content) === undefined ? 'lock being written' : `pid ${lockPid(content)}` };
       // Take the stale lock aside by rename (only one contender wins it), and make sure it was the one we judged.
       const aside = `${tmp}.stale`;
       try {

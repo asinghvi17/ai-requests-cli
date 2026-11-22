@@ -23,6 +23,7 @@ import type { Subscription } from '../usage/types.ts';
 import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../workspace/task.ts';
+import { removeWorkspace } from '../workspace/teardown.ts';
 import { ENDED, readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
 import { agentArgv, exitResumeInstruction, findCodexSession, type Harness, restartInstruction, RESUME_INSTRUCTION } from './agent.ts';
 import { matchConfig, type ServeContext } from './context.ts';
@@ -191,10 +192,9 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
 
 /**
  * Starts the agent, unless it already finished (AIR_DONE is there, say because its window closed as it
- * exited): then closes any window left and delivers instead, or leaves the delivery to another process
- * already making it (`delivering-elsewhere`). Checks the claim before either.
+ * exited): then closes any window left and delivers instead (`finishJob`'s outcome). Checks the claim before either.
  */
-export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | 'delivered' | 'delivering-elsewhere'> {
+export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | Awaited<ReturnType<typeof finishJob>>> {
   if (!isDone(dir)) {
     await startAgent(ctx, dir);
     return 'started';
@@ -203,7 +203,7 @@ export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'s
   const n = readState(dir).issue;
   if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
   ctx.log(`#${n}: AIR_DONE is already there; delivering instead of starting the agent`);
-  return (await finishJob(ctx, dir)) ? 'delivered' : 'delivering-elsewhere';
+  return finishJob(ctx, dir);
 }
 
 /** Interrupts the agent, waits the grace period, closes its window; labels `air:paused`. Claim and workspace stay. */
@@ -369,11 +369,21 @@ async function withDeliveryLock(ctx: ServeContext, dir: string, what: string, st
 }
 
 /**
- * Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. Resolves false,
- * having done nothing, when another process is delivering it (`withDeliveryLock`).
+ * Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. Once delivered,
+ * its workspace is deleted (`removeWorkspace`) and it resolves `delivered`. `delivering-elsewhere`: another
+ * process is delivering it (`withDeliveryLock`), and nothing was done. `undelivered`: it failed, a retry is
+ * due next tick, or the claim was lost.
  */
-export function finishJob(ctx: ServeContext, dir: string): Promise<boolean> {
-  return withDeliveryLock(ctx, dir, 'delivery', () => deliverJob(ctx, dir));
+export async function finishJob(ctx: ServeContext, dir: string): Promise<'delivered' | 'undelivered' | 'delivering-elsewhere'> {
+  if (!(await withDeliveryLock(ctx, dir, 'delivery', () => deliverJob(ctx, dir)))) return 'delivering-elsewhere';
+  const state = readState(dir);
+  if (state.phase !== 'done') return 'undelivered';
+  try {
+    removeWorkspace(ctx.root, dir);
+  } catch (e) {
+    ctx.log(`#${state.issue}: delivered, but its workspace could not be removed (the daily cleanup tries again): ${(e as Error).message}`);
+  }
+  return 'delivered';
 }
 
 async function deliverJob(ctx: ServeContext, dir: string): Promise<void> {

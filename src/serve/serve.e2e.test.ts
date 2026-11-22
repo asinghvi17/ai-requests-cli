@@ -4,7 +4,7 @@ import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -23,8 +23,8 @@ import { createTmux, socketPath } from '../tmux/tmux.ts';
 import { ledgerFile, loadLedger } from '../usage/index.ts';
 import type { ManualConfig, Subscription } from '../usage/types.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
-import { allWorkspaces, readState, updateState } from '../workspace/state.ts';
-import { CANCEL_LABEL, claim, LABELS, STATE_LABELS } from '../claim/claim.ts';
+import { allWorkspaces, isEnded, readState, updateState, type State } from '../workspace/state.ts';
+import { CANCEL_LABEL, claim, LABELS, release, STATE_LABELS } from '../claim/claim.ts';
 import { extractZip } from '../workspace/zip.ts';
 import type { ServeContext } from './context.ts';
 import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';
@@ -73,6 +73,8 @@ interface World {
   logs: string[];
   clock: { offset: number };
   root: string;
+  /** Each issue's latest workspace as it was before the last tick (`last`). */
+  snaps: Map<number, Snapshot>;
 }
 
 let bare: BareRepo, service: BareRepo, guide: BareRepo;
@@ -107,13 +109,40 @@ function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig[
     if (o.budget) ctx.manual = (name) => (name === 'max' ? { name, harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: o.budget! } : undefined);
     ctx.agentEnv = () => ({ CLAUDE_CONFIG_DIR: claudeDir, FAKE_TRANSCRIPT: '1' });
   }
-  return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root };
+  return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root, snaps: new Map() };
+}
+
+/** A workspace's state and a copy of its files (`files`), kept after a delivery removes the workspace (`dir`). */
+interface Snapshot { dir: string; files: string; state: State }
+
+/** Copies every workspace still in progress, so a test can look into one the next tick delivers and removes. */
+function snapshot(w: World): void {
+  for (const x of allWorkspaces(w.root, 'o/requests')) {
+    if (isEnded(x.state)) continue;
+    const files = join(tmp('air-serve-snap-'), 'ws');
+    try {
+      cpSync(x.dir, files, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory() || st.isSymbolicLink(); } });
+      const prev = w.snaps.get(x.state.issue);
+      if (prev) rmSync(prev.files, { recursive: true, force: true });
+      w.snaps.set(x.state.issue, { dir: x.dir, files, state: x.state });
+    } catch {
+      // written to meanwhile: the next tick copies it again
+    }
+  }
+}
+
+/** #n's newest workspace as it was last seen, which its delivery has removed. */
+function last(w: World, n: number): Snapshot {
+  const snap = w.snaps.get(n)!;
+  assert.equal(existsSync(snap.dir), false, `#${n}: its workspace is removed once delivered`);
+  return snap;
 }
 
 /** Ticks (waiting for each tick's work) until `check` holds. */
 async function until(w: World, what: string, check: () => boolean, ms = 20_000, server = w.server): Promise<void> {
   const end = Date.now() + ms;
   for (;;) {
+    snapshot(w);
     await server.tick();
     await server.idle();
     if (check()) return;
@@ -127,7 +156,8 @@ async function until(w: World, what: string, check: () => boolean, ms = 20_000, 
 }
 
 const job = (w: World, n: number) => allWorkspaces(w.root, 'o/requests').filter((x) => x.state.issue === n).at(-1);
-const status = (w: World, n: number) => job(w, n)?.state.job?.status;
+/** #n's job status; `done` once it is delivered (`air:done`), when its workspace is gone. */
+const status = (w: World, n: number) => (w.store.issues.get(n)?.labels.includes('air:done') ? 'done' : job(w, n)?.state.job?.status);
 const stateLabels = (w: World, n: number) => w.store.issues.get(n)!.labels.filter((l) => l.startsWith('air:')).sort();
 const comments = (w: World, n: number) => w.store.issues.get(n)!.comments.map((c) => c.body);
 const argvLog = (dir: string) => {
@@ -187,8 +217,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     w.store.addIssue({ number: 1, body: body('comment hello') });
     await until(w, 'running', () => status(w, 1) === 'running' || status(w, 1) === 'done');
     await until(w, 'delivered', () => status(w, 1) === 'done');
-    const ws = job(w, 1)!;
-    assert.equal(ws.state.phase, 'done');
+    const ws = last(w, 1);
     assert.deepEqual(stateLabels(w, 1), ['air:done']);
     assert.deepEqual(w.store.issues.get(1)!.assignees, []);
     const final = comments(w, 1).at(-1)!;
@@ -196,12 +225,12 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.match(final, /Cost at API prices: unknown, the agent left no usage record; effort XS expects \$1\.00\./);
     assert.match(final, /Usage of `max`'s window: 10% before, 10% after\./);
     assert.match(final, /<!-- air-usage \{"issue":"o\/requests#1","effort":"XS","expected":1,"usd":null\} -->/);
-    const [argv] = argvLog(ws.dir);
+    const [argv] = argvLog(ws.files);
     assert.equal(argv![0], '--session-id');
     assert.equal(argv![1], ws.state.job!.sessionId);
     assert.deepEqual(argv!.slice(2), ['--model', 'sonnet', '--permission-mode', 'acceptEdits', 'Read AIR_TASK.md in this directory and do the task it describes.']);
     assert.equal(await tmuxClient.isAlive(1), false);
-    assert.match(readFileSync(join(ws.dir, 'AIR_TASK.md'), 'utf8'), /create the empty file `AIR_DONE`/);
+    assert.match(readFileSync(join(ws.files, 'AIR_TASK.md'), 'utf8'), /create the empty file `AIR_DONE`/);
     // Labels moved claimed -> running -> done, each added before the previous one was removed.
     const order = w.store.log.filter((l) => /^(addLabels|removeLabel) 1 /.test(l));
     assert.deepEqual(order, ['addLabels 1 air:claimed', 'addLabels 1 air:running', 'removeLabel 1 air:claimed', 'addLabels 1 air:done', 'removeLabel 1 air:running']);
@@ -215,7 +244,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     w.store.addIssue({ number: 80, body: body('comment Done.') });
     await until(w, 'delivered', () => status(w, 80) === 'done');
     near(spent(), start);
-    assert.deepEqual(job(w, 80)!.state.job!.spend, { usd: start, charged: true });
+    last(w, 80);
     assert.match(comments(w, 80).at(-1)!, /Cost at API prices: \$0\.50; effort XS expects \$1\.00\.\nCharged \$0\.50 to manual budget `max`\./);
     assert.match(comments(w, 80).at(-1)!, /<!-- air-usage \{"issue":"o\/requests#80","effort":"XS","expected":1,"usd":0\.500355\} -->/);
     // A partial job is charged for both its starts: the fresh one and the resumed session.
@@ -241,8 +270,8 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
       w.store.addIssue({ number: 86, body: body('comment Done.') });
       await until(w, 'delivered', () => status(w, 86) === 'done');
       const projects = join(w.ctx.agentEnv('max').CLAUDE_CONFIG_DIR!, 'projects');
-      assert.ok(readdirSync(projects).some((d) => existsSync(join(projects, d, `${job(w, 86)!.state.job!.sessionId}.jsonl`))), 'the session has a transcript');
-      assert.deepEqual(job(w, 86)!.state.job!.spend, { usd: 0.500355, charged: true });
+      assert.ok(readdirSync(projects).some((d) => existsSync(join(projects, d, `${last(w, 86).state.job!.sessionId}.jsonl`))), 'the session has a transcript');
+      assert.match(comments(w, 86).at(-1)!, /<!-- air-usage \{"issue":"o\/requests#86","effort":"XS","expected":1,"usd":0\.500355\} -->/);
       assert.match(comments(w, 86).at(-1)!, /Cost at API prices: \$0\.50; effort XS expects \$1\.00\./);
     } finally {
       for (const [k, v] of Object.entries(saved)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
@@ -267,14 +296,14 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const final = comments(w, 2).at(-1)!;
     assert.ok(final.length <= COMMENT_LIMIT, String(final.length));
     assert.ok(final.startsWith(`${TRUNCATED_LINE}\n\nxxxx`));
-    const nonce = job(w, 2)!.state.nonce;
+    const nonce = last(w, 2).state.nonce;
     const asset = w.fg.releases.find((r) => r.tag === 'air-artifacts')!.assets.find((a) => a.name === `air-2-${nonce}-report.md`)!;
     assert.equal(asset.data.toString(), 'x'.repeat(70000));
     assert.deepEqual(parseResult(final), {
       ok: true,
       result: {
         status: 'done', deliver: 'comment', prs: [], report: `https://github.com/o/requests/releases/download/air-artifacts/air-2-${nonce}-report.md`,
-        usage: { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 1 }, host: job(w, 2)!.state.host, nonce,
+        usage: { harness: 'claude', tier: 'medium', before_pct: 10, after_pct: 10, attempts: 1 }, host: last(w, 2).state.host, nonce,
       },
     });
   });
@@ -325,7 +354,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     w.store.setPermission('o/target', 'alice', 'write');
     w.store.addIssue({ number: 5, title: 'Big', body: body('prbig 70000', PR, CONTEXT) });
     await until(w, 'delivered', () => status(w, 5) === 'done');
-    const nonce = job(w, 5)!.state.nonce;
+    const nonce = last(w, 5).state.nonce;
     const url = `https://github.com/o/requests/releases/download/air-artifacts/air-5-${nonce}-report.md`;
     const pr = w.fg.pulls.find((p) => p.title.endsWith('(#5)'))!;
     assert.ok(pr.body.length <= COMMENT_LIMIT, String(pr.body.length));
@@ -343,7 +372,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     w.fg.failNextPull = true;
     w.store.addIssue({ number: 20, title: 'Hostile', body: body(`prhostile ${elsewhere}`, PR, CONTEXT) });
     await until(w, 'delivered', () => status(w, 20) === 'done');
-    const dir = job(w, 20)!.dir;
+    const dir = last(w, 20).files;
     assert.equal(existsSync(join(dir, 'hook-ran')), false);
     assert.equal(existsSync(join(dir, 'fsmonitor-ran')), false);
     assert.equal(spawnSync('git', ['--git-dir', elsewhere, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/20']).status, 1, 'nothing pushed elsewhere');
@@ -358,12 +387,12 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const fm = ['deliver: pr', 'repos:', `  - url: ${SERVICE}`, '    ref: main', `  - url: ${GUIDE}`, '    pr: 5', '    path: docs/guide', '    deliver: none'];
     w.store.addIssue({ number: 60, title: 'Two repos', body: body('pr', fm, CONTEXT) });
     await until(w, 'delivered', () => status(w, 60) === 'done');
-    const ws = job(w, 60)!;
+    const ws = last(w, 60);
     assert.deepEqual(ws.state.repos, [{ path: 'service', sha: service.main }, { path: 'docs/guide', sha: guide.dangling }]);
     assert.match(comments(w, 60)[0]!, new RegExp(`- \`service\`: \`${service.main}\`\n- \`docs/guide\`: \`${guide.dangling}\``));
     // The agent committed in both checkouts; only the delivered one is pushed.
     const log = (dir: string) => execFileSync('git', ['-C', dir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim();
-    assert.equal(log(join(ws.dir, 'repo', 'docs', 'guide')), 'the change');
+    assert.equal(log(join(ws.files, 'repo', 'docs', 'guide')), 'the change');
     assert.equal(spawnSync('git', ['--git-dir', guide.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/60']).status, 1, 'read-only repo untouched');
     assert.equal(execFileSync('git', ['--git-dir', service.bare, 'log', '--format=%s', 'main..air/60'], { encoding: 'utf8' }), 'the change\n');
     assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#60)')).map(({ repo, head: h, base, body: b }) => ({ repo, head: h, base, body: b })), [
@@ -423,18 +452,18 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
       assert.equal(spawnSync('git', ['--git-dir', b.bare, 'rev-parse', '--verify', '--quiet', 'refs/heads/air/63-2']).status, 1, repo);
     }
     assert.deepEqual(w.fg.pulls.filter((p) => p.title.endsWith('(#63)')).map((p) => [p.repo, p.head]), [['o/service', 'air/63'], ['o/target', 'air/63']]);
-    assert.equal(readFileSync(join(job(w, 63)!.dir, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
+    assert.equal(readFileSync(join(last(w, 63).files, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
   });
 
   test('zero repos: no repo/, setup runs in the workspace, and an artifact is delivered', async () => {
     const w = world();
     w.store.addIssue({ number: 64, body: body('artifact', ['deliver: artifact', 'setup: ["pwd > where.txt"]']) });
     await until(w, 'delivered', () => status(w, 64) === 'done');
-    const ws = job(w, 64)!;
+    const ws = last(w, 64);
     assert.deepEqual(ws.state.repos, []);
-    assert.equal(existsSync(join(ws.dir, 'repo')), false);
-    assert.equal(readFileSync(join(ws.dir, 'where.txt'), 'utf8').trim().replace(/^\/private/, ''), ws.dir);
-    const task = readFileSync(join(ws.dir, 'AIR_TASK.md'), 'utf8');
+    assert.equal(existsSync(join(ws.files, 'repo')), false);
+    assert.equal(readFileSync(join(ws.files, 'where.txt'), 'utf8').trim().replace(/^\/private/, ''), ws.dir);
+    const task = readFileSync(join(ws.files, 'AIR_TASK.md'), 'utf8');
     assert.doesNotMatch(task, /repo\//);
     assert.match(task, /If you are stopped early, air keeps only `out\/`/);
     assert.doesNotMatch(comments(w, 64)[0]!, /Repos/);
@@ -495,7 +524,8 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(w.logs[0], '#23: interrupted claim released');
     assert.match(comments(w, 23)[1]!, /^Released by `box`: its claim was cut off before work started\.[\s\S]*status: released/);
     assert.notEqual((await holder(w, 23))?.nonce, cut!.nonce);
-    assert.deepEqual(allWorkspaces(w.root, 'o/requests').filter((x) => x.state.issue === 23).map((x) => x.state.phase).sort(), ['done', 'released']);
+    // The released claim's workspace is kept for debugging; the delivered one is gone.
+    assert.deepEqual(allWorkspaces(w.root, 'o/requests').filter((x) => x.state.issue === 23).map((x) => x.state.phase), ['released']);
   });
 
   test('regression: an interrupted claim that a rival now holds is withdrawn, so the issue can be claimed once the rival lets go', async () => {
@@ -588,7 +618,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     w.store.addIssue({ number: 6, body: body('empty', ['deliver: artifact']) });
     w.store.addIssue({ number: 9, body: body('notes', ['deliver: artifact']) });
     await until(w, 'all finished', () => status(w, 5) === 'done' && status(w, 6) === 'failed' && status(w, 9) === 'failed');
-    const nonce = job(w, 5)!.state.nonce;
+    const nonce = last(w, 5).state.nonce;
     const asset = w.fg.releases[0]!.assets.find((a) => a.name === `air-5-${nonce}.zip`)!;
     assert.equal(asset.contentType, 'application/zip');
     const final = comments(w, 5).at(-1)!;
@@ -695,10 +725,10 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     w.fg.failOnce = (a) => a.startsWith('api repos/o/requests/issues/27/comments --method POST') && w.fg.releases.some((r) => r.assets.length > 0);
     await until(w, 'delivered', () => status(w, 27) === 'done');
     assert.equal(w.fg.failOnce, undefined, 'the comment did fail once');
-    const nonce = job(w, 27)!.state.nonce;
+    const nonce = last(w, 27).state.nonce;
     assert.equal(w.fg.calls.filter((c) => c.includes(`assets?name=air-27-${nonce}.zip`)).length, 1, 'uploaded once');
     assert.equal(w.fg.calls.filter((c) => /releases\/assets\/\d+ --method DELETE/.test(c)).length, 0, 'never deleted');
-    const asset = job(w, 27)!.state.job!.delivery!.asset!;
+    const asset = last(w, 27).state.job!.delivery!.asset!;
     // no expires: the spec default (14 days after close) applies
     const result = parseResult(comments(w, 27).at(-1)!);
     assert.deepEqual(result?.ok && result.result.artifact, { url: asset.url, sha256: asset.sha256, bytes: asset.bytes });
@@ -906,10 +936,37 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
       w.ctx.config.agents = {};
       w.store.addIssue({ number: 46, body: body('comment hi') });
       await until(w, 'delivered', () => status(w, 46) === 'done');
-      assert.deepEqual(argvLog(job(w, 46)!.dir)[0]!.slice(-3), ['--permission-mode', 'auto', 'Read AIR_TASK.md in this directory and do the task it describes.']);
+      assert.deepEqual(argvLog(last(w, 46).files)[0]!.slice(-3), ['--permission-mode', 'auto', 'Read AIR_TASK.md in this directory and do the task it describes.']);
     } finally {
       process.env.PATH = path;
     }
+  });
+
+  test('a job released behind the server (`air release` in another shell) has its window closed and is cancelled at the next tick', async () => {
+    const w = world();
+    w.store.addIssue({ number: 47, body: body('hang') });
+    await running(w, 47);
+    const dir = job(w, 47)!.dir;
+    assert.equal((await release({ gh: w.ctx.gh, issue: 47, root: w.root, host: 'box' })).status, 'released');
+    assert.ok((await tmuxClient.listJobs()).some((j) => j.issue === 47), 'the release alone leaves the window');
+    await w.server.tick({ poll: false }); // (a poll would claim the released request again)
+    await w.server.idle();
+    assert.equal((await tmuxClient.listJobs()).some((j) => j.issue === 47), false, w.logs.join('\n'));
+    assert.deepEqual([readState(dir).phase, readState(dir).job!.status], ['released', 'cancelled']);
+    assert.ok(w.logs.some((l) => /^#47: closed window @\d+: its job is over \(released\/running\)$/.test(l)), w.logs.join('\n'));
+  });
+
+  test('air serve --once: with no job window left when it stops, the air tmux session and server end', async () => {
+    const w = world();
+    jobDeps.loadConfig = () => w.ctx.config;
+    jobDeps.context = () => w.ctx;
+    jobDeps.preflight = () => [];
+    w.store.addIssue({ number: 48, body: body('comment hi') });
+    await tmuxClient.ensureSession({ argv: ['sleep', '600'] }); // the `log` window air serve opens
+    assert.equal(await main(['serve', '--once', '--once-wait', '0'], { out: () => {}, err: () => {} }), 0);
+    assert.equal(status(w, 48), 'done');
+    assert.ok(w.logs.includes('stopped; no job windows were left, so the air tmux session ends'), w.logs.join('\n'));
+    assert.deepEqual(await tmuxClient.panes(), []);
   });
 
   test('cancel: air:cancel stops the agent, comments and releases', async () => {
@@ -1001,11 +1058,11 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     issue.labels = issue.labels.filter((l) => !l.startsWith('air:'));
     const downloads = w.fg.calls.length;
     await until(w, 'delivered', () => status(w, 31) === 'done');
-    const second = job(w, 31)!;
+    const second = last(w, 31);
     assert.notEqual(second.state.nonce, first.state.nonce);
     assert.ok(w.fg.calls.slice(downloads).some((c) => /^api repos\/o\/requests\/releases\/assets\/\d+ -H Accept: application\/octet-stream --method GET$/.test(c)), 'the checkpoint zip came through gh');
-    assert.equal(readFileSync(join(second.dir, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
-    const task = readFileSync(join(second.dir, 'AIR_TASK.md'), 'utf8');
+    assert.equal(readFileSync(join(second.files, 'out', 'PROGRESS.md'), 'utf8'), 'start 1\nstart 2\n');
+    const task = readFileSync(join(second.files, 'AIR_TASK.md'), 'utf8');
     assert.match(task, /## Continuing earlier work/);
     assert.match(task, new RegExp(`checked out at the earlier work's checkpoint, \`${sha}\` on branch \`air/31\``));
     assert.match(task, /Keep `out\/PROGRESS\.md` up to date/);
@@ -1209,14 +1266,14 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     i.labels = [...i.labels.filter((l) => !l.startsWith('air:')), 'air:paused'];
     assert.ok(existsSync(join(dir, 'out', 'REPORT.md')));
     assert.equal((await holder(w, 41))?.nonce, readState(dir).nonce);
+    assert.equal(argvLog(dir).length, 1);
 
     assert.equal(await main(['start', '41'], io), 0);
-    assert.match(out, /#41 had already finished \(AIR_DONE\); delivered it/);
+    assert.match(out, /#41 had already finished \(AIR_DONE\); delivered it and removed its workspace/);
     assert.equal(status(w, 41), 'done');
-    assert.equal(job(w, 41)!.state.phase, 'done');
+    assert.equal(existsSync(dir), false, 'the delivered workspace is removed');
     assert.deepEqual(stateLabels(w, 41), ['air:done']);
     assert.equal(comments(w, 41).at(-1)!.split('\n')[0], 'finished');
-    assert.equal(argvLog(dir).length, 1, 'the agent was not started again');
     assert.equal((await tmuxClient.listJobs()).some((x) => x.issue === 41), false);
   });
 
@@ -1235,7 +1292,8 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.match(out, /#42 had already finished \(AIR_DONE\); delivered it/);
     assert.equal(status(w, 42), 'done');
     assert.equal(comments(w, 42).at(-1)!.split('\n')[0], 'by hand');
-    assert.equal(argvLog(dir).length, 0, 'no agent was started');
+    assert.equal(existsSync(dir), false, 'the delivered workspace is removed');
+    assert.equal((await tmuxClient.listJobs()).some((x) => x.issue === 42), false, 'no agent was started');
   });
 
   test('regression: one tick that cannot see a live window never pauses the job; two in a row do', async () => {

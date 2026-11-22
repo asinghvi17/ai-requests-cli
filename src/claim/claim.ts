@@ -10,7 +10,7 @@ import type { Issue, IssueComment, LabelSpec, RequestsRepo } from '../gh/issues.
 import { lint } from '../spec/lint.ts';
 import { SPEC_VERSION, type Deliver, type Request } from '../spec/frontmatter.ts';
 import { countedMarkers, countedResults, currentClaim, formatMarker, formatResult, type AirResult, type AuthoredComment, type Marker } from '../spec/markers.ts';
-import { createWorkspace, findWorkspaces, REQUEST_FILE, updateState, type Phase, type State } from '../workspace/state.ts';
+import { createWorkspace, ENDED_PHASES, findWorkspaces, REQUEST_FILE, updateState, type State } from '../workspace/state.ts';
 import { checkRepos, type RepoCheckOptions } from './repos.ts';
 import { createTrust, markedComments, type Trust } from './trust.ts';
 import { code, fenced } from './text.ts';
@@ -312,9 +312,6 @@ export interface ReleaseOptions {
 }
 
 export type ReleaseResult = { status: 'released'; nonce: string; result: AirResult } | { status: 'refused'; message: string };
-
-/** Workspace phases past the claim: `release` finishes no earlier release for one of these. */
-const ENDED_PHASES: readonly Phase[] = ['failed', 'released', 'lost', 'done'];
 
 /**
  * Gives a claim back (§9 step 4): posts an `air-release` marker for this host's holding claim, then removes

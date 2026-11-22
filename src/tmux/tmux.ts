@@ -65,6 +65,9 @@ export interface Job {
   launcher?: string;
 }
 
+/** A pane on air's tmux server (`panes()`); `issue` and `repo` only on a job's pane. */
+export interface ServerPane { windowId: string; windowName: string; paneId: string; issue?: number; repo?: string; launcher?: string }
+
 export interface StartJobInput {
   issue: number;
   cwd: string;
@@ -259,6 +262,19 @@ export function tmuxVersionProblem(v: string): string | undefined {
   const [major, minor] = [Number(m[1]), Number(m[2])];
   if (major > MIN_TMUX.major || (major === MIN_TMUX.major && minor >= MIN_TMUX.minor)) return undefined;
   return `${v.trim()} is too old: air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer (tested with 3.0a to 3.8). Install a newer tmux.`;
+}
+
+/** Every pane on the tmux server `run` talks to, of any requests repo: its window, and its job tags if it is a job's. */
+export async function serverPanes(run: TmuxRunner): Promise<ServerPane[]> {
+  const r = await run(['list-panes', '-a', '-F', ['#{window_id}', '#{window_name}', '#{pane_id}', '#{@air_job}', '#{@air_repo}', '#{@air_launcher}'].join(SEP)]);
+  if (r.code !== 0) {
+    if (noServer(r.stderr)) return [];
+    throw new Error(`tmux list-panes: ${r.stderr.trim()}`);
+  }
+  return r.stdout.split('\n').filter((l) => l.includes(SEP)).map((l) => {
+    const [windowId = '', windowName = '', paneId = '', job = '', repo = '', launcher = ''] = l.split(SEP);
+    return { windowId, windowName, paneId, ...(/^\d+$/.test(job) ? { issue: Number(job), repo } : {}), ...(launcher ? { launcher } : {}) };
+  });
 }
 
 export function createTmux(options: TmuxOptions) {
@@ -541,12 +557,33 @@ export function createTmux(options: TmuxOptions) {
     return attachTo(socket, to, env);
   }
 
-  /** Kill the whole tmux server on this socket (tests, `air serve --stop`). */
+  /** Kill the whole tmux server on this socket (tests). */
   async function killServer(): Promise<void> {
     await run(['kill-server']);
   }
 
-  return { socket, session, version, checkVersion, ensureSession, startServer, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, screen, setNotice, attachArgs, killServer };
+  const panes = () => serverPanes(run);
+
+  /**
+   * When no job window is left (of any requests repo), ends the server: `air serve` calls this as it stops,
+   * so the `log` window and the session go with it. `self` is the caller's own pane when it runs on this
+   * server (the `serve` window): then the other windows are closed, and with `exit-empty` the server ends as
+   * the caller's window closes when it exits. Returns false, leaving everything, while a job window is there.
+   */
+  async function closeIfIdle(self?: string): Promise<boolean> {
+    const all = await panes();
+    if (all.some((p) => p.issue !== undefined)) return false;
+    const mine = self ? all.find((p) => p.paneId === self)?.windowId : undefined;
+    if (!mine) {
+      if (all.length) await run(['kill-server']);
+      return true;
+    }
+    await run(['set-option', '-s', 'exit-empty', 'on']);
+    for (const w of new Set(all.map((p) => p.windowId))) if (w !== mine) await run(['kill-window', '-t', w]);
+    return true;
+  }
+
+  return { socket, session, version, checkVersion, ensureSession, startServer, startJob, listJobs, listPanesRaw, panes, stopJob, isAlive, capture, screen, setNotice, attachArgs, closeIfIdle, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;
