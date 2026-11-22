@@ -15,9 +15,13 @@ concurrency:
 
 jobs:
   check:
+    if: github.repository == 'asinghvi17/ai-requests-cli'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
       - name: the tag is package.json's version
         env:
           TAG: ${{ github.ref_name }}
@@ -27,10 +31,12 @@ jobs:
 
   build:
     needs: check
+    if: github.repository == 'asinghvi17/ai-requests-cli'
     uses: ./.github/workflows/build.yml
 
   release:
     needs: build
+    if: github.repository == 'asinghvi17/ai-requests-cli'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -50,7 +56,7 @@ jobs:
           LC_ALL=C sha256sum air-darwin-arm64 air-darwin-x64 air-linux-arm64 air-linux-x64 > SHA256SUMS
           cat SHA256SUMS
       - name: create the release if missing
-        run: gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "air $TAG" --notes ""
+        run: gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "air $TAG" --generate-notes
       - name: upload the assets
         working-directory: dist
         run: gh release upload "$TAG" air-darwin-arm64 air-darwin-x64 air-linux-arm64 air-linux-x64 SHA256SUMS --clobber

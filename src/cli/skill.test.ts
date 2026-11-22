@@ -4,21 +4,29 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { SKILL_FILES } from '../skill/bundle.ts';
+import { skillFiles } from '../skill/install.ts';
+import { firstRunDeps } from './firstrun.ts';
 import { main } from './main.ts';
 import { skillDeps } from './skill.ts';
 
 const dirs: string[] = [];
-const saved = { ...skillDeps };
+const saved = { skill: { ...skillDeps }, first: { ...firstRunDeps } };
 after(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
-  Object.assign(skillDeps, saved);
+  Object.assign(skillDeps, saved.skill);
+  Object.assign(firstRunDeps, saved.first);
 });
 function tmp(): string {
   const d = mkdtempSync(join(tmpdir(), 'air-skill-cli-'));
   dirs.push(d);
   return d;
 }
+
+// A config that names the requests repo, so installing asks nothing (firstrun.test.ts covers first run).
+const config = join(tmp(), 'config.toml');
+writeFileSync(config, 'repo = "acme/requests"\n');
+firstRunDeps.configPath = () => config;
+firstRunDeps.isTTY = () => false;
 
 async function call(...argv: string[]) {
   let out = '';
@@ -31,7 +39,7 @@ test('installs into the default directory', async () => {
   const dir = join(tmp(), '.claude', 'skills', 'ai-request');
   skillDeps.defaultDir = () => dir;
   assert.deepEqual(await call('skill', 'install'), { code: 0, out: `installed the ai-request skill in ${dir}\n`, err: '' });
-  assert.equal(readFileSync(join(dir, 'SKILL.md'), 'utf8'), SKILL_FILES['SKILL.md']);
+  assert.equal(readFileSync(join(dir, 'SKILL.md'), 'utf8'), skillFiles()['SKILL.md']);
 });
 
 test('--dir installs there; --print only prints the destination', async () => {
@@ -40,7 +48,7 @@ test('--dir installs there; --print only prints the destination', async () => {
   const dir = join(tmp(), 'proj', '.claude', 'skills', 'ai-request');
   assert.deepEqual(await call('skill', 'install', '--dir', dir, '--print'), { code: 0, out: `${dir}\n`, err: '' });
   assert.equal((await call('skill', 'install', '--dir', dir)).code, 0);
-  assert.equal(readFileSync(join(dir, 'template.md'), 'utf8'), SKILL_FILES['template.md']);
+  assert.equal(readFileSync(join(dir, 'template.md'), 'utf8'), skillFiles()['template.md']);
   assert.deepEqual(await call('skill', 'install', '--dir', 'rel', '--print'), { code: 0, out: `${resolve('rel')}\n`, err: '' });
 });
 
