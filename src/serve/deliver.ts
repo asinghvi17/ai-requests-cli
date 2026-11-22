@@ -9,7 +9,7 @@ import { delivers } from '../claim/repos.ts';
 import type { Asset, RepoEntry, Request, Resume } from '../spec/frontmatter.ts';
 import { formatResult, type AirResult, type ResultUsage } from '../spec/markers.ts';
 import { sha256File } from '../workspace/context.ts';
-import { githubRepo, gitOut } from '../workspace/git.ts';
+import { gitFailure, githubRepo, gitOut } from '../workspace/git.ts';
 import { PROGRESS_FILE } from '../workspace/task.ts';
 import { readState, updateState, type JobRecord, type RepoDelivery, type State, type UploadedAsset } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
@@ -197,7 +197,8 @@ async function deliverArtifact(ctx: ServeContext, dir: string, state: State, foo
 /** Options that keep a repo's own config from running anything (hooks, fsmonitor) while air reads it. */
 const SAFE = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
 
-type Pushed = { ok: true; branch: string; sha: string } | { ok: false; detail: string };
+/** A failed push says why, and whether that is the agent having made no commits (`none`). */
+type Pushed = { ok: true; branch: string; sha: string } | { ok: false; none: boolean; detail: string };
 
 /**
  * Pushes the agent's work in `repo/<path>` (§6), or says why there is nothing to push: no commits beyond the
@@ -220,14 +221,17 @@ async function pushWork(ctx: ServeContext, dir: string, state: State, request: R
   rmSync(clean, { recursive: true, force: true });
   const init = await git(['init', '--quiet', '--bare', clean], dir, ctx.env);
   if (init.code !== 0) throw new Error(`git init failed: ${init.stderr.trim()}`);
-  const g = (args: string[]) => git([...SAFE, ...args], clean, ctx.env);
+  // An explicit --git-dir: with safe.bareRepository=explicit, git won't find a bare repo from its cwd.
+  const g = (args: string[]) => git(['--git-dir', clean, ...SAFE, ...args], dir, ctx.env);
+  const unreadable = (r: { code: number; stderr: string }): Pushed =>
+    ({ ok: false, none: false, detail: `air could not read the commits in \`repo/${entry.path}\` (${gitFailure(r)}).` });
 
-  // The agent's commits: HEAD and its local branches, fetched without running anything of the agent's.
-  const fetchWork = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head', '+refs/heads/*:refs/air/work/*']);
-  if (fetchWork.code !== 0) {
-    const onlyHead = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head']);
-    if (onlyHead.code !== 0) return { ok: false, detail: `\`repo/${entry.path}\` has no commits air can read (${fetchWork.stderr.trim()}).` };
-  }
+  // The agent's commits: its local branches and HEAD, fetched without running anything of the agent's.
+  const fetchHeads = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+refs/heads/*:refs/air/work/*']);
+  if (fetchHeads.code !== 0) return unreadable(fetchHeads);
+  const fetchHead = await g(['fetch', '--quiet', '--no-tags', '--', repoDir, '+HEAD:refs/air/head']);
+  // An unborn HEAD is no commit, not a failure.
+  if (fetchHead.code !== 0 && !/couldn't find remote ref HEAD/.test(fetchHead.stderr)) return unreadable(fetchHead);
   // Commits count from the commit the entry resolved to; if the agent's history doesn't hold it, fetch it.
   if ((await g(['cat-file', '-e', `${base}^{commit}`])).code !== 0) {
     const fetchBase = await g(['fetch', '--quiet', '--no-tags', '--', url, base]);
@@ -241,7 +245,7 @@ async function pushWork(ctx: ServeContext, dir: string, state: State, request: R
     for (const sha of refs) if (await ahead(sha) > 0) { head = sha; break; }
   }
   if (!head || !/^[0-9a-f]{40,64}$/.test(head)) {
-    return { ok: false, detail: `no commits beyond \`${base.slice(0, 12)}\`. Uncommitted changes are not delivered.` };
+    return { ok: false, none: true, detail: `no commits beyond \`${base.slice(0, 12)}\`. Uncommitted changes are not delivered.` };
   }
   const ls = await g(['ls-remote', '--heads', '--', url]);
   if (ls.code !== 0) throw new Error(`git ls-remote failed: ${ls.stderr.trim()}`);
@@ -257,7 +261,7 @@ async function pushWork(ctx: ServeContext, dir: string, state: State, request: R
     const now = heads.get(branch);
     // Ours to move on: the checkpoint's commit, gone (say deleted after the partial result), or already this push.
     if (now !== undefined && now !== checkpoint.sha && now !== head) {
-      return { ok: false, detail: `the checkpoint branch \`${branch}\` moved since the checkpoint (it is at \`${now.slice(0, 12)}\`, not \`${checkpoint.sha.slice(0, 12)}\`), so air did not overwrite it.` };
+      return { ok: false, none: false, detail: `the checkpoint branch \`${branch}\` moved since the checkpoint (it is at \`${now.slice(0, 12)}\`, not \`${checkpoint.sha.slice(0, 12)}\`), so air did not overwrite it.` };
     }
     // The check above and the push are one step on the remote: the push fails if the branch moved meanwhile.
     force = [`--force-with-lease=refs/heads/${branch}:${now ?? ''}`];
@@ -310,6 +314,7 @@ async function deliverPr(ctx: ServeContext, dir: string, state: State, request: 
   const entries = request.repos.filter((e) => delivers(request, e));
   const summary = await prSummary(ctx, dir, state, entries.length);
   const without: string[] = [];
+  let unchanged = true;
   for (const entry of entries) {
     if (repoRecord(dir, entry.path).prUrl) continue;
     const target = githubRepo(entry.url, ctx.ghHost);
@@ -317,6 +322,7 @@ async function deliverPr(ctx: ServeContext, dir: string, state: State, request: 
     const pushed = await pushWork(ctx, dir, state, request, entry);
     if (!pushed.ok) {
       without.push(`- ${code(entry.path)}: ${pushed.detail}`);
+      unchanged &&= pushed.none;
       continue;
     }
     const pr = { title: `air: ${state.title} (#${state.issue})`, head: pushed.branch, base: entry.ref!, body: prBody(ctx, state, summary, []) };
@@ -332,7 +338,7 @@ async function deliverPr(ctx: ServeContext, dir: string, state: State, request: 
     recordRepo(ctx, dir, entry.path, { prUrl });
   }
   const opened = entries.map((e) => ({ entry: e, rec: repoRecord(dir, e.path) })).filter((x) => x.rec.prUrl);
-  if (opened.length === 0) return { ok: false, step: 'delivery', detail: `No changes were produced:\n\n${without.join('\n')}` };
+  if (opened.length === 0) return { ok: false, step: 'delivery', detail: `${unchanged ? 'No changes were produced' : 'No pull request was opened'}:\n\n${without.join('\n')}` };
   if (opened.length > 1) {
     for (const { entry, rec } of opened) {
       if (rec.linked) continue;

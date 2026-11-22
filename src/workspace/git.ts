@@ -126,7 +126,7 @@ export async function resolveRepo(entry: RepoEntry, opts: ResolveOptions = {}): 
     return { error: (e as Error).message };
   }
   const tmp = mkdtempSync(join(tmpdir(), 'air-resolve-'));
-  const g = (args: string[], cwd = tmp) => gitOut(['-c', 'core.hooksPath=/dev/null', ...args], { cwd, env: opts.env, timeoutMs: opts.timeoutMs ?? RESOLVE_TIMEOUT_MS });
+  const g = (args: string[]) => gitOut(['-c', 'core.hooksPath=/dev/null', ...args], { cwd: tmp, env: opts.env, timeoutMs: opts.timeoutMs ?? RESOLVE_TIMEOUT_MS });
   try {
     const wanted = entry.pr !== undefined ? [`refs/pull/${entry.pr}/head`] : [`refs/heads/${entry.ref}`, `refs/tags/${entry.ref}`, `refs/tags/${entry.ref}^{}`];
     const ls = await g(['ls-remote', '--', entry.url, ...wanted]);
@@ -148,17 +148,18 @@ export async function resolveRepo(entry: RepoEntry, opts: ResolveOptions = {}): 
     if (tag) return { sha: tag };
     if (!/^[0-9a-f]{4,64}$/.test(ref)) return { error: `\`${ref}\` is not a branch, tag or commit of ${entry.url}` };
     // A commit, maybe abbreviated: look it up among the commits of every branch and tag.
+    // Used through an explicit --git-dir: with safe.bareRepository=explicit, git won't find it from its cwd.
     const bare = join(tmp, 'r.git');
     const clone = await g(['clone', '--quiet', '--bare', '--filter=tree:0', '--', entry.url, bare]);
     if (clone.code !== 0) return { error: `git clone ${entry.url} failed: ${gitFailure(clone)}` };
     const parse = async () => {
-      const r = await g(['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`], bare);
+      const r = await g(['--git-dir', bare, 'rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]);
       const sha = r.stdout.trim();
       return r.code === 0 && isFullSha(sha) ? sha : undefined;
     };
     let sha = await parse();
     // A full SHA no branch or tag reaches (say a pull request's) can still be fetched by name.
-    if (!sha && isFullSha(ref) && (await g(['fetch', '--quiet', '--no-tags', 'origin', ref], bare)).code === 0) sha = await parse();
+    if (!sha && isFullSha(ref) && (await g(['--git-dir', bare, 'fetch', '--quiet', '--no-tags', 'origin', ref])).code === 0) sha = await parse();
     return sha ? { sha } : { error: `\`${ref}\` is not a branch, tag or commit of ${entry.url}` };
   } finally {
     rmSync(tmp, { recursive: true, force: true });
