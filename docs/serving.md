@@ -60,8 +60,9 @@ whatever your plan costs. A request's effort is such an estimate: XS $1, S $3, M
 air reads each subscription's quota as a percentage of its weekly window. `window_usd` in the config says
 what the whole window is worth, so 60% used of a $1000 window leaves $400.
 
-The first run guesses $1000. Calibrate it from your first jobs: each final comment gives the job's cost and
-the window's usage before and after. A $12 job that moved the window from 40% to 41.5% puts it near $800.
+The first run asks for each subscription's per-window budget, defaulting to a conservative $20. Raise it
+from your first jobs: each final comment gives the job's cost and the window's usage before and after. A $12
+job that moved the window from 40% to 41.5% puts the whole window near $800.
 
 A job that costs more than twice its effort's dollars is stopped early, as partial.
 

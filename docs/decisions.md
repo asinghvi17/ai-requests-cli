@@ -587,3 +587,22 @@ Claude Code:
   do), not the tmux server's, which may date from an earlier session.
 - A requester runs `air skill install`, which asks for the requests repo when the config has none (or takes
   `--repo`). It writes the same config, through the same `ensureConfig`.
+
+## 2026-11-22: findings from the first live trial (v0.3.0)
+
+- Every git call on a bare repo air makes (`.air-push.git` in delivery, the treeless clone that resolves a
+  commit) passes `--git-dir`. With `safe.bareRepository=explicit` (security-minded users set it; the Claude
+  desktop app's Terminal exports it in `GIT_CONFIG_PARAMETERS`) git refuses to find a bare repo from its cwd,
+  and delivery read that as "no commits".
+- Delivery fetches the agent's branches and HEAD separately, so an unborn HEAD is "no commits" and any other
+  git failure is "air could not read the commits", with git's error. A `deliver: pr` that opens nothing says
+  "No changes were produced" only when every repo really has no commits; else "No pull request was opened".
+- First run asks each subscription's per-window budget (`window_usd`), default 20, and writes 20 without a
+  terminal. The old 1000 was a guess at a whole Max window: far more than a volunteer means to give away.
+- `air skill install` off a terminal without `--repo`, when the config names no repo, fails (exit 1) saying
+  to pass `--repo`, before installing anything. It used to install, write nothing and exit 0.
+- `air serve` that starts in an `air` tmux session left from an earlier run says it is joining it.
+- The skill links the format spec at the installing air's tag (`{{AIR_TAG}}` in the skill source, filled in
+  by `air skill install`), not `main`, which may have moved past the binary.
+- The first line of `## Task` stays in the body although it is also the issue title. Dropping it would leave
+  a one-line `## Task` empty, which spec §4 forbids, and would lose the rest of a summary cut to fit the title.

@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { BUNDLE, renderBundle } from '../../scripts/bundle-skill.ts';
 import { lint } from '../spec/lint.ts';
 import { SKILL_FILES } from './bundle.ts';
-import { defaultSkillDir, installSkill, InstallError } from './install.ts';
+import { TAG } from '../version.ts';
+import { defaultSkillDir, installSkill, InstallError, skillFiles } from './install.ts';
 
 const dirs: string[] = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -36,8 +37,16 @@ test('installs into a new directory, creating its parents', () => {
   const dir = join(tmp(), 'a', 'b', 'ai-request');
   installSkill(dir);
   assert.deepEqual(readdirSync(dir).sort(), Object.keys(SKILL_FILES).sort());
-  for (const [name, text] of Object.entries(SKILL_FILES)) assert.equal(readFileSync(join(dir, name), 'utf8'), text);
+  for (const [name, text] of Object.entries(skillFiles())) assert.equal(readFileSync(join(dir, name), 'utf8'), text);
   assert.deepEqual(readdirSync(join(dir, '..')), ['ai-request']);
+});
+
+test("the skill links the format spec at the installing air's release tag, not main", () => {
+  assert.match(SKILL_FILES['SKILL.md']!, /blob\/\{\{AIR_TAG\}\}\/spec\/v0\.md/);
+  const skill = skillFiles()['SKILL.md']!;
+  assert.ok(skill.includes(`https://github.com/asinghvi17/ai-requests-cli/blob/${TAG}/spec/v0.md`));
+  assert.match(TAG, /^v\d+\.\d+\.\d+$/);
+  assert.ok(!Object.values(skillFiles()).some((t) => t.includes('{{AIR_TAG}}') || t.includes('/blob/main/')));
 });
 
 test('writes nested files', () => {
@@ -52,7 +61,7 @@ test('replaces an older copy, dropping files it no longer has, and an empty dire
   installSkill(dir, { 'SKILL.md': '---\nname: ai-request\ndescription: old\n---\n', 'old.md': 'x' });
   installSkill(dir);
   assert.deepEqual(readdirSync(dir).sort(), Object.keys(SKILL_FILES).sort());
-  assert.equal(readFileSync(join(dir, 'SKILL.md'), 'utf8'), SKILL_FILES['SKILL.md']);
+  assert.equal(readFileSync(join(dir, 'SKILL.md'), 'utf8'), skillFiles()['SKILL.md']);
   assert.deepEqual(readdirSync(parent), ['ai-request']);
   const empty = join(parent, 'empty');
   mkdirSync(empty);

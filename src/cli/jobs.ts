@@ -98,7 +98,8 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   if (interactive && !env.TMUX && !once) {
     const serverEnv = jobEnv({}, env);
     delete serverEnv.TERM; // the window's is tmux's
-    const window = await ctx.tmux.startServer([...HOLD, ...jobDeps.self(), 'serve', ...inv.argv], serverEnv);
+    const { window, joined } = await ctx.tmux.startServer([...HOLD, ...jobDeps.self(), 'serve', ...inv.argv], serverEnv);
+    if (joined) inv.io.out('joining an existing air tmux session (from an earlier run)\n');
     inv.io.out('air serve runs in tmux: detach with C-b d and it keeps serving; `air serve` again comes back\n');
     return jobDeps.attach(await ctx.tmux.attachArgs(window, env));
   }

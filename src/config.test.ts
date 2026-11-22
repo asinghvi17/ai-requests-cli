@@ -77,21 +77,21 @@ args = ["--permission-mode", "acceptEdits"]
 });
 
 test('configTemplate parses to both agents, unattended, spelled out, with the subscriptions given', () => {
-  const both = [{ name: 'claude', harness: 'claude' }, { name: 'codex', harness: 'codex' }];
+  const both = [{ name: 'claude', harness: 'claude', windowUsd: 20 }, { name: 'codex', harness: 'codex', windowUsd: 12.5 }];
   const c = parseConfig(configTemplate('acme/requests', both), HOME);
   assert.equal(c.repo, 'acme/requests');
   assert.equal(c.workspace_root, '/home/u/air');
   assert.deepEqual(c.agents, DEFAULT_AGENTS);
   assert.deepEqual(c.subscriptions, {
-    claude: { harness: 'claude', window_usd: 1000, reserve: 0.3 },
-    codex: { harness: 'codex', window_usd: 1000, reserve: 0.3 },
+    claude: { harness: 'claude', window_usd: 20, reserve: 0.3 },
+    codex: { harness: 'codex', window_usd: 12.5, reserve: 0.3 },
   });
   assert.deepEqual(Object.keys(c.models).sort(), ['claude', 'codex']);
   assert.match(configTemplate('acme/requests', both), /args = \["--permission-mode", "auto"\]/);
   const none = parseConfig(configTemplate(undefined, []), HOME);
   assert.equal(none.repo, undefined);
   assert.deepEqual(none.subscriptions, {});
-  assert.deepEqual(Object.keys(parseConfig(configTemplate(undefined, [{ name: 'claude work', harness: 'claude' }]), HOME).subscriptions), ['claude work']);
+  assert.deepEqual(Object.keys(parseConfig(configTemplate(undefined, [{ name: 'claude work', harness: 'claude', windowUsd: 20 }]), HOME).subscriptions), ['claude work']);
 });
 
 test('validation errors', () => {

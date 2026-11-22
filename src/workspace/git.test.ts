@@ -38,6 +38,12 @@ test('resolves a branch, a tag, a pull request and a commit to a full SHA', asyn
   assert.deepEqual(await resolve({ ref: repo.dangling }), { sha: repo.dangling }, 'a full SHA no ref reaches is fetched by name');
 });
 
+test('resolves a commit with safe.bareRepository=explicit (the bare clone is used by --git-dir)', async () => {
+  const env = { ...process.env, GIT_CONFIG_PARAMETERS: "'safe.bareRepository=explicit'" };
+  assert.deepEqual(await resolve({ ref: repo.first.slice(0, 9) }, { env }), { sha: repo.first });
+  assert.deepEqual(await resolve({ ref: repo.dangling }, { env }), { sha: repo.dangling });
+});
+
 test('an entry that names nothing, or a non-branch where a branch is needed, does not resolve', async () => {
   assert.match((await resolve({ ref: 'nope' }) as { error: string }).error, /`nope` is not a branch, tag or commit of/);
   assert.match((await resolve({ ref: 'abcdef1' }) as { error: string }).error, /`abcdef1` is not a branch, tag or commit/);

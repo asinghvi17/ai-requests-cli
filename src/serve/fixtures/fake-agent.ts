@@ -5,6 +5,7 @@
 //   pr [PATH...]   commit a change in repo/PATH (default: every repo under repo/)
 //   nopr           commit nothing                   prbig N   commit as `pr`, and write an N-character report
 //   prhostile URL  commit, and plant a pre-push hook and a pushurl elsewhere in each repo's .git/config
+//   prbroken       commit, then break each repo's .git/HEAD so git can't read it
 //   artifact       write files to out/ (and PROGRESS.md)
 //   empty          write nothing to out/            notes     write only out/PROGRESS.md
 //   wait           wait for the file `go`, then report "resumed"
@@ -117,7 +118,7 @@ else if (mode === 'wait') {
 } else {
   if (mode === 'comment') report(arg);
   if (mode === 'big') report('x'.repeat(Number(arg)));
-  if (mode === 'pr' || mode === 'nopr' || mode === 'prhostile' || mode === 'prbig') {
+  if (mode === 'pr' || mode === 'nopr' || mode === 'prhostile' || mode === 'prbig' || mode === 'prbroken') {
     const paths = mode === 'pr' && arg ? arg.split(' ') : repos();
     for (const r of paths) {
       const repo = join(ws, 'repo', r);
@@ -133,6 +134,7 @@ else if (mode === 'wait') {
         git(repo, 'config', 'remote.origin.pushurl', arg);
         git(repo, 'config', 'core.fsmonitor', `touch ${join(ws, 'fsmonitor-ran')}`);
       }
+      if (mode === 'prbroken') writeFileSync(join(repo, '.git', 'HEAD'), 'garbage\n');
     }
     report(mode === 'prbig' ? `${'```\n'}${'y'.repeat(Number(arg))}` : 'Adds CHANGE.');
   }

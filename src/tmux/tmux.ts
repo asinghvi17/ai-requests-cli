@@ -501,9 +501,10 @@ export function createTmux(options: TmuxOptions) {
 
   /**
    * Run `argv` (`air serve` itself) in a new window named `serve`, creating the session when it is missing,
-   * with `env` as its whole environment on top of tmux's. Returns the window id.
+   * with `env` as its whole environment on top of tmux's. Returns the window id, and whether the session was
+   * already there (`joined`: say, left over from an earlier run).
    */
-  async function startServer(argv: string[], env: Record<string, string>): Promise<string> {
+  async function startServer(argv: string[], env: Record<string, string>): Promise<{ window: string; joined: boolean }> {
     const launcher = writeLauncher({ argv, env });
     const has = await run(['has-session', '-t', target]);
     if (has.code !== 0 && !noServer(has.stderr)) {
@@ -519,7 +520,7 @@ export function createTmux(options: TmuxOptions) {
       r = await run(args);
     }
     const id = r.stdout.trim();
-    if (r.code === 0 && /^@\d+$/.test(id)) return id;
+    if (r.code === 0 && /^@\d+$/.test(id)) return { window: id, joined: has.code === 0 };
     launcher.cleanup();
     throw new Error(`tmux ${args[0]}: ${r.stderr.trim() || `exit ${r.code}`}`);
   }

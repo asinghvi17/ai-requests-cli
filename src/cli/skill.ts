@@ -1,5 +1,6 @@
 // `air skill install [--repo OWNER/NAME] [--dir DIR] [--print]`: install the bundled Claude Code skill that
-// files AI requests, and on first run write the config that names the requests repo (asked for on a terminal).
+// files AI requests, and on first run write the config that names the requests repo (asked for on a terminal;
+// off one, --repo is needed).
 import { resolve } from 'node:path';
 import { defaultSkillDir, installSkill, InstallError, SKILL_NAME } from '../skill/install.ts';
 import { ensureConfig, firstRunDeps } from './firstrun.ts';
@@ -24,6 +25,8 @@ export async function skillCommand(inv: Invocation): Promise<number> {
     inv.io.out(`${dir}\n`);
     return 0;
   }
+  // The config first: off a terminal without --repo, that fails before anything is installed.
+  await ensureConfig(inv.io, repo, firstRunDeps.isTTY());
   try {
     installSkill(dir);
   } catch (e) {
@@ -31,6 +34,5 @@ export async function skillCommand(inv: Invocation): Promise<number> {
     throw e;
   }
   inv.io.out(`installed the ${SKILL_NAME} skill in ${dir}\n`);
-  await ensureConfig(inv.io, repo, firstRunDeps.isTTY());
   return 0;
 }

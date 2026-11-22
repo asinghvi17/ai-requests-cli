@@ -165,13 +165,14 @@ const tomlArray = (xs: string[]) => `[${xs.map((x) => JSON.stringify(x)).join(',
 
 /**
  * The config air writes on first run (`ensureConfig`): the requests repo, a subscription per login it found
- * (`subscriptions`, named as in subscriptions.json), and both harnesses' model tiers and unattended agent
- * commands. Every value is spelled out, so the file shows what air runs. See docs/config.md.
+ * (`subscriptions`, named as in subscriptions.json, each with its per-window budget), and both harnesses' model
+ * tiers and unattended agent commands. Every value is spelled out, so the file shows what air runs. See
+ * docs/config.md.
  */
-export function configTemplate(repo: string | undefined, subscriptions: { name: string; harness: string }[]): string {
+export function configTemplate(repo: string | undefined, subscriptions: { name: string; harness: string; windowUsd: number }[]): string {
   const agent = (h: keyof typeof DEFAULT_AGENTS) => `command = ${tomlArray(DEFAULT_AGENTS[h].command)}\nargs = ${tomlArray(DEFAULT_AGENTS[h].args)}`;
   const key = (name: string) => (/^[A-Za-z0-9_-]+$/.test(name) ? name : JSON.stringify(name));
-  const subs = subscriptions.map((s) => `[subscriptions.${key(s.name)}]\nharness = "${s.harness}"\nwindow_usd = 1000\nreserve = 0.3      # share of each window kept for yourself\n`);
+  const subs = subscriptions.map((s) => `[subscriptions.${key(s.name)}]\nharness = "${s.harness}"\nwindow_usd = ${s.windowUsd}\nreserve = 0.3      # share of each window kept for yourself\n`);
   return `# air's config, written by its first run; docs/config.md explains each key.
 ${repo ? `repo = "${repo}"` : '# repo = "OWNER/NAME"   # the requests repo (or pass --repo)'}
 workspace_root = "~/air"   # each job gets a fresh directory under it
@@ -179,8 +180,8 @@ max_jobs = 1               # jobs running at once
 tick_seconds = 60          # how often air serve polls; a job's time limit is its request's \`timeout\`
 
 # One table per login air serves, named as in subscriptions.json. Budgets are US dollars at API prices.
-# window_usd is what a login's whole weekly window is worth: a starting guess, to calibrate from your
-# first jobs' final comments (cost / share of the window used).
+# window_usd is the per-window budget: what air counts a login's whole weekly window as worth. Start low;
+# raise it once your first jobs' final comments show what the window is really worth (cost / share used).
 ${subs.length ? subs.join('\n') : '# (no subscription found when this was written)\n'}
 # Request tier -> model. A request never runs below its tier.
 [models.claude]

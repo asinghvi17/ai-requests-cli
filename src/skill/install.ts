@@ -3,6 +3,7 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
+import { TAG } from '../version.ts';
 import { SKILL_FILES } from './bundle.ts';
 
 export const SKILL_NAME = 'ai-request';
@@ -28,8 +29,13 @@ function replaceable(dir: string): boolean {
   return fm !== null && new RegExp(`^name:\\s*${SKILL_NAME}\\s*$`, 'm').test(fm[1]!);
 }
 
+/** The skill's files, with `{{AIR_TAG}}` (in links to this repo) made `tag`: the installing air's release. */
+export function skillFiles(tag = TAG): Record<string, string> {
+  return Object.fromEntries(Object.entries(SKILL_FILES).map(([name, text]) => [name, text.replaceAll('{{AIR_TAG}}', tag)]));
+}
+
 /** Writes `files` into the absolute path `dir`. The new copy is built next to it and swapped in by rename. */
-export function installSkill(dir: string, files: Readonly<Record<string, string>> = SKILL_FILES): void {
+export function installSkill(dir: string, files: Readonly<Record<string, string>> = skillFiles()): void {
   const old = exists(dir);
   if (old && !replaceable(dir)) throw new InstallError(`${dir} exists and is not an ${SKILL_NAME} skill; not replacing it`);
   mkdirSync(dirname(dir), { recursive: true });

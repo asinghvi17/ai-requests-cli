@@ -300,6 +300,26 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(await holder(w, 4), undefined, 'a failure releases the claim');
   });
 
+  test('pr: delivers with safe.bareRepository=explicit (as the Claude desktop app exports it)', async () => {
+    const w = world();
+    w.ctx.env = { ...w.ctx.env, GIT_CONFIG_PARAMETERS: "'safe.bareRepository=explicit'" };
+    w.store.setPermission('o/target', 'alice', 'write');
+    w.store.addIssue({ number: 90, title: 'Explicit', body: body('pr', PR, CONTEXT) });
+    await until(w, 'delivered', () => status(w, 90) === 'done');
+    assert.equal(execFileSync('git', ['--git-dir', bare.bare, 'log', '-1', '--format=%s', 'refs/heads/air/90'], { encoding: 'utf8' }).trim(), 'the change');
+    assert.match(comments(w, 90).at(-1)!, /^Opened a pull request:/);
+  });
+
+  test("pr: commits git can't read fail with git's error, not as no changes", async () => {
+    const w = world();
+    w.store.setPermission('o/target', 'alice', 'write');
+    w.store.addIssue({ number: 91, body: body('prbroken', PR, CONTEXT) });
+    await until(w, 'failed', () => status(w, 91) === 'failed');
+    const last = comments(w, 91).at(-1)!;
+    assert.match(last, /No pull request was opened:\n\n- `target`: air could not read the commits in `repo\/target` \(fatal: .+\)\./);
+    assert.doesNotMatch(last, /No changes were produced/);
+  });
+
   test('pr: the report is the PR body; an over-long one is cut to fit and uploaded whole', async () => {
     const w = world();
     w.store.setPermission('o/target', 'alice', 'write');
