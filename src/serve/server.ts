@@ -3,6 +3,7 @@
 // local quota and claims the best fit, sets it up and starts its agent. Everything slow (claim wait, setup,
 // delivery) is tracked per issue, so one bad issue or one failing gh call only costs a log line.
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { backOff, claim, claimable, deadlineTime, LABELS, release } from '../claim/claim.ts';
 import { markedComments } from '../claim/trust.ts';
@@ -525,7 +526,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       adopting = false;
       const mine = held();
       for (const ws of mine) {
-        if (inflight.has(ws.state.issue)) continue;
+        // (A delivery in flight when the list was read may have removed its workspace since.)
+        if (inflight.has(ws.state.issue) || !existsSync(ws.dir)) continue;
         try {
           await watch(ws, jobs, usage, first);
         } catch (e) {
