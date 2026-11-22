@@ -606,3 +606,16 @@ Claude Code:
   by `air skill install`), not `main`, which may have moved past the binary.
 - The first line of `## Task` stays in the body although it is also the issue title. Dropping it would leave
   a one-line `## Task` empty, which spec §4 forbids, and would lose the rest of a summary cut to fit the title.
+
+## 2026-11-22: module boundaries, enforced by a test before any code moves (refactor P0)
+
+The architecture review set a target layout of eight domains (`lib`, `gh`, `request`, `agents`, `setup`,
+`server`, `cli`, `e2e`) with one-way dependency rules (docs/architecture.md). P0 moves no production code: it
+adds `src/boundaries.test.ts`, which maps today's files to their target domains and checks every import under
+`src/`, and `scripts/move.ts`, which later phases use to move files and rewrite imports. Today's 198 violations
+are an explicit allowlist that may only shrink: a new violation fails, and so does a listed one that is gone.
+Why: refactoring in phases is safe only if each phase can see what it fixed and cannot add new tangles.
+Besides the domain rules, the test forbids import cycles between files and between directories, which the
+review named (the `claim` ⇄ `workspace` cycle; every `cli/<cmd>.ts` importing `Invocation` from `main.ts`).
+"Import only `<domain>/index.ts`" holds for every cross-domain import, so most of the allowlist (137) is
+imports that later phases route through an index.
