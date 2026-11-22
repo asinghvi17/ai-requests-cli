@@ -1,6 +1,6 @@
 // First run, for `air serve` and `air skill install`: what used to be set up by hand. `ensureGh` checks the
-// GitHub CLI's login, `ensureConfig` writes ~/.config/air/config.toml (asking only for the requests repo,
-// and finding the subscriptions itself), and `fixTrust` offers each Claude Code folder trust the preflight
+// GitHub CLI's login, `ensureConfig` writes ~/.config/air/config.toml (asking for the requests repo, finding
+// the subscriptions itself and asking each one's per-window budget), and `fixTrust` offers each Claude Code folder trust the preflight
 // found missing. Trust is never written without a yes.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -86,10 +86,25 @@ async function askRepo(): Promise<string> {
   throw new CommandError('no requests repo given: pass --repo OWNER/NAME');
 }
 
+/** The per-window budget (`window_usd`) first run writes when nobody is asked, or nothing is answered. */
+export const DEFAULT_WINDOW_USD = 20;
+
+async function askBudget(d: Detected): Promise<number> {
+  for (let i = 0; i < 3; i++) {
+    const answer = (await ask(`Per-window budget for ${d.name} (${d.harness}), in US dollars at API prices [${DEFAULT_WINDOW_USD}]: `)).replace(/^\$/, '');
+    if (answer === '') return DEFAULT_WINDOW_USD;
+    const usd = Number(answer);
+    if (Number.isFinite(usd) && usd > 0) return usd;
+  }
+  throw new CommandError('no per-window budget given: answer with a positive number of US dollars');
+}
+
 /**
  * Makes sure the config file exists and names the requests repo: `repo` (a --repo flag), else asked for when
- * `interactive`. A missing file is written with it and one subscription per login air finds; an existing
- * file without a repo gets it added at the top. A repo already in the file is never changed.
+ * `interactive`, else an error saying to pass --repo. A missing file is written with it and one subscription
+ * per login air finds, each with its per-window budget (asked for when `interactive`, else
+ * DEFAULT_WINDOW_USD); an existing file without a repo gets it added at the top. A repo already in the file
+ * is never changed.
  */
 export async function ensureConfig(io: Io, repo: string | undefined, interactive: boolean): Promise<void> {
   const path = firstRunDeps.configPath();
@@ -100,8 +115,8 @@ export async function ensureConfig(io: Io, repo: string | undefined, interactive
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
   if (text !== undefined && loadConfig(path).repo !== undefined) return;
-  repo ??= interactive ? await askRepo() : undefined;
-  if (repo === undefined) return;
+  if (repo === undefined && !interactive) throw new CommandError(`no requests repo in ${path}, and no terminal to ask on: pass --repo OWNER/NAME`);
+  repo ??= await askRepo();
   if (text !== undefined) {
     writeFileSync(path, `repo = "${repo}"\n${text}`);
     io.out(`set repo = "${repo}" in ${path}\n`);
@@ -110,8 +125,10 @@ export async function ensureConfig(io: Io, repo: string | undefined, interactive
   io.out('looking for Claude Code and Codex subscriptions...\n');
   const detected = await firstRunDeps.detect();
   for (const d of detected) io.out(`  ${d.name} (${d.harness}): ${d.found ? 'found a subscription' : `${d.why}; not serving it`}\n`);
+  const subs = [];
+  for (const d of detected.filter((x) => x.found)) subs.push({ ...d, windowUsd: interactive ? await askBudget(d) : DEFAULT_WINDOW_USD });
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, configTemplate(repo, detected.filter((d) => d.found)), { flag: 'wx' });
+  writeFileSync(path, configTemplate(repo, subs), { flag: 'wx' });
   io.out(`wrote ${path}\n`);
 }
 

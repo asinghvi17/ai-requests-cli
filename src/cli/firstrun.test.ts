@@ -82,18 +82,20 @@ beforeEach(() => {
   jobDeps.attach = (argv) => { attached.push(argv); return 0; };
   const tmux = {
     checkVersion: async () => '3.4',
-    startServer: async (argv: string[], env: Record<string, string>) => { started.push({ argv, env }); return '@7'; },
+    // A session already there (from an earlier run) after the first start.
+    startServer: async (argv: string[], env: Record<string, string>) => ({ window: '@7', joined: started.push({ argv, env }) > 1 }),
     attachArgs: async (w?: number | string) => ['tmux', '-L', 'air', 'attach-session', '-t', String(w ?? '=air')],
   };
   jobDeps.context = (config, repo) => ({ config, tmux, gh: { repo } }) as unknown as ServeContext;
 });
 
-test('first `air serve` on a terminal: asks for the repo, writes the config, then starts itself in tmux and attaches', async () => {
-  const asked = terminal(['nope', 'acme/requests']);
+test('first `air serve` on a terminal: asks for the repo and budgets, writes the config, then starts itself in tmux and attaches', async () => {
+  const asked = terminal(['nope', 'acme/requests', 'lots', '$35']);
   const r = await call('serve');
   assert.equal(r.code, 0, r.err);
-  assert.deepEqual(asked, ['Requests repo, where your team files AI requests (OWNER/NAME): ', 'Requests repo, where your team files AI requests (OWNER/NAME): ']);
-  assert.equal(readFileSync(path, 'utf8'), configTemplate('acme/requests', [{ name: 'claude', harness: 'claude' }]));
+  const budget = 'Per-window budget for claude (claude), in US dollars at API prices [20]: ';
+  assert.deepEqual(asked, ['Requests repo, where your team files AI requests (OWNER/NAME): ', 'Requests repo, where your team files AI requests (OWNER/NAME): ', budget, budget]);
+  assert.equal(readFileSync(path, 'utf8'), configTemplate('acme/requests', [{ name: 'claude', harness: 'claude', windowUsd: 35 }]));
   assert.equal(r.out, `looking for Claude Code and Codex subscriptions...\n  claude (claude): found a subscription\n  codex (codex): not installed; not serving it\nwrote ${path}\n`
     + 'air serve runs in tmux: detach with C-b d and it keeps serving; `air serve` again comes back\n');
   assert.match(r.err, /^claude: 2\.1\.311 \(Claude Code\): ready/);
@@ -105,10 +107,13 @@ test('first `air serve` on a terminal: asks for the repo, writes the config, the
   assert.deepEqual(env, { PATH: '/bin', HOME: '/home/u', GIT_AUTHOR_NAME: 'Me' });
   assert.deepEqual(attached, [['tmux', '-L', 'air', 'attach-session', '-t', '@7']]);
 
-  // Run again: the config is there, so nothing is asked; the flags go along to the server.
+  // Run again: the config is there, so nothing is asked; the flags go along to the server, and the air
+  // tmux session left from before is joined, saying so.
   const again = terminal([]);
-  assert.equal((await call('serve', '--manual')).code, 0);
+  const second = await call('serve', '--manual');
+  assert.equal(second.code, 0);
   assert.deepEqual(again, []);
+  assert.match(second.out, /^joining an existing air tmux session \(from an earlier run\)\nair serve runs in tmux/);
   assert.deepEqual(started[1]!.argv.slice(3), ['air', '/usr/local/bin/air', 'serve', '--manual']);
 });
 
@@ -224,25 +229,32 @@ test('serve asks before writing each missing folder trust, then checks again', a
   assert.match(failed.err, /air serve: \/home\/u\/\.claude\.json kept changing while air wrote it: close Claude Code, then run `air serve` again\n$/);
 });
 
-test('skill install writes the config on first run: --repo, or asked on a terminal', async () => {
+test('skill install writes the config on first run: --repo, or asked on a terminal; off one, --repo is needed', async () => {
   const dir = join(tmp(), 'skill');
   skillDeps.defaultDir = () => dir;
   firstRunDeps.isTTY = () => false;
-  assert.deepEqual(await call('skill', 'install'), { code: 0, out: `installed the ai-request skill in ${dir}\n`, err: '' });
+  assert.deepEqual(await call('skill', 'install'), {
+    code: 1, out: '', err: `air skill: no requests repo in ${path}, and no terminal to ask on: pass --repo OWNER/NAME\n`,
+  });
   assert.throws(() => readFileSync(path));
+  assert.throws(() => readFileSync(join(dir, 'SKILL.md')), 'nothing installed');
 
-  const asked = terminal(['acme/requests']);
+  const asked = terminal(['acme/requests', '']);
   const r = await call('skill', 'install');
   assert.equal(r.code, 0);
-  assert.equal(asked.length, 1);
+  assert.equal(asked.length, 2);
   assert.equal(loadConfig(path).repo, 'acme/requests');
-  assert.match(r.out, new RegExp(`wrote ${path}\n$`));
+  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, 20, 'an empty answer is the default budget');
+  assert.match(r.out, new RegExp(`wrote ${path}\ninstalled the ai-request skill in ${dir}\n$`));
 
   terminal([]);
   rmSync(path);
   firstRunDeps.isTTY = () => false;
   assert.equal((await call('skill', 'install', '--repo', 'acme/x')).code, 0);
   assert.equal(loadConfig(path).repo, 'acme/x');
+  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, 20, 'no terminal: the default budget');
+  // The config names a repo now: no flag needed.
+  assert.equal((await call('skill', 'install')).code, 0);
   assert.equal((await call('skill', 'install', '--repo', 'nope')).code, 2);
 });
 

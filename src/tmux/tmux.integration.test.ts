@@ -305,14 +305,16 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     await until('no server', async () => (await raw(['has-session', '-t', '=air'])).code !== 0);
     const out = join(dir, 'server-env');
     const script = 'printf "%s %s" "$1" "$AIR_TEST_SERVER" > "$0.tmp" && mv "$0.tmp" "$0"; exec sleep 60';
-    const first = await t.startServer(['/bin/sh', '-c', script, out, 'serve'], { AIR_TEST_SERVER: 'x;y' });
+    const { window: first, joined } = await t.startServer(['/bin/sh', '-c', script, out, 'serve'], { AIR_TEST_SERVER: 'x;y' });
     assert.match(first, /^@\d+$/);
+    assert.equal(joined, false);
     await until('server ran', () => existsSync(out));
     assert.equal(readFileSync(out, 'utf8'), 'serve x;y');
     // With the session there (jobs from before), it is one more window.
     const job = await t.startJob({ issue: 22, cwd: dir, argv: ['sleep', '60'] });
     rmSync(out);
-    const second = await t.startServer(['/bin/sh', '-c', script, out, 'again'], {});
+    const { window: second, joined: again } = await t.startServer(['/bin/sh', '-c', script, out, 'again'], {});
+    assert.equal(again, true);
     await until('second server ran', () => existsSync(out));
     const windows = (await raw(['list-windows', '-t', '=air', '-F', '#{window_id} #{window_name}'])).stdout.trim().split('\n');
     assert.deepEqual(windows.filter((w) => w.endsWith(' serve')).map((w) => w.split(' ')[0]), [first, second]);

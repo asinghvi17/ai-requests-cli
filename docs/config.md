@@ -2,6 +2,7 @@
 
 air's settings live in `~/.config/air/config.toml` (or `$XDG_CONFIG_HOME/air/config.toml`). The first
 `air serve` or `air skill install` writes it, with every value spelled out. Edit it by hand after that.
+Without a terminal to ask on, `air skill install` needs `--repo OWNER/NAME` to write it.
 
 ## Top level
 
@@ -15,9 +16,9 @@ air's settings live in `~/.config/air/config.toml` (or `$XDG_CONFIG_HOME/air/con
 One table per login air serves. A login with no table takes no work.
 
 - `harness`: `claude` or `codex`.
-- `window_usd`: what the login's whole weekly window is worth, in US dollars at API prices. The first run
-  writes 1000 as a guess; [serving.md](serving.md#budgets) shows how to calibrate it. Without it, the login
-  takes no work.
+- `window_usd`: the per-window budget: what air counts the login's whole weekly window as worth, in US
+  dollars at API prices. The first run asks for it (default 20; 20 without a terminal);
+  [serving.md](serving.md#budgets) shows how to calibrate it. Without it, the login takes no work.
 - `reserve` (first run writes 0.3): the share of each window kept for you.
 
 ## `[models.HARNESS]`
