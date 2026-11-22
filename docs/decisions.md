@@ -569,8 +569,10 @@ Claude Code:
   `air attach`. Now `air serve` alone does it. On a terminal outside air's own tmux it checks `gh auth status`
   (offering `gh auth login`), writes the config when there is none, prints the preflight and asks before each
   missing folder trust, then starts itself in window `serve` of the `tmux -L air` session and attaches. A
-  second `air serve` while one holds `serve.lock` attaches to it. Inside air's tmux, off a terminal, or with
-  `--once`, it serves in place, as before.
+  second `air serve` on a terminal while one holds `serve.lock` attaches to the session (from inside air's
+  own session it switches to window `serve`). Joining needs no requests repo or serve context, so a server
+  started with `--repo` can be joined. Off a terminal, or with `--once`, it serves in place, as before:
+  `--once` never attaches, and fails on the held lock.
 - `air config` and `air doctor` are gone: their only use was this setup. The preflight report still prints
   at every `air serve` start, and off a terminal it says to run `air serve` in one for the trust fix.
 - `air attach` now needs ISSUE. Getting onto the session is `air serve`'s job; `attach ISSUE` stays because

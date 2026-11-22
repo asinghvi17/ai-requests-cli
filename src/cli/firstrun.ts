@@ -41,7 +41,7 @@ const REPO = /^[\w.-]+\/[\w.-]+$/;
 /** The claude and codex logins (subscriptions.json, else the default two): installed, and usage readable. */
 async function detectSubscriptions(): Promise<Detected[]> {
   const logins = loadSubscriptions(subscriptionsFile()).filter((s) => s.harness !== 'manual');
-  const installed = logins.filter((s) => resolveBinary(s.bin ?? DEFAULT_AGENTS[s.harness].command[0]!, process.env, homedir()));
+  const installed = logins.filter((s) => resolveBinary(s.bin ?? DEFAULT_AGENTS[s.harness].command[0]!, process.env, firstRunDeps.home()));
   const readings = await readAll(installed, { refresh: true });
   return logins.map((s) => {
     const harness = s.harness;

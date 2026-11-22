@@ -136,6 +136,17 @@ export function socketPath(socket: string, env: NodeJS.ProcessEnv = process.env)
   return join(env.TMUX_TMPDIR || '/tmp', `tmux-${process.getuid?.() ?? 0}`, socket);
 }
 
+/**
+ * argv that puts the user's terminal on target `to` of the server on `socket`: switch-client when already
+ * inside a client of that server, otherwise attach (unsetting TMUX to allow nesting). Needs no requests repo.
+ */
+export function attachTo(socket: string, to: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const inside = env.TMUX?.split(',')[0];
+  if (inside && inside === socketPath(socket, env)) return ['tmux', '-L', socket, 'switch-client', '-t', to];
+  const attach = ['tmux', '-L', socket, 'attach-session', '-t', to];
+  return inside ? ['env', '-u', 'TMUX', ...attach] : attach;
+}
+
 export function windowName(issue: number): string {
   return `#${issue}`;
 }
@@ -526,10 +537,7 @@ export function createTmux(options: TmuxOptions) {
       if (!job) throw new Error(`tmux: no window for job #${window}`);
       to = job.windowId;
     }
-    const inside = env.TMUX?.split(',')[0];
-    if (inside && inside === socketPath(socket, env)) return ['tmux', '-L', socket, 'switch-client', '-t', to];
-    const attach = ['tmux', '-L', socket, 'attach-session', '-t', to];
-    return inside ? ['env', '-u', 'TMUX', ...attach] : attach;
+    return attachTo(socket, to, env);
   }
 
   /** Kill the whole tmux server on this socket (tests, `air serve --stop`). */

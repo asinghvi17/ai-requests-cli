@@ -18,7 +18,8 @@ On a terminal, `air serve` sets up whatever is missing, then serves:
    as answering "Yes, I trust this folder" would. It never writes trust without asking.
 5. **tmux.** Outside tmux, air starts itself in window `serve` of its own tmux session and attaches you to it.
 
-Later runs skip what is already done. If a server is already running, `air serve` attaches you to it.
+Later runs skip what is already done. If a server is already running, `air serve` attaches you to it. From
+a window of air's own session, it switches you to the `serve` window.
 
 Codex needs no trust step: air tells it to trust each job's directory when it starts it.
 
@@ -32,7 +33,8 @@ server. Each job gets a window named after its issue, like `#12`.
 Inside a tmux of your own, `air serve` runs in the current pane instead. Off a terminal (a service, CI), it
 just serves: it asks nothing, and changes no config or trust.
 
-`air serve --once` runs one poll, waits for the jobs it started, and exits. It stays in the current terminal.
+`air serve --once` runs one poll, waits for the jobs it started, and exits. It stays in the current terminal
+and never attaches; with a server already running it fails.
 
 ## How claiming works
 

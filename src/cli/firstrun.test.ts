@@ -2,7 +2,7 @@
 // `air skill install` writing the config.
 import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configTemplate, loadConfig, parseConfig } from '../config.ts';
@@ -112,21 +112,56 @@ test('first `air serve` on a terminal: asks for the repo, writes the config, the
   assert.deepEqual(started[1]!.argv.slice(3), ['air', '/usr/local/bin/air', 'serve', '--manual']);
 });
 
-test('`air serve` while a server runs joins it; three bad repos give up', async () => {
+test('`air serve` while a server runs joins it, needing no repo; in air\'s tmux it switches to the `serve` window', async () => {
   const state = tmp();
   jobDeps.stateDir = () => state;
-  writeFileSync(path, 'repo = "acme/requests"\n');
+  // The running server was started with --repo: the config names none, and joining needs none.
+  writeFileSync(path, 'max_jobs = 1\n');
   const unlock = acquireServeLock(state);
   try {
-    terminal([]);
+    const asked = terminal([]);
     const r = await call('serve');
     assert.deepEqual(r, { code: 0, out: 'air serve is already running; attaching (detach with C-b d)\n', err: '' });
-    assert.deepEqual(attached, [['tmux', '-L', 'air', 'attach-session', '-t', '=air']]);
+    assert.deepEqual(asked, []);
+    // From inside another tmux: nested attach.
+    jobDeps.env = () => ({ TMUX: '/tmp/tmux-1/default,1,0' });
+    assert.equal((await call('serve')).code, 0);
+    // From a window of air's own session (such as a job's): switch this client to the server's window.
+    jobDeps.env = () => ({ TMUX_TMPDIR: '/tt', TMUX: `/tt/tmux-${process.getuid?.() ?? 0}/air,1,0` });
+    const inAir = await call('serve');
+    assert.deepEqual(inAir, { code: 0, out: 'air serve is already running in this tmux session; switching to its `serve` window\n', err: '' });
+    assert.deepEqual(attached, [
+      ['tmux', '-L', 'air', 'attach-session', '-t', '=air'],
+      ['env', '-u', 'TMUX', 'tmux', '-L', 'air', 'attach-session', '-t', '=air'],
+      ['tmux', '-L', 'air', 'switch-client', '-t', '=air:=serve'],
+    ]);
     assert.equal(started.length, 0);
   } finally {
     unlock();
   }
-  rmSync(path);
+});
+
+test('`air serve --once` on a terminal never attaches: it serves in place and the serve lock refuses it', async () => {
+  const state = tmp();
+  jobDeps.stateDir = () => state;
+  const context = jobDeps.context;
+  jobDeps.context = (config, repo, echo) => ({ ...context(config, repo, echo), stateDir: state, log: () => {} }) as ServeContext;
+  writeFileSync(path, 'repo = "acme/requests"\n');
+  const unlock = acquireServeLock(state);
+  try {
+    terminal([]);
+    const r = await call('serve', '--once');
+    assert.equal(r.code, 1);
+    assert.equal(r.out, '');
+    assert.match(r.err, new RegExp(`\nair serve: air serve is already running \\(pid ${process.pid}; lock ${state}/serve\\.lock\\)\n$`));
+    assert.deepEqual(attached, []);
+    assert.equal(started.length, 0);
+  } finally {
+    unlock();
+  }
+});
+
+test('three bad repos give up', async () => {
   terminal(['a', 'b', 'c']);
   const bad = await call('serve');
   assert.deepEqual(bad, { code: 1, out: '', err: 'air serve: no requests repo given: pass --repo OWNER/NAME\n' });
@@ -209,4 +244,27 @@ test('skill install writes the config on first run: --repo, or asked on a termin
   assert.equal((await call('skill', 'install', '--repo', 'acme/x')).code, 0);
   assert.equal(loadConfig(path).repo, 'acme/x');
   assert.equal((await call('skill', 'install', '--repo', 'nope')).code, 2);
+});
+
+test('detecting subscriptions finds agents through firstRunDeps.home(), as `~/` PATH entries need', async () => {
+  const home = tmp();
+  mkdirSync(join(home, 'bin'));
+  // Installed, but its usage can't be read: found on PATH, so not "not installed".
+  writeFileSync(join(home, 'bin', 'claude'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const config = tmp();
+  writeFileSync(join(config, 'subscriptions.json'), JSON.stringify([{ name: 'claude', harness: 'claude' }, { name: 'codex', harness: 'codex' }]));
+  const env = { PATH: process.env.PATH, AIR_CONFIG_DIR: process.env.AIR_CONFIG_DIR, AIR_STATE_DIR: process.env.AIR_STATE_DIR };
+  Object.assign(process.env, { PATH: '~/bin', AIR_CONFIG_DIR: config, AIR_STATE_DIR: tmp() });
+  firstRunDeps.home = () => home;
+  try {
+    const [claude, codex] = await saved.first.detect();
+    assert.deepEqual({ ...claude, why: undefined }, { name: 'claude', harness: 'claude', found: false, why: undefined });
+    assert.match(claude!.why!, /^no subscription usage air can read/);
+    assert.deepEqual(codex, { name: 'codex', harness: 'codex', found: false, why: 'not installed' });
+  } finally {
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
 });

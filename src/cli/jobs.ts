@@ -12,7 +12,7 @@ import { acquireServeLock, readServerState, serving, updateServerState } from '.
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../usage/index.ts';
 import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, type AgentCheck } from '../serve/preflight.ts';
 import { clientEnv, jobEnv } from '../tmux/env.ts';
-import { socketPath } from '../tmux/tmux.ts';
+import { attachTo, socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
 import { ensureConfig, ensureGh, firstRunDeps, fixTrust } from './firstrun.ts';
 import type { Invocation } from './main.ts';
@@ -69,14 +69,20 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   if (raw !== undefined && (typeof raw !== 'string' || !/^\d+$/.test(raw))) throw new UsageError(`--once-wait must be a number of seconds, got ${JSON.stringify(raw)}`);
   const onceWaitMs = typeof raw === 'string' ? Number(raw) * 1000 : undefined;
   const env = jobDeps.env();
-  // On the volunteer's own terminal: join a running server, or set up what's missing and start one in tmux.
-  // In air's tmux (where that server runs) and off a terminal, just serve.
-  const interactive = firstRunDeps.isTTY() && env.TMUX?.split(',')[0] !== socketPath('air', env);
+  const once = inv.flags.once === true;
+  const inAir = env.TMUX?.split(',')[0] === socketPath('air', env);
+  // On a terminal, a running server is joined: its `serve` window from inside air's tmux, else the session.
+  // `--once` never joins: it serves in place, and the serve lock refuses it.
+  if (!once && firstRunDeps.isTTY() && serving(jobDeps.stateDir())) {
+    inv.io.out(inAir
+      ? 'air serve is already running in this tmux session; switching to its `serve` window\n'
+      : 'air serve is already running; attaching (detach with C-b d)\n');
+    return jobDeps.attach(attachTo('air', inAir ? '=air:=serve' : '=air', env));
+  }
+  // On the volunteer's own terminal: set up what's missing and start the server in tmux. In air's tmux
+  // (where that server runs) and off a terminal, just serve.
+  const interactive = firstRunDeps.isTTY() && !inAir;
   if (interactive) {
-    if (serving(jobDeps.stateDir())) {
-      inv.io.out('air serve is already running; attaching (detach with C-b d)\n');
-      return jobDeps.attach(await contextFor(inv).tmux.attachArgs(undefined, env));
-    }
     if (!(await ensureGh(inv.io, true))) return 1;
     await ensureConfig(inv.io, repoFlag(inv), true);
   }
@@ -89,7 +95,7 @@ export async function serveCommand(inv: Invocation): Promise<number> {
     checks = jobDeps.preflight(ctx.config);
     inv.io.err(`\n${formatPreflight(checks, true)}`);
   }
-  if (interactive && !env.TMUX && inv.flags.once !== true) {
+  if (interactive && !env.TMUX && !once) {
     const serverEnv = jobEnv({}, env);
     delete serverEnv.TERM; // the window's is tmux's
     const window = await ctx.tmux.startServer([...HOLD, ...jobDeps.self(), 'serve', ...inv.argv], serverEnv);
@@ -98,7 +104,12 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   }
   ctx.refused = refusals(checks);
   for (const [name, why] of Object.entries(ctx.refused)) ctx.log(`not serving ${name}: ${why} (the startup report gives the fix)`);
-  const unlock = acquireServeLock(ctx.stateDir);
+  let unlock: () => void;
+  try {
+    unlock = acquireServeLock(ctx.stateDir);
+  } catch (e) {
+    throw new CommandError((e as Error).message);
+  }
   const server = createServer(ctx, { manual: inv.flags.manual === true });
   if (ctx.logFile) {
     try {
