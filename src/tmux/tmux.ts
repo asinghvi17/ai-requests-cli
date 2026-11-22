@@ -65,8 +65,14 @@ export interface Job {
   launcher?: string;
 }
 
-/** A pane on air's tmux server (`panes()`); `issue` and `repo` only on a job's pane. */
-export interface ServerPane { windowId: string; windowName: string; paneId: string; issue?: number; repo?: string; launcher?: string }
+/**
+ * A pane on air's tmux server (`panes()`): `issue`, `repo` and `nonce` only on a job's pane; `own` on air's
+ * own `log` and `serve` windows (pane option `@air_own`).
+ */
+export interface ServerPane { windowId: string; windowName: string; paneId: string; issue?: number; repo?: string; nonce?: string; launcher?: string; own?: 'log' | 'serve' }
+
+/** The pane option that marks air's own windows: `log` (ensureSession) and `serve` (startServer). */
+const OWN = '@air_own';
 
 export interface StartJobInput {
   issue: number;
@@ -266,14 +272,17 @@ export function tmuxVersionProblem(v: string): string | undefined {
 
 /** Every pane on the tmux server `run` talks to, of any requests repo: its window, and its job tags if it is a job's. */
 export async function serverPanes(run: TmuxRunner): Promise<ServerPane[]> {
-  const r = await run(['list-panes', '-a', '-F', ['#{window_id}', '#{window_name}', '#{pane_id}', '#{@air_job}', '#{@air_repo}', '#{@air_launcher}'].join(SEP)]);
+  const r = await run(['list-panes', '-a', '-F', ['#{window_id}', '#{window_name}', '#{pane_id}', '#{@air_job}', '#{@air_repo}', '#{@air_launcher}', '#{@air_nonce}', `#{${OWN}}`].join(SEP)]);
   if (r.code !== 0) {
     if (noServer(r.stderr)) return [];
     throw new Error(`tmux list-panes: ${r.stderr.trim()}`);
   }
   return r.stdout.split('\n').filter((l) => l.includes(SEP)).map((l) => {
-    const [windowId = '', windowName = '', paneId = '', job = '', repo = '', launcher = ''] = l.split(SEP);
-    return { windowId, windowName, paneId, ...(/^\d+$/.test(job) ? { issue: Number(job), repo } : {}), ...(launcher ? { launcher } : {}) };
+    const [windowId = '', windowName = '', paneId = '', job = '', repo = '', launcher = '', nonce = '', own = ''] = l.split(SEP);
+    return {
+      windowId, windowName, paneId, ...(/^\d+$/.test(job) ? { issue: Number(job), repo, nonce } : {}), ...(launcher ? { launcher } : {}),
+      ...(own === 'log' || own === 'serve' ? { own } : {}),
+    };
   });
 }
 
@@ -312,8 +321,9 @@ export function createTmux(options: TmuxOptions) {
   }
 
   /**
-   * Create the `air` session if missing, with window 0 named `log` running `argv` (default: a shell).
-   * `env` adds variables to window 0 only. Returns true when the session was created.
+   * Create the `air` session if missing, with window 0 named `log` running `argv` (default: a shell), tagged
+   * `@air_own=log` (`closeIfIdle` closes only windows air tagged). `env` adds variables to window 0 only.
+   * Returns true when the session was created.
    */
   async function ensureSession(opts: { argv?: string[]; cwd?: string; env?: Record<string, string> } = {}): Promise<boolean> {
     const has = await run(['has-session', '-t', target]);
@@ -326,6 +336,8 @@ export function createTmux(options: TmuxOptions) {
       ? writeLauncher({ argv: opts.argv?.length ? opts.argv : [process.env.SHELL || '/bin/sh'], env: opts.env, cwd: opts.cwd })
       : undefined;
     if (launcher) args.push('--', ...launcher.argv);
+    // The new session's current pane is window 0's, tagged in the same command queue.
+    args.push(';', 'set-option', '-p', '-t', `${target}:`, OWN, 'log');
     let r = await run(args);
     // A server still shutting down took our connection: wait for it to go, then start a fresh one.
     for (let i = 0; i < 20 && r.code !== 0 && exiting(r.stderr); i++) {
@@ -536,7 +548,10 @@ export function createTmux(options: TmuxOptions) {
       r = await run(args);
     }
     const id = r.stdout.trim();
-    if (r.code === 0 && /^@\d+$/.test(id)) return { window: id, joined: has.code === 0 };
+    if (r.code === 0 && /^@\d+$/.test(id)) {
+      await run(['set-option', '-p', '-t', id, OWN, 'serve']); // (closeIfIdle never closes a serve window but its caller's)
+      return { window: id, joined: has.code === 0 };
+    }
     launcher.cleanup();
     throw new Error(`tmux ${args[0]}: ${r.stderr.trim() || `exit ${r.code}`}`);
   }
@@ -565,21 +580,18 @@ export function createTmux(options: TmuxOptions) {
   const panes = () => serverPanes(run);
 
   /**
-   * When no job window is left (of any requests repo), ends the server: `air serve` calls this as it stops,
-   * so the `log` window and the session go with it. `self` is the caller's own pane when it runs on this
-   * server (the `serve` window): then the other windows are closed, and with `exit-empty` the server ends as
-   * the caller's window closes when it exits. Returns false, leaving everything, while a job window is there.
+   * Lets air's session end once nothing of air's needs it: `air serve` calls this as it stops. Unless a job
+   * window is there (of any requests repo) or another `serve` window (another server, or one showing its last
+   * words), it closes air's `log` windows and sets `exit-empty`, so the session ends when its last window
+   * closes, the caller's own (`self`, its `serve` pane) as the caller exits. It closes only windows air
+   * tagged, never one of the user's, and never kills the server: a window of the user's keeps it. Returns
+   * whether it closed air's windows.
    */
   async function closeIfIdle(self?: string): Promise<boolean> {
     const all = await panes();
-    if (all.some((p) => p.issue !== undefined)) return false;
-    const mine = self ? all.find((p) => p.paneId === self)?.windowId : undefined;
-    if (!mine) {
-      if (all.length) await run(['kill-server']);
-      return true;
-    }
+    if (all.some((p) => p.issue !== undefined || (p.own === 'serve' && p.paneId !== self))) return false;
     await run(['set-option', '-s', 'exit-empty', 'on']);
-    for (const w of new Set(all.map((p) => p.windowId))) if (w !== mine) await run(['kill-window', '-t', w]);
+    for (const w of new Set(all.filter((p) => p.own === 'log' && p.paneId !== self).map((p) => p.windowId))) await run(['kill-window', '-t', w]);
     return true;
   }
 

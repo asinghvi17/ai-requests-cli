@@ -609,26 +609,35 @@ Claude Code:
 
 ## 2026-11-22: cleaning up after jobs
 
-- A delivered job's workspace is deleted by `finishJob` right after delivery. Workspaces of jobs that ended
-  any other way are kept 7 days (`KEEP_MS`) for debugging, counted from their last state change. They are
-  removed by a cleanup pass (`serve/tidy.ts`) that runs inside the daily sweep `air serve` already ran, before
-  the asset sweep. That is one mechanism with one clock, not a second timer. It also runs at serve start
-  when a day has passed since the last one.
-- Every workspace deletion goes through `removeWorkspace`. It only removes
-  `<workspace_root>/<owner>__<name>/<issue>-<nonce>`, refuses symlinked directories and real paths outside
-  root, and keeps the repo directory, since a claim in another process may be creating a workspace there.
-- The cleanup pass also removes stale `.air-deliver.lock` files and `serve.lock`. A lock is stale when its pid
-  is dead, judged as `pidLock` judges it, and taken away through `pidLock`, so a live holder's lock is never
-  removed. It removes the state dir's temp files whose writer pid is dead, and `air-launch-*` dirs older than
-  a day that no pane names and whose agent is gone. The usage cache and ledger `.lock` files are left to
-  `withLock`, which already breaks a stale one on the next read, every tick.
-- A window whose pane an ended workspace's job recorded is closed on the next tick, and a job still marked
-  `running` there is marked `cancelled`. Only that positive match counts. Closing every window without a held
-  workspace would also close one that `air run` is starting, or one belonging to another workspace_root on
-  the same socket.
-- When `air serve` stops with no job window on the socket, it ends the tmux server (`closeIfIdle`). From its
-  own `serve` window it closes the other windows and sets `exit-empty`, so the server ends when that window
-  closes as air exits. It does not kill the server under itself. With job windows left, nothing is touched:
-  those agents run on and are re-adopted.
-- `air status` without ISSUE lists this machine's jobs and leftovers. It is read-only: it judges the serve
-  lock without taking it.
+- A delivered job's workspace is deleted by `finishJob` right after delivery, while it still holds the
+  delivery lock and after closing the job's window. A process waiting on that lock then finds the workspace
+  gone. `pidLock` never creates a lock's directory, so it can't bring the workspace back, and readers take a
+  vanished workspace (ENOENT) as delivered elsewhere.
+- Workspaces of jobs that ended any other way are kept 7 days (`KEEP_MS`) for debugging. The 7 days count
+  from their last state change, or the state file's mtime when that is unreadable. They are removed by a
+  cleanup pass (`serve/tidy.ts`) inside the daily sweep `air serve` already ran, before the asset sweep: one
+  mechanism with one clock, not a second timer. The pass touches only its own requests repo, since another
+  server may serve another repo from the same workspace_root. It never removes a workspace whose job still
+  has a process: a live delivery lock, or a tmux pane, which is the case when tmux can't be asked.
+- Every workspace deletion goes through `removeWorkspace`. It resolves the path first (trailing slashes,
+  `..`), requires `<workspace_root>/<owner>__<name>/<issue>-<nonce>`, renames the workspace to a unique trash
+  name in the same directory, and checks that entry (a real directory, real path inside root) before the rm.
+  Swapping a directory for a symlink between check and rm therefore can't redirect the rm. A trash entry a
+  crash leaves is removed by the next pass.
+- Window closing is driven by air's tagged job panes, checked every tick. A pane goes when the workspace
+  that recorded it has ended, or when no workspace records it and none holds its issue. A pane of a held
+  issue that no workspace records yet is a start in progress (`air run` saves the nonce right after) and
+  stays.
+- Lock files hold `<pid> <host>`. `alive` (src/pid.ts, the only one) counts EPERM as alive. A pid is only
+  judged on the host that wrote it. A lock from another host is stale only past `FOREIGN_LOCK_MS` (15 min).
+  `air serve` refreshes its serve lock every minute for that reason, and deliveries are shorter. The 30 s
+  grace stays for locks being written. The usage locks follow the same host rule.
+- `closeIfIdle` never kills the tmux server and closes only windows air tagged (`@air_own`). Unless a job
+  window or another `serve` window is there, it closes air's `log` windows and sets `exit-empty`, so the
+  session ends with its last window. A window of the user's keeps it. `air serve` skips the call when
+  another server took the serve lock meanwhile.
+- Launcher dirs count as air's only when they are directories (not symlinks) owned by this user, since
+  tmpdir may be a shared /tmp.
+- `air status` without ISSUE lists every repo's workspaces and this machine's leftovers. It is read-only: it
+  judges the serve lock without taking it.
+- CI installs tmux on macOS, so the tmux, serve and trust end-to-end suites run there too.

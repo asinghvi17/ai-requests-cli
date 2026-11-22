@@ -953,6 +953,17 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.ok(w.logs.some((l) => /^#47: closed window @\d+: its job is over \(released\/running\)$/.test(l)), w.logs.join('\n'));
   });
 
+  test('a job window whose workspace is gone (removed by hand, say) is closed at the next tick', async () => {
+    const w = world();
+    w.store.addIssue({ number: 49, body: body('hang') });
+    await running(w, 49);
+    rmSync(job(w, 49)!.dir, { recursive: true });
+    await w.server.tick({ poll: false });
+    await w.server.idle();
+    assert.equal((await tmuxClient.listJobs()).some((j) => j.issue === 49), false, w.logs.join('\n'));
+    assert.ok(w.logs.some((l) => /^#49: closed window @\d+: no workspace on this machine holds its job$/.test(l)), w.logs.join('\n'));
+  });
+
   test('air serve --once: with no job window left when it stops, the air tmux session and server end', async () => {
     const w = world();
     jobDeps.loadConfig = () => w.ctx.config;
@@ -963,7 +974,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(await main(['serve', '--once', '--once-wait', '0'], { out: () => {}, err: () => {} }), 0);
     assert.equal(status(w, 48), 'done');
     assert.ok(w.logs.includes('stopped; no job windows were left, so the air tmux session ends'), w.logs.join('\n'));
-    assert.deepEqual(await tmuxClient.panes(), []);
+    await waitFor(async () => (await tmuxClient.panes()).length === 0); // the session ends with its last window
   });
 
   test('cancel: air:cancel stops the agent, comments and releases', async () => {

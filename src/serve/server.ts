@@ -18,7 +18,7 @@ import { allWorkspaces, ENDED, isEnded, readState, updateState, type JobRecord, 
 import { matchConfig, type ServeContext } from './context.ts';
 import {
   agentMs, cancelJob, jobSpent, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
-  PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, startAgent, startOrDeliver, stopAgent, type Workspace,
+  PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, startAgent, startOrDeliver, stopAgent, vanished, type Workspace,
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
@@ -377,19 +377,23 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   }
 
   /**
-   * A job that has ended never keeps its window, whoever ended it (`air release` in another shell, say): each
-   * window of the tick's `jobs` whose pane an ended workspace's job recorded is closed, and a job left
-   * `running` there is cancelled.
+   * No job keeps its window once air is through with it, whoever ended it (`air release` in another shell,
+   * say). Driven by the tagged panes (the tick's `jobs`): a pane is closed when the workspace that recorded it
+   * has ended, or when no workspace records it and none holds its issue (its workspace is gone). A pane no
+   * workspace records yet while its issue is held is a start in progress, and stays. A job left `running` in
+   * an ended workspace is cancelled.
    */
   async function closeEnded(jobs: Awaited<ReturnType<ServeContext['tmux']['listJobs']>>): Promise<void> {
     if (!jobs.length) return;
-    const ended = allWorkspaces(ctx.root, repo).filter((w) => isEnded(w.state) && w.state.job?.paneNonce !== undefined && !inflight.has(w.state.issue));
+    const all = allWorkspaces(ctx.root, repo);
     for (const pane of jobs) {
-      const w = ended.find((x) => x.state.issue === pane.issue && x.state.job!.paneNonce === pane.nonce);
-      if (!w || !(await ctx.tmux.stopJob(pane.issue, { graceMs: ctx.stopGraceMs }))) continue;
-      const job = w.state.job!;
-      ctx.log(`#${pane.issue}: closed window ${pane.windowId}: its job is over (${w.state.phase}/${job.status})`);
-      if (!ENDED.includes(job.status)) saveJob(ctx, w.dir, { status: 'cancelled', runMs: agentMs(job, ctx.now()), startedAt: undefined });
+      if (inflight.has(pane.issue)) continue;
+      const w = all.find((x) => x.state.issue === pane.issue && x.state.job?.paneNonce === pane.nonce);
+      if (w ? !isEnded(w.state) : all.some((x) => x.state.issue === pane.issue && !isEnded(x.state))) continue;
+      if (!(await ctx.tmux.stopJob(pane.issue, { graceMs: ctx.stopGraceMs }))) continue;
+      const job = w?.state.job;
+      ctx.log(`#${pane.issue}: closed window ${pane.windowId}: ${w ? `its job is over (${w.state.phase}/${job!.status})` : 'no workspace on this machine holds its job'}`);
+      if (w && !ENDED.includes(job!.status)) saveJob(ctx, w.dir, { status: 'cancelled', runMs: agentMs(job!, ctx.now()), startedAt: undefined });
     }
   }
 
@@ -531,7 +535,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         try {
           await watch(ws, jobs, usage, first);
         } catch (e) {
-          ctx.log(`#${ws.state.issue}: ${err(e)}`);
+          if (!vanished(e, ws.dir)) ctx.log(`#${ws.state.issue}: ${err(e)}`); // (gone: another process delivered it)
         }
       }
       try {
@@ -582,7 +586,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       } catch (e) {
         ctx.log(`cleanup: tmux: ${err(e)}; launcher dirs are left for the next pass`);
       }
-      const l = tidy({ root: ctx.root, stateDir: ctx.stateDir, now, panes, log: (line) => ctx.log(`cleanup: ${line}`) });
+      const l = tidy({ root: ctx.root, repo, stateDir: ctx.stateDir, now, panes, log: (line) => ctx.log(`cleanup: ${line}`) });
       ctx.log(`cleanup: removed ${l.removed}${l.failed ? `, failed ${l.failed}` : ''}, kept ${l.kept} ended workspace(s) for debugging`);
     };
     const p = cleanup()

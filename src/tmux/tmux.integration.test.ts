@@ -343,22 +343,33 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.deepEqual(await t.listJobs(), []);
   });
 
-  test('closeIfIdle: a job window keeps the server; without one it ends (run from a window of its own: as that closes)', async () => {
-    await t.ensureSession();
+  test("closeIfIdle closes only air's own windows and never kills the server: a job, another serve or a user's window keeps the session", async () => {
+    await raw(['kill-server']); // a fresh server
+    t = createTmux({ repo: 'o/requests', socket });
+    await t.ensureSession({ argv: ['sleep', '60'] });
+    assert.deepEqual((await t.panes()).map((p) => [p.windowName, p.own]), [['log', 'log']]);
     await t.startJob({ issue: 120, cwd: dir, argv: ['sleep', '60'] });
-    assert.equal(await t.closeIfIdle(), false);
-    assert.ok((await t.panes()).some((p) => p.issue === 120 && p.repo === 'o/requests'));
+    assert.equal(await t.closeIfIdle(), false, 'a job window');
+    assert.ok((await t.panes()).some((p) => p.issue === 120 && p.repo === 'o/requests' && p.nonce));
     await t.stopJob(120, { graceMs: 0 });
-    // `air serve` in its `serve` window: the other windows go now, its own as it exits, and the server with it.
+    const other = await t.startServer(['sleep', '60'], {});
+    assert.equal(await t.closeIfIdle(), false, "another air serve's window");
+    await raw(['kill-window', '-t', other.window]);
+    // A window of the user's on air's socket is never closed, and keeps the session (and server) up.
+    await raw(['new-window', '-d', '-t', '=air:', '-n', 'mine', 'sleep', '60']);
+    // `air serve` in its own `serve` window: air's log window goes now, its own as it exits.
     const { window } = await t.startServer(['sleep', '60'], {});
     const self = (await t.panes()).find((p) => p.windowId === window)!.paneId;
     assert.equal(await t.closeIfIdle(self), true);
-    assert.deepEqual((await t.panes()).map((p) => p.windowId), [window]);
+    assert.deepEqual((await t.panes()).map((p) => p.windowName).sort(), ['mine', 'serve']);
     await raw(['kill-pane', '-t', self]);
-    await until('the server ends', async () => (await t.panes()).length === 0);
-    // From outside the server (`air serve --once` off a terminal): the session and its log window go at once.
+    await until('the serve window closes', async () => (await t.panes()).length === 1);
+    assert.deepEqual((await t.panes()).map((p) => p.windowName), ['mine']);
+    await raw(['kill-window', '-t', '=air:=mine']);
+    await until('the server ends on its own once the session is empty', async () => (await t.panes()).length === 0);
+    // From outside the server (`air serve --once` off a terminal): the log window goes, and the session with it.
     await t.ensureSession({ argv: ['sleep', '60'] });
     assert.equal(await t.closeIfIdle(), true);
-    assert.deepEqual(await t.panes(), []);
+    await until('the server ends', async () => (await t.panes()).length === 0);
   });
 });

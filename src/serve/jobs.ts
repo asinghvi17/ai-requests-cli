@@ -193,17 +193,23 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
 /**
  * Starts the agent, unless it already finished (AIR_DONE is there, say because its window closed as it
  * exited): then closes any window left and delivers instead (`finishJob`'s outcome). Checks the claim before either.
+ * A workspace another process delivered and removed meanwhile is `delivered-elsewhere`.
  */
 export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | Awaited<ReturnType<typeof finishJob>>> {
-  if (!isDone(dir)) {
-    await startAgent(ctx, dir);
-    return 'started';
+  try {
+    if (!isDone(dir)) {
+      await startAgent(ctx, dir);
+      return 'started';
+    }
+    await ensureHeld(ctx, dir);
+    const n = readState(dir).issue;
+    if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
+    ctx.log(`#${n}: AIR_DONE is already there; delivering instead of starting the agent`);
+    return await finishJob(ctx, dir);
+  } catch (e) {
+    if (vanished(e, dir)) return 'delivered-elsewhere';
+    throw e;
   }
-  await ensureHeld(ctx, dir);
-  const n = readState(dir).issue;
-  if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
-  ctx.log(`#${n}: AIR_DONE is already there; delivering instead of starting the agent`);
-  return finishJob(ctx, dir);
 }
 
 /** Interrupts the agent, waits the grace period, closes its window; labels `air:paused`. Claim and workspace stay. */
@@ -348,42 +354,65 @@ export const MAX_DELIVERY_ATTEMPTS = 5;
 export const DELIVERY_LOCK = '.air-deliver.lock';
 
 /**
- * Runs `step` (a delivery or a checkpoint) holding the workspace's delivery lock, so `air serve` and
- * `air start/run` never both push, upload or comment for one job. Whoever finds the lock held backs off and
- * resolves false: the holder is delivering, and the next tick sees its outcome. A job that has
- * ended already (the last holder delivered it) is left as it is.
+ * Whether `e` is a read of workspace `dir` that failed because the workspace is gone: another air process
+ * delivered its job and removed it (`finishJob`). Readers treat that as finished, not as a failure.
  */
-async function withDeliveryLock(ctx: ServeContext, dir: string, what: string, step: () => Promise<void>): Promise<boolean> {
-  const lock = pidLock(join(dir, DELIVERY_LOCK));
+export function vanished(e: unknown, dir: string): boolean {
+  return (e as NodeJS.ErrnoException | undefined)?.code === 'ENOENT' && !existsSync(dir);
+}
+
+/**
+ * Runs `step` (a delivery or a checkpoint) holding the workspace's delivery lock, so `air serve` and
+ * `air start/run` never both push, upload or comment for one job. Whoever finds the lock held backs off
+ * (`held`): the holder is delivering, and the next tick sees its outcome. `gone`: the workspace was removed
+ * (its job delivered by another process) before the lock could be taken.
+ */
+async function withDeliveryLock(ctx: ServeContext, dir: string, what: string, step: () => Promise<void>): Promise<'ran' | 'held' | 'gone'> {
+  let lock;
+  try {
+    lock = pidLock(join(dir, DELIVERY_LOCK));
+  } catch (e) {
+    if (vanished(e, dir)) return 'gone';
+    throw e;
+  }
   if ('held' in lock) {
     ctx.log(`#${readState(dir).issue}: ${what} is already in progress (${lock.held}); leaving it to that process`);
-    return false;
+    return 'held';
   }
   try {
-    const job = readState(dir).job;
-    if (!job || !ENDED.includes(job.status)) await step();
-    return true;
+    await step();
+    return 'ran';
   } finally {
     lock.release();
   }
 }
 
 /**
- * Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. Once delivered,
- * its workspace is deleted (`removeWorkspace`) and it resolves `delivered`. `delivering-elsewhere`: another
- * process is delivering it (`withDeliveryLock`), and nothing was done. `undelivered`: it failed, a retry is
- * due next tick, or the claim was lost.
+ * Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. Once it is
+ * delivered (now, or by an earlier attempt whose cleanup didn't finish), still holding the delivery lock, it
+ * closes any window of the job and deletes the workspace (`removeWorkspace`), and resolves `delivered`.
+ * `delivering-elsewhere`: another process holds the lock, and nothing was done. `delivered-elsewhere`: the
+ * workspace is gone, delivered by another process. `undelivered`: it failed, a retry is due next tick, or the
+ * claim was lost.
  */
-export async function finishJob(ctx: ServeContext, dir: string): Promise<'delivered' | 'undelivered' | 'delivering-elsewhere'> {
-  if (!(await withDeliveryLock(ctx, dir, 'delivery', () => deliverJob(ctx, dir)))) return 'delivering-elsewhere';
-  const state = readState(dir);
-  if (state.phase !== 'done') return 'undelivered';
-  try {
-    removeWorkspace(ctx.root, dir);
-  } catch (e) {
-    ctx.log(`#${state.issue}: delivered, but its workspace could not be removed (the daily cleanup tries again): ${(e as Error).message}`);
-  }
-  return 'delivered';
+export async function finishJob(ctx: ServeContext, dir: string): Promise<'delivered' | 'undelivered' | 'delivering-elsewhere' | 'delivered-elsewhere'> {
+  let delivered = false;
+  const r = await withDeliveryLock(ctx, dir, 'delivery', async () => {
+    const job = readState(dir).job;
+    if (!job || !ENDED.includes(job.status)) await deliverJob(ctx, dir);
+    const state = readState(dir);
+    if (state.phase !== 'done') return;
+    delivered = true;
+    try {
+      if ((await ctx.tmux.listJobs()).some((j) => j.issue === state.issue)) await ctx.tmux.stopJob(state.issue, { graceMs: ctx.stopGraceMs });
+      removeWorkspace(ctx.root, dir);
+    } catch (e) {
+      ctx.log(`#${state.issue}: delivered, but its workspace could not be removed (the daily cleanup tries again): ${(e as Error).message}`);
+    }
+  });
+  if (r === 'held') return 'delivering-elsewhere';
+  if (r === 'gone') return 'delivered-elsewhere';
+  return delivered ? 'delivered' : 'undelivered';
 }
 
 async function deliverJob(ctx: ServeContext, dir: string): Promise<void> {
@@ -426,7 +455,10 @@ async function deliverJob(ctx: ServeContext, dir: string): Promise<void> {
  * after MAX_DELIVERY_ATTEMPTS the request fails. Holds the delivery lock like `finishJob`.
  */
 export async function partialJob(ctx: ServeContext, dir: string, reason?: { why: string; timeout?: boolean }): Promise<void> {
-  await withDeliveryLock(ctx, dir, 'checkpoint', () => checkpointJob(ctx, dir, reason));
+  await withDeliveryLock(ctx, dir, 'checkpoint', async () => {
+    const job = readState(dir).job;
+    if (!job || !ENDED.includes(job.status)) await checkpointJob(ctx, dir, reason);
+  });
 }
 
 async function checkpointJob(ctx: ServeContext, dir: string, reason?: { why: string; timeout?: boolean }): Promise<void> {

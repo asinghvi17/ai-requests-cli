@@ -122,7 +122,7 @@ test('`air serve` while a server runs joins it, needing no repo; in air\'s tmux 
   jobDeps.stateDir = () => state;
   // The running server was started with --repo: the config names none, and joining needs none.
   writeFileSync(path, 'max_jobs = 1\n');
-  const unlock = acquireServeLock(state);
+  const lock = acquireServeLock(state);
   try {
     const asked = terminal([]);
     const r = await call('serve');
@@ -142,7 +142,7 @@ test('`air serve` while a server runs joins it, needing no repo; in air\'s tmux 
     ]);
     assert.equal(started.length, 0);
   } finally {
-    unlock();
+    lock.release();
   }
 });
 
@@ -152,7 +152,7 @@ test('`air serve --once` on a terminal never attaches: it serves in place and th
   const context = jobDeps.context;
   jobDeps.context = (config, repo, echo) => ({ ...context(config, repo, echo), stateDir: state, log: () => {} }) as ServeContext;
   writeFileSync(path, 'repo = "acme/requests"\n');
-  const unlock = acquireServeLock(state);
+  const lock = acquireServeLock(state);
   try {
     terminal([]);
     const r = await call('serve', '--once');
@@ -162,7 +162,7 @@ test('`air serve --once` on a terminal never attaches: it serves in place and th
     assert.deepEqual(attached, []);
     assert.equal(started.length, 0);
   } finally {
-    unlock();
+    lock.release();
   }
 });
 

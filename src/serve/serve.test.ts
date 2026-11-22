@@ -1,6 +1,6 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseMarkers, parseResult } from '../spec/markers.ts';
@@ -10,7 +10,8 @@ import { agentArgv, codexTrust, findCodexSession, restartInstruction } from './a
 import { COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
 import { costLine, exitDetail } from './jobs.ts';
 import { committedUsage, exhausted } from './server.ts';
-import { acquireServeLock, LOCK_GRACE_MS, readServerState, updateServerState } from './state.ts';
+import { acquireServeLock, FOREIGN_LOCK_MS, LOCK_GRACE_MS, readServerState, staleLock, updateServerState } from './state.ts';
+import { thisHost } from '../pid.ts';
 import { zipDir } from './zipout.ts';
 
 const dirs: string[] = [];
@@ -150,12 +151,33 @@ test('server state: pause flag round-trips; a missing or bad file is not paused'
 
 test('serve lock: one server per state dir; a dead holder is taken over', () => {
   const d = tmp();
-  const unlock = acquireServeLock(d);
-  assert.throws(() => acquireServeLock(d), /already running \(pid \d+/);
-  unlock();
-  writeFileSync(join(d, 'serve.lock'), '999999999\n');
-  acquireServeLock(d)();
+  const lock = acquireServeLock(d);
+  assert.equal(readFileSync(join(d, 'serve.lock'), 'utf8'), `${process.pid} ${thisHost()}\n`, 'pid and host');
+  assert.throws(() => acquireServeLock(d), /already running \(pid \d+;/);
+  lock.release();
+  writeFileSync(join(d, 'serve.lock'), `999999999 ${thisHost()}\n`);
+  acquireServeLock(d).release();
   assert.deepEqual(readdirSync(d), [], 'no temp files left behind');
+});
+
+test('serve lock: a lock from another host is never judged by its pid, only by its age; its holder keeps it fresh', () => {
+  const d = tmp();
+  const file = join(d, 'serve.lock');
+  writeFileSync(file, '999999999 elsewhere.example\n'); // a dead pid here, but not written on this host
+  assert.throws(() => acquireServeLock(d), /already running \(pid 999999999 on elsewhere\.example;/);
+  assert.equal(staleLock(file), false);
+  const later = () => Date.now() + FOREIGN_LOCK_MS + 1000;
+  assert.equal(staleLock(file, later), true);
+  acquireServeLock(d, later).release();
+  // A live process of another user (pid 1, EPERM) is alive.
+  writeFileSync(file, `1 ${thisHost()}\n`);
+  assert.equal(staleLock(file), false);
+  rmSync(file);
+  const lock = acquireServeLock(d);
+  utimesSync(file, new Date(0), new Date(0));
+  lock.refresh();
+  assert.ok(Date.now() - statSync(file).mtimeMs < 60_000, 'refreshed');
+  lock.release();
 });
 
 test('regression: an empty or half-written lock is held, not stale, until the grace period passes', () => {
@@ -167,7 +189,7 @@ test('regression: an empty or half-written lock is held, not stale, until the gr
     assert.equal(readFileSync(join(d, 'serve.lock'), 'utf8'), content, 'left in place');
   }
   const later = () => Date.now() + LOCK_GRACE_MS + 1000;
-  acquireServeLock(d, later)();
+  acquireServeLock(d, later).release();
   assert.deepEqual(readdirSync(d), []);
 });
 

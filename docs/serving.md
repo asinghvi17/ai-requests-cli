@@ -94,17 +94,23 @@ air serve --manual   # claim and set up, but wait for `air run ISSUE` to start e
 
 air removes what a job leaves behind:
 
-- A job's tmux window closes when the job ends, however it ends. A job ended outside the server (say
-  `air release` in another shell) has its window closed on the server's next tick.
-- A delivered job's workspace is deleted right after delivery. The workspace of a job that failed, was
-  cancelled, was released or lost its claim is kept 7 days for debugging, then deleted.
+- A job's tmux window closes when the job ends, however it ends. The server checks every job window on each
+  tick, and closes one whose job is over or whose workspace is gone. A job ended outside the server (say
+  `air release` in another shell) has its window closed this way on the next tick.
+- A delivered job's window is closed and its workspace deleted right after delivery. The workspace of a job
+  that failed, was cancelled, was released or lost its claim is kept 7 days for debugging, then deleted.
 - `air serve` runs a cleanup pass when it starts and then once a day, before its daily `air sweep`. It deletes
-  the workspaces past their 7 days, lock files whose process is dead, temp files of air processes that died,
-  and launcher dirs (`air-launch-*` in the temp dir) that no tmux window uses.
-- When `air serve` stops with no job window left, the air tmux session and its server end too. Jobs still
-  running in tmux (stopped with `C-c` while they ran) keep the session, and the next `air serve` re-adopts them.
+  its own requests repo's workspaces past their 7 days, lock files whose process is dead, temp files of air
+  processes that died, and launcher dirs (`air-launch-*` in the temp dir) that no tmux window uses. It never
+  deletes a workspace while its job still has a process: a delivery in progress, or a tmux window.
+- When `air serve` stops with no job window left, it closes air's `log` window, and the air tmux session ends
+  with its last window (its own `serve` window, as it exits). air only ever closes windows it created: a
+  window of your own on air's socket keeps the session. So do jobs still running in tmux (stopped with `C-c`
+  while they ran), which the next `air serve` re-adopts.
 
 air only deletes inside `workspace_root`, its state dir and its own launcher dirs, never through a symlink.
+Lock files record the host with the pid, so a state dir shared between machines is safe: a lock another host
+wrote is never judged by its pid.
 
 `air status` without an issue shows what is on this machine: the jobs it holds, its tmux windows, the
 workspaces kept for debugging (and when each goes), and anything left behind. It ends with

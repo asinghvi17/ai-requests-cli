@@ -195,7 +195,8 @@ describe('tmux (fake runner)', () => {
     assert.equal(await createTmux({ repo: REPO, kill: noKill, run: f.run }).ensureSession({ argv: ['air', 'serve'] }), true);
     const ns = f.calls[1]!;
     assert.deepEqual(ns.slice(0, 8), ['new-session', '-d', '-s', 'air', '-n', 'log', '--', '/bin/sh']);
-    assert.equal(ns.length, 9); // `air serve` runs through a launcher, not on the tmux command line
+    // `air serve` runs through a launcher, not on the tmux command line; window 0 is tagged air's own `log`.
+    assert.deepEqual(ns.slice(9), [';', 'set-option', '-p', '-t', '=air:', '@air_own', 'log']);
     const script = readFileSync(ns[8]!, 'utf8');
     rmSync(join(ns[8]!, '..'), { recursive: true });
     assert.match(script, /exec 'env' 'air' 'serve'/);

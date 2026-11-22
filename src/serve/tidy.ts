@@ -1,17 +1,20 @@
 // What air leaves on this machine after its jobs end, and its removal. A delivered job's workspace goes at
 // once (`finishJob`). One that failed, was cancelled, released or lost stays KEEP_MS for debugging; the
 // cleanup pass of `air serve`'s daily sweep (`tidy`) removes it then, along with stale lock files whose pid
-// is dead, temp files of air processes that died, and launcher dirs no tmux pane uses. `air status` without
-// an issue lists the same things (`leftovers`). Nothing is removed outside workspace_root, air's state dir
-// and its own `air-launch-*` dirs under tmpdir, and nothing through a symlink.
-import { lstatSync, readdirSync, rmSync } from 'node:fs';
+// is dead, temp files of air processes that died, and launcher dirs no tmux pane uses. The pass touches only
+// its own requests repo's workspaces: another server may serve another repo from the same workspace_root.
+// `air status` without an issue lists the same things for every repo (`leftovers`). Nothing is removed
+// outside workspace_root, air's state dir and its own `air-launch-*` dirs under tmpdir, and nothing through
+// a symlink. A workspace whose job still has a process (a live delivery lock, or a tmux pane) is never removed.
+import { lstatSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { alive } from '../pid.ts';
 import { removeLauncher, staleLaunchers } from '../tmux/launcher.ts';
 import type { ServerPane } from '../tmux/tmux.ts';
-import { everyWorkspace, isEnded, type State } from '../workspace/state.ts';
-import { removeWorkspace } from '../workspace/teardown.ts';
+import { allWorkspaces, everyWorkspace, isEnded, STATE_FILE, type State } from '../workspace/state.ts';
+import { removeTrash, removeWorkspace } from '../workspace/teardown.ts';
 import { DELIVERY_LOCK } from './jobs.ts';
-import { alive, clearStaleLock, LOCK_FILE, staleLock } from './state.ts';
+import { clearStaleLock, LOCK_FILE, LOCK_GRACE_MS, liveLock, staleLock } from './state.ts';
 
 type Workspace = { dir: string; state: State };
 
@@ -25,6 +28,11 @@ export interface Leftovers {
   kept: { ws: Workspace; until: Date }[];
   /** Ended workspaces the next pass removes: delivered ones at once, the others KEEP_MS after they ended. */
   due: Workspace[];
+  /**
+   * Ended workspaces left alone while their job still has a process: a live delivery lock (another process
+   * finishing it), or a tmux pane of the job (closed by the server's next tick). Unknown panes count as one.
+   */
+  busy: Workspace[];
   /** Stale lock files (`staleLock`): the serve lock and workspaces' delivery locks. */
   locks: string[];
   /** Temp files in the state dir of air processes that died. */
@@ -36,10 +44,12 @@ export interface Leftovers {
 /**
  * The state dir's temp files, by what writes them: `.serve.json.<pid>.tmp` (updateServerState), a pidLock's
  * `.serve.lock.<pid>.<hex>` and its `.stale` (pidLock) and `<file>.<pid>.<hex>.tmp` (usage/lock.ts writeAtomic).
+ * Each lives for milliseconds: one older than LOCK_GRACE_MS whose pid is not alive here is left over. (The age
+ * also covers a state dir shared with another host, whose pids can't be judged here.)
  */
 const TEMP = /^(?:\.serve\.json\.(\d+)\.tmp|\.serve\.lock\.(\d+)\.[0-9a-f]{12}(?:\.stale)?|[\w.-]+\.(\d+)\.[0-9a-f]{12}\.tmp)$/;
 
-function staleTemp(stateDir: string): string[] {
+function staleTemp(stateDir: string, now: number): string[] {
   let names: string[];
   try {
     names = readdirSync(stateDir);
@@ -48,24 +58,49 @@ function staleTemp(stateDir: string): string[] {
   }
   return names.filter((n) => {
     const m = TEMP.exec(n);
-    const pid = Number(m?.[1] ?? m?.[2] ?? m?.[3]);
-    return m !== null && pid !== process.pid && !alive(pid);
+    if (!m) return false;
+    const pid = Number(m[1] ?? m[2] ?? m[3]);
+    try {
+      return pid !== process.pid && !alive(pid) && now - lstatSync(join(stateDir, n)).mtimeMs > LOCK_GRACE_MS;
+    } catch {
+      return false;
+    }
   }).map((n) => join(stateDir, n));
 }
 
-/** What air has left on this machine (see the top of this file). `panes`: every pane on air's tmux server, if known. */
-export function leftovers(o: { root: string; stateDir: string; now: Date; panes?: ServerPane[] }): Leftovers {
-  const l: Leftovers = { held: [], kept: [], due: [], locks: [], temp: staleTemp(o.stateDir), launchers: [] };
+/** When a workspace ended: its state's last write, or (an unreadable `updatedAt`) its state file's mtime, or now. */
+function endedAt(ws: Workspace, now: Date): number {
+  const t = Date.parse(ws.state.updatedAt);
+  if (Number.isFinite(t)) return t;
+  try {
+    return statSync(join(ws.dir, STATE_FILE)).mtimeMs;
+  } catch {
+    return now.getTime();
+  }
+}
+
+/**
+ * What air has left on this machine (see the top of this file): `repo`'s workspaces, or with no `repo`
+ * every repo's. `panes`: every pane on air's tmux server, if known. Never throws for a bad workspace.
+ */
+export function leftovers(o: { root: string; repo?: string; stateDir: string; now: Date; panes?: ServerPane[] }): Leftovers {
+  const l: Leftovers = { held: [], kept: [], due: [], busy: [], locks: [], temp: staleTemp(o.stateDir, o.now.getTime()), launchers: [] };
   const serveLock = join(o.stateDir, LOCK_FILE);
   if (staleLock(serveLock)) l.locks.push(serveLock);
-  for (const ws of everyWorkspace(o.root)) {
+  for (const ws of o.repo ? allWorkspaces(o.root, o.repo) : everyWorkspace(o.root)) {
     const lock = join(ws.dir, DELIVERY_LOCK);
     if (staleLock(lock)) l.locks.push(lock);
     if (!isEnded(ws.state)) {
       l.held.push(ws);
       continue;
     }
-    const until = new Date(ws.state.phase === 'done' ? 0 : Date.parse(ws.state.updatedAt) + KEEP_MS);
+    const nonce = ws.state.job?.paneNonce;
+    const pane = nonce !== undefined && (!o.panes || o.panes.some((p) => p.issue === ws.state.issue && p.nonce === nonce));
+    if (pane || liveLock(lock)) {
+      l.busy.push(ws);
+      continue;
+    }
+    const until = new Date(ws.state.phase === 'done' ? 0 : endedAt(ws, o.now) + KEEP_MS);
     if (until.getTime() <= o.now.getTime()) l.due.push(ws);
     else l.kept.push({ ws, until });
   }
@@ -74,13 +109,20 @@ export function leftovers(o: { root: string; stateDir: string; now: Date; panes?
 }
 
 /**
- * The cleanup pass: removes what `leftovers` finds due, stale or left over, logging each. Never throws: a
- * failure is logged and counted. Returns the counts, and how many ended workspaces are kept.
+ * The cleanup pass for `repo`: removes what `leftovers` finds due, stale or left over, and workspaces a crash
+ * left half removed, logging each. Never throws: a failure is logged and counted. Returns the counts, and how
+ * many ended workspaces are kept.
  */
-export function tidy(o: { root: string; stateDir: string; now: Date; panes?: ServerPane[]; log: (line: string) => void }): { removed: number; failed: number; kept: number } {
-  const l = leftovers(o);
+export function tidy(o: { root: string; repo: string; stateDir: string; now: Date; panes?: ServerPane[]; log: (line: string) => void }): { removed: number; failed: number; kept: number } {
   let removed = 0, failed = 0;
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  let l: Leftovers;
+  try {
+    l = leftovers(o);
+  } catch (e) {
+    o.log(`could not look for leftovers: ${err(e)}`);
+    return { removed, failed: 1, kept: 0 };
+  }
   const each = (items: string[], what: (x: string) => string, remove: (x: string) => boolean | void) => {
     for (const x of items) {
       try {
@@ -96,6 +138,15 @@ export function tidy(o: { root: string; stateDir: string; now: Date; panes?: Ser
   };
   for (const ws of l.due) {
     each([ws.dir], (d) => `the workspace of ${ws.state.repo}#${ws.state.issue} (${ws.state.job?.status ?? ws.state.phase}), ${d}`, (d) => removeWorkspace(o.root, d));
+  }
+  try {
+    for (const t of removeTrash(o.root, o.repo)) {
+      removed++;
+      o.log(`removed ${t}, a workspace whose removal was cut off`);
+    }
+  } catch (e) {
+    failed++;
+    o.log(`could not remove a half-removed workspace: ${err(e)}`);
   }
   each(l.locks, (f) => `stale lock ${f}`, (f) => clearStaleLock(f));
   each(l.temp, (f) => `temp file ${f}`, (f) => { if (lstatSync(f).isFile()) rmSync(f); else return false; });
@@ -122,7 +173,7 @@ export function machineStatus(l: Leftovers, o: { panes?: ServerPane[]; serving: 
   }
   const left = l.due.length + l.locks.length + l.temp.length + l.launchers.length + (tmux?.stray.length ?? 0);
   return {
-    serving: o.serving, held: l.held.map(ref), kept: l.kept.map(({ ws, until }) => ({ ...ref(ws), until: until.toISOString() })), due: l.due.map(ref),
+    serving: o.serving, held: l.held.map(ref), kept: l.kept.map(({ ws, until }) => ({ ...ref(ws), until: until.toISOString() })), due: l.due.map(ref), busy: l.busy.map(ref),
     locks: l.locks, temp: l.temp, launchers: l.launchers, tmux: tmux ?? null, left, clean: left === 0,
   };
 }
@@ -138,6 +189,7 @@ export function formatMachineStatus(s: ReturnType<typeof machineStatus>, o: { ro
   };
   section('workspaces kept for debugging', s.kept.map((w) => `${ws(w)} (removed from ${w.until.slice(0, 10)})`));
   section('workspaces due for removal', s.due.map(ws));
+  section('ended jobs still finishing (a delivery lock or tmux pane is live; removed after)', s.busy.map(ws));
   section('stale locks', s.locks);
   section('temp files of air processes that died', s.temp);
   section('launcher dirs left in tmpdir', s.launchers);

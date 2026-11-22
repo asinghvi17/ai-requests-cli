@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { thisHost } from '../pid.ts';
 import { emptyLedger, loadLedger, period, readManual, recordSpend, resetLedger, spend } from './manual.ts';
 import type { ManualConfig } from './types.ts';
 
@@ -110,6 +111,6 @@ test('two processes spending 50 times each lose no update', async () => {
 test('a lock left by a dead process is broken', () => {
   const file = tmpLedger();
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(`${file}.lock`, '999999999 0');
+  writeFileSync(`${file}.lock`, `999999999 0 ${thisHost()}`);
   assert.equal(spend(file, weekly, 3).windows[0]!.usdLeft, 97);
 });
