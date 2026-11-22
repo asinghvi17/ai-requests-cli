@@ -136,6 +136,17 @@ export function socketPath(socket: string, env: NodeJS.ProcessEnv = process.env)
   return join(env.TMUX_TMPDIR || '/tmp', `tmux-${process.getuid?.() ?? 0}`, socket);
 }
 
+/**
+ * argv that puts the user's terminal on target `to` of the server on `socket`: switch-client when already
+ * inside a client of that server, otherwise attach (unsetting TMUX to allow nesting). Needs no requests repo.
+ */
+export function attachTo(socket: string, to: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const inside = env.TMUX?.split(',')[0];
+  if (inside && inside === socketPath(socket, env)) return ['tmux', '-L', socket, 'switch-client', '-t', to];
+  const attach = ['tmux', '-L', socket, 'attach-session', '-t', to];
+  return inside ? ['env', '-u', 'TMUX', ...attach] : attach;
+}
+
 export function windowName(issue: number): string {
   return `#${issue}`;
 }
@@ -489,21 +500,44 @@ export function createTmux(options: TmuxOptions) {
   }
 
   /**
-   * argv that puts the user's terminal on the air session, on the job's window if given: switch-client
-   * when already inside a client of this server, otherwise attach (unsetting TMUX to allow nesting).
-   * The window id is the target itself: attach-session blocks until detach, so nothing may be chained after it.
+   * Run `argv` (`air serve` itself) in a new window named `serve`, creating the session when it is missing,
+   * with `env` as its whole environment on top of tmux's. Returns the window id.
    */
-  async function attachArgs(issue?: number, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
-    let to = target;
-    if (issue !== undefined) {
-      const job = await findJob(issue);
-      if (!job) throw new Error(`tmux: no window for job #${issue}`);
+  async function startServer(argv: string[], env: Record<string, string>): Promise<string> {
+    const launcher = writeLauncher({ argv, env });
+    const has = await run(['has-session', '-t', target]);
+    if (has.code !== 0 && !noServer(has.stderr)) {
+      launcher.cleanup();
+      throw new Error(`tmux has-session: ${has.stderr.trim()}`);
+    }
+    const args = has.code === 0
+      ? ['new-window', '-d', '-P', '-F', '#{window_id}', '-t', `${target}:`, '-n', 'serve', '--', ...launcher.argv]
+      : ['new-session', '-d', '-P', '-F', '#{window_id}', '-s', session, '-n', 'serve', '--', ...launcher.argv];
+    let r = await run(args);
+    for (let i = 0; i < 20 && r.code !== 0 && exiting(r.stderr); i++) {
+      await sleep(50);
+      r = await run(args);
+    }
+    const id = r.stdout.trim();
+    if (r.code === 0 && /^@\d+$/.test(id)) return id;
+    launcher.cleanup();
+    throw new Error(`tmux ${args[0]}: ${r.stderr.trim() || `exit ${r.code}`}`);
+  }
+
+  /**
+   * argv that puts the user's terminal on the air session, on the job's window (an issue number) or a
+   * window id if given: switch-client when already inside a client of this server, otherwise attach
+   * (unsetting TMUX to allow nesting). The window id is the target itself: attach-session blocks until
+   * detach, so nothing may be chained after it.
+   */
+  async function attachArgs(window?: number | string, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+    let to = typeof window === 'string' ? window : target;
+    if (typeof window === 'number') {
+      const job = await findJob(window);
+      if (!job) throw new Error(`tmux: no window for job #${window}`);
       to = job.windowId;
     }
-    const inside = env.TMUX?.split(',')[0];
-    if (inside && inside === socketPath(socket, env)) return ['tmux', '-L', socket, 'switch-client', '-t', to];
-    const attach = ['tmux', '-L', socket, 'attach-session', '-t', to];
-    return inside ? ['env', '-u', 'TMUX', ...attach] : attach;
+    return attachTo(socket, to, env);
   }
 
   /** Kill the whole tmux server on this socket (tests, `air serve --stop`). */
@@ -511,7 +545,7 @@ export function createTmux(options: TmuxOptions) {
     await run(['kill-server']);
   }
 
-  return { socket, session, version, checkVersion, ensureSession, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, screen, setNotice, attachArgs, killServer };
+  return { socket, session, version, checkVersion, ensureSession, startServer, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, screen, setNotice, attachArgs, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;

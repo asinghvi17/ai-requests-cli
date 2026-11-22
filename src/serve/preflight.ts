@@ -1,7 +1,7 @@
-// Can each configured agent run unattended? `air doctor` prints the answer and `air serve` checks it at
-// startup, refusing new work for any login that fails. Checks: the binary runs and reports a version; its
-// launch args carry an unattended mode (Claude Code `--permission-mode auto`, Codex `--ask-for-approval
-// never`, or either one's bypass); Claude Code finished first-run onboarding and trusts `workspace_root`
+// Can each configured agent run unattended? `air serve` checks at startup, offers the folder trust fix on a
+// terminal, and refuses new work for any login that still fails. Checks: the binary runs and reports a
+// version; its launch args carry an unattended mode (Claude Code `--permission-mode auto`, Codex
+// `--ask-for-approval never`, or either one's bypass); Claude Code finished first-run onboarding and trusts `workspace_root`
 // through a folder it inherits from. Codex trust needs no check: each launch trusts its job dir with a config
 // override (`codexTrust` in agent.ts). Agent state is read from the agents' own files (`.claude.json`,
 // `settings.json`), reading only the keys named here; credential files are never opened, and nothing read is
@@ -20,8 +20,8 @@ export interface Problem {
   /** The exact command or setting that fixes it by hand. */
   fix: string;
   /**
-   * Folder trust `air doctor --fix` can write: Claude Code's state file, and the folder to trust in it.
-   * The report offers `air doctor --fix` before `fix`, except to `air doctor --fix` itself.
+   * Folder trust `air serve` can write, after asking: Claude Code's state file, and the folder to trust in it.
+   * The report offers `air serve` in a terminal before `fix`, except when `air serve` is about to ask.
    */
   trust?: { stateFile: string; dir: string };
 }
@@ -101,7 +101,7 @@ const sh = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, 
 const tomlArray = (xs: string[]) => `[${xs.map((x) => JSON.stringify(x)).join(', ')}]`;
 
 /** `command[0]` resolved on PATH (or as given, when it is a path), if it is an executable file. */
-function resolveBinary(cmd: string, env: Record<string, string | undefined>, home: string): string | undefined {
+export function resolveBinary(cmd: string, env: Record<string, string | undefined>, home: string): string | undefined {
   const ok = (p: string) => {
     try {
       accessSync(p, constants.X_OK);
@@ -279,13 +279,13 @@ export function refusals(checks: AgentCheck[]): Record<string, string> {
   return out;
 }
 
-/** The report `air doctor` and `air serve` print; `fixing` when it is `air doctor --fix` that prints it. */
+/** The report `air serve` prints at startup; `fixing` when it is about to offer the trust fixes. */
 export function formatPreflight(checks: AgentCheck[], fixing = false): string {
-  if (!checks.length) return 'no claude or codex logins to check (see subscriptions.json)\n';
+  if (!checks.length) return 'no claude or codex logins to serve: config.toml has no [subscriptions.NAME] for one (docs/config.md)\n';
   const lines: string[] = [];
   const problem = (p: Problem) => {
     lines.push(`    problem: ${p.what}`);
-    const [head, ...rest] = (p.trust && !fixing ? `run \`air doctor --fix\`, or ${p.fix}` : p.fix).split('\n');
+    const [head, ...rest] = (p.trust && !fixing ? `run \`air serve\` in a terminal, or ${p.fix}` : p.fix).split('\n');
     lines.push(`    fix:     ${head}`, ...rest.map((l) => `             ${l}`));
   };
   for (const c of checks) {

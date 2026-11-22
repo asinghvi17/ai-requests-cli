@@ -562,3 +562,27 @@ Claude Code:
   like "nothing to do" and `--once` exited 0. `tick()` now returns `POLL_FAILED` for a poll that threw. The
   list-lag re-poll (`ONCE_WAIT_MS`, `ONCE_POLL_MS`: GitHub's list can miss a request filed seconds ago) was
   already named; its constants now say why they exist.
+
+## 2026-11-21: one command to volunteer, one to request
+
+- A volunteer used to run `air config init`, `air doctor --fix`, `tmux new -s air-serve 'air serve'` and
+  `air attach`. Now `air serve` alone does it. On a terminal outside air's own tmux it checks `gh auth status`
+  (offering `gh auth login`), writes the config when there is none, prints the preflight and asks before each
+  missing folder trust, then starts itself in window `serve` of the `tmux -L air` session and attaches. A
+  second `air serve` on a terminal while one holds `serve.lock` attaches to the session (from inside air's
+  own session it switches to window `serve`). Joining needs no requests repo or serve context, so a server
+  started with `--repo` can be joined. Off a terminal, or with `--once`, it serves in place, as before:
+  `--once` never attaches, and fails on the held lock.
+- `air config` and `air doctor` are gone: their only use was this setup. The preflight report still prints
+  at every `air serve` start, and off a terminal it says to run `air serve` in one for the trust fix.
+- `air attach` now needs ISSUE. Getting onto the session is `air serve`'s job; `attach ISSUE` stays because
+  the waiting-prompt fixes point at one job's window, which also works from inside another tmux.
+- The first-run config has a `[subscriptions.NAME]` table only for logins whose binary is installed and whose
+  usage air can read, so a missing Codex no longer shows as NOT READY on every start. The preflight checks
+  only logins config.toml names, as `air usage` and the matcher already did.
+- The server's window runs `/bin/sh -c` around air: a no-op INT trap keeps the shell alive while air shuts
+  down on C-c (else the window closes and its SIGHUP cuts the shutdown short), and a failed exit waits for
+  Enter so the error stays readable. The server gets the caller's environment through the launcher (as jobs
+  do), not the tmux server's, which may date from an earlier session.
+- A requester runs `air skill install`, which asks for the requests repo when the config has none (or takes
+  `--repo`). It writes the same config, through the same `ensureConfig`.

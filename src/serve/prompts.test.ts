@@ -38,7 +38,7 @@ test('a prompt wrapped by a narrow pane still matches', () => {
 
 test('fixes: config prompts name the setting or command; others say how to attach', () => {
   const trust = waitingFor(matchPrompt('claude', pane('claude-trust'))!, fix);
-  assert.equal(trust.fix, 'attach with `air attach 12` and answer it ("Yes, I trust this folder"); if it recurs, run `air doctor`: jobs under workspace_root /home/u/air inherit its trust, unless the job dir is itself a git repo');
+  assert.equal(trust.fix, 'attach with `air attach 12` and answer it ("Yes, I trust this folder"); if it recurs, restart `air serve` in a terminal and let it trust workspace_root /home/u/air: jobs under it inherit its trust, unless the job dir is itself a git repo');
   const codexTrust = waitingFor(matchPrompt('codex', pane('codex-trust'))!, fix);
   assert.match(codexTrust.fix, /^attach with `air attach 12` and answer it \("Trust and continue"\); air trusts the job dir with `-c projects=\{\.\.\.\}` at launch/);
   const bypass = waitingFor(matchPrompt('claude', pane('claude-bypass'))!, fix);

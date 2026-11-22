@@ -3,7 +3,7 @@
 // session id is found afterwards in its rollout files, for `codex resume`.
 //
 // Neither may stop at a folder-trust prompt. Claude Code inherits the trust of a folder above the job dir,
-// which `air doctor` checks (a git root is a boundary: it doesn't inherit across one). Codex asks whenever the
+// which `air serve` checks at startup (a git root is a boundary: it doesn't inherit across one). Codex asks whenever the
 // job dir is in a git repo or is one, and also when a job's agent made it one before a restart. So every
 // Codex launch and resume trusts the job dir for that session only, with a config override (`codexTrust`):
 // nothing is written to the volunteer's Codex config.
