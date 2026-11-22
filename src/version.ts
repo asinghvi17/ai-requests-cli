@@ -6,3 +6,6 @@ import pkg from '../package.json' with { type: 'json' };
 declare const AIR_BUILD_VERSION: string | undefined;
 
 export const VERSION: string = typeof AIR_BUILD_VERSION === 'string' ? AIR_BUILD_VERSION : `${pkg.version}+source`;
+
+/** This version's release tag (release.yml checks a tag is `v` + package.json's version). */
+export const TAG = `v${pkg.version}`;

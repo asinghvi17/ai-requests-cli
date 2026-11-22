@@ -7,7 +7,7 @@ description: Hand a piece of work off as an air AI request, a GitHub issue that 
 
 An AI request is a GitHub issue in the team's requests repo. A colleague's `air serve` claims it, sets up a
 fresh workspace, and runs an agent that has never seen this conversation and can't ask questions. The
-format is spec/v0.md (https://github.com/asinghvi17/ai-requests-cli/blob/main/spec/v0.md). Read §2–§4 and §6
+format is spec/v0.md (https://github.com/asinghvi17/ai-requests-cli/blob/{{AIR_TAG}}/spec/v0.md). Read §2–§4 and §6
 there for the exact field rules. This skill doesn't repeat them. `template.md` next to this file is the
 body's skeleton.
 
