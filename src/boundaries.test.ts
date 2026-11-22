@@ -1,19 +1,16 @@
-// The module boundaries of docs/architecture.md, checked on every relative import under src/. A file under
-// src/<domain>/ is in that domain; DOMAIN places the files not yet moved there, and shrinks as later phases
-// move them (scripts/move.ts). ALLOWED holds today's violations: a new one fails, and so does an entry that no
-// longer occurs, so the list only shrinks. Tests and test helpers may import anything.
+// The module boundaries of docs/architecture.md, checked on every relative import under src/ by
+// scripts/boundaries.ts. A file under src/<domain>/ is in that domain; DOMAIN places the files not yet moved
+// there, and shrinks as later phases move them (scripts/move.ts). ALLOWED holds today's violations: a new one
+// fails, and so does an entry that no longer occurs, so the list only shrinks. Tests, test helpers and e2e/
+// may import anything.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, posix } from 'node:path';
-import ts from 'typescript';
+import { check } from '../scripts/boundaries.ts';
 
-/** Which domains each domain may import. agents may import request only through request/vocab.ts. */
 const MAY: Record<string, string[]> = {
   lib: [], gh: ['lib'], request: ['lib', 'gh'], agents: ['lib', 'request'], setup: ['lib', 'agents'],
   server: ['lib', 'gh', 'request', 'agents', 'setup'], cli: ['lib', 'gh', 'request', 'agents', 'setup', 'server'],
 };
-/** Path (a file, or a directory ending in `/`) → domain, for production files not under src/<domain>/. */
 const DOMAIN: Record<string, string> = {
   'toml.ts': 'lib', 'version.ts': 'lib', 'usage/lock.ts': 'lib', 'usage/run.ts': 'lib', 'serve/zipout.ts': 'lib',
   'submit/zipwrite.ts': 'lib', 'workspace/exec.ts': 'lib', 'workspace/git.ts': 'lib', 'workspace/zip.ts': 'lib',
@@ -24,7 +21,6 @@ const DOMAIN: Record<string, string> = {
   'config.ts': 'setup', 'serve/preflight.ts': 'setup', 'cli/firstrun.ts': 'setup',
   'claim/': 'server', 'match/': 'server', 'serve/': 'server', 'tmux/': 'server', 'workspace/': 'server',
 };
-/** Test helpers not yet under a testing/ or fixtures/ directory. */
 const TEST_HELPERS = ['gh/fake.ts', 'gh/releases-fake.ts', 'serve/fake-gh.ts', 'requester/fixture.ts',
   'submit/fixture.ts', 'workspace/git-fixture.ts', 'workspace/zip-fixture.ts'];
 /** Today's violations, `from -> to: rule`. Only ever remove entries. */
@@ -229,59 +225,16 @@ const ALLOWED = new Set<string>([
   'workspace/task.ts -> workspace/state.ts: agents may not import server',
 ]);
 
-const src = import.meta.dirname;
-const files = readdirSync(src, { recursive: true, encoding: 'utf8' }).map((f) => f.split('\\').join('/'))
-  .filter((f) => f.endsWith('.ts')).sort();
-const isTest = (f: string) => /\.test\.ts$|(^|\/)(testing|fixtures)\//.test(f) || TEST_HELPERS.includes(f);
-const prodFiles = files.filter((f) => !isTest(f));
-const tableKey = (f: string) => Object.keys(DOMAIN).filter((k) => f === k || (k.endsWith('/') && f.startsWith(k)))
-  .sort((a, b) => b.length - a.length)[0];
-const domainOf = (f: string) => DOMAIN[tableKey(f) ?? ''] ?? (f.split('/')[0]! in MAY ? f.split('/')[0]! : undefined);
+const report = check(import.meta.dirname, { may: MAY, domain: DOMAIN, testHelpers: TEST_HELPERS });
 
-/** Every relative import under src/ that stays inside src/, as [from, to] paths relative to src/. */
-const imports = files.flatMap((from) => ts.preProcessFile(readFileSync(join(src, from), 'utf8'), true, true)
-  .importedFiles.filter((i) => i.fileName.startsWith('.'))
-  .map((i): [string, string] => [from, posix.normalize(posix.join(dirname(from), i.fileName))])
-  .filter(([, to]) => !to.startsWith('../')));
-
-/** Whether `to` reaches `from` along `edges`, so that the edge from → to is on a cycle. */
-function onCycle(edges: [string, string][], from: string, to: string): boolean {
-  const seen = new Set<string>(), todo = [to];
-  for (let n = todo.pop(); n !== undefined; n = todo.pop()) {
-    if (n === from) return true;
-    if (!seen.has(n)) seen.add(n), todo.push(...edges.filter(([a]) => a === n).map(([, b]) => b));
-  }
-  return false;
-}
-
-function violations(): string[] {
-  const prod = imports.filter(([from]) => !isTest(from));
-  const dirs = prod.map(([a, b]): [string, string] => [dirname(a), dirname(b)]).filter(([a, b]) => a !== b);
-  const found = new Set<string>();
-  for (const [from, to] of prod) {
-    const add = (rule: string) => found.add(`${from} -> ${to}: ${rule}`);
-    if (isTest(to)) add('test code');
-    if (onCycle(prod, from, to)) add('file cycle');
-    if (dirname(from) !== dirname(to) && onCycle(dirs, dirname(from), dirname(to))) add('directory cycle');
-    const [d, e] = [domainOf(from)!, domainOf(to)!];
-    const vocab = d === 'agents' && to === 'request/vocab.ts';
-    if (d === e || isTest(to)) continue;
-    if (!MAY[d]!.includes(e) || (d === 'agents' && e === 'request' && !vocab)) add(`${d} may not import ${e}`);
-    else if (!vocab && to !== `${e}/index.ts`) add(`not via ${e}/index.ts`);
-  }
-  return [...found];
-}
-
-test('every production file has a domain, and DOMAIN has no stale entries', () => {
-  assert.deepEqual(prodFiles.filter((f) => !domainOf(f)), [], 'add these to DOMAIN');
-  const used = new Set(prodFiles.map(tableKey));
-  assert.deepEqual(Object.keys(DOMAIN).filter((k) => !used.has(k)), [], 'these DOMAIN keys match no file');
-  assert.deepEqual(Object.keys(DOMAIN).filter((k) => k.split('/')[0] === DOMAIN[k]), [],
-    'these files are in place: remove them from DOMAIN');
+test('every production file has a domain, DOMAIN has no stale entries, and imports name their files', () => {
+  const { unmapped, unused, redundant, badImports } = report;
+  assert.deepEqual({ unmapped, unused, redundant, badImports }, { unmapped: [], unused: [], redundant: [], badImports: [] },
+    'unmapped: add to DOMAIN; unused, redundant: remove from DOMAIN; badImports: fix the specifier');
 });
 
 test('imports keep to the module boundaries (docs/architecture.md)', () => {
-  const found = violations();
-  assert.deepEqual(found.filter((v) => !ALLOWED.has(v)), [], 'new boundary violations');
-  assert.deepEqual([...ALLOWED].filter((v) => !found.includes(v)), [], 'fixed: remove these from ALLOWED');
+  const added = report.violations.filter((v) => !ALLOWED.has(v));
+  const fixed = [...ALLOWED].filter((v) => !report.violations.includes(v));
+  assert.deepEqual({ added, fixed }, { added: [], fixed: [] }, 'added: fix the import; fixed: remove from ALLOWED');
 });

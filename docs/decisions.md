@@ -619,3 +619,6 @@ Besides the domain rules, the test forbids import cycles between files and betwe
 review named (the `claim` ⇄ `workspace` cycle; every `cli/<cmd>.ts` importing `Invocation` from `main.ts`).
 "Import only `<domain>/index.ts`" holds for every cross-domain import, so most of the allowlist (137) is
 imports that later phases route through an index.
+A relative import names its file with the extension (`.ts`, or `.json`), as nodenext ESM resolution needs
+anyway. The boundary test and `scripts/move.ts` reject any other form rather than guess at resolution, so a
+specifier's target is its path.
