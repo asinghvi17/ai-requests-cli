@@ -23,7 +23,7 @@ import { createTmux, socketPath } from '../tmux/tmux.ts';
 import { ledgerFile, loadLedger } from '../usage/index.ts';
 import type { ManualConfig, Subscription } from '../usage/types.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
-import { allWorkspaces, isEnded, readState, updateState, type State } from '../workspace/state.ts';
+import { allWorkspaces, readState, updateState, type State } from '../workspace/state.ts';
 import { CANCEL_LABEL, claim, LABELS, release, STATE_LABELS } from '../claim/claim.ts';
 import { extractZip } from '../workspace/zip.ts';
 import type { ServeContext } from './context.ts';
@@ -73,7 +73,7 @@ interface World {
   logs: string[];
   clock: { offset: number };
   root: string;
-  /** Each issue's latest workspace as it was before the last tick (`last`). */
+  /** Each delivered issue's workspace as it was just before its removal (`last`). */
   snaps: Map<number, Snapshot>;
 }
 
@@ -90,6 +90,7 @@ function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig[
   const root = tmp('air-serve-root-');
   const subs = [weekly(10)];
   const logs: string[] = [];
+  const snaps = new Map<number, Snapshot>();
   const clock = { offset: 0 };
   const config: Config = {
     repo: 'o/requests', workspace_root: root, max_jobs: 2, tick_seconds: 60, subscriptions: { max: { harness: 'claude', window_usd: 1000, reserve: 0 } },
@@ -99,7 +100,12 @@ function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig[
   const ctx: ServeContext = {
     gh: repo, api: serveGitHub('o/requests', gh), tmux: tmuxClient, config, root, host: 'box', ghHost: 'github.com',
     env: insteadOfAll([[bare.bare, TARGET], [service.bare, SERVICE], [guide.bare, GUIDE]]), stateDir: tmp('air-serve-state-'), trust: createTrust(repo),
-    usage: async () => structuredClone(subs), agentEnv: () => ({}), log: (s) => logs.push(s),
+    usage: async () => structuredClone(subs), agentEnv: () => ({}), log: (s) => {
+      logs.push(s);
+      // Logged as the job is delivered, just before its workspace is removed: keep a copy for the test.
+      const m = /^#(\d+): delivered \(/.exec(s);
+      if (m) snapshot(root, snaps, Number(m[1]));
+    },
     now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, claimWaitMs: 0,
     download: releaseDownload(gh, 'github.com'),
   };
@@ -109,29 +115,21 @@ function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig[
     if (o.budget) ctx.manual = (name) => (name === 'max' ? { name, harness: 'manual', reset: { every: 'weekly', day: 0 }, budget: o.budget! } : undefined);
     ctx.agentEnv = () => ({ CLAUDE_CONFIG_DIR: claudeDir, FAKE_TRANSCRIPT: '1' });
   }
-  return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root, snaps: new Map() };
+  return { store, fg, ctx, server: createServer(ctx, { manual: o.manual }), subs, logs, clock, root, snaps };
 }
 
-/** A workspace's state and a copy of its files (`files`), kept after a delivery removes the workspace (`dir`). */
+/** A delivered workspace's state and a copy of its files (`files`), kept after its removal (`dir`). */
 interface Snapshot { dir: string; files: string; state: State }
 
-/** Copies every workspace still in progress, so a test can look into one the next tick delivers and removes. */
-function snapshot(w: World): void {
-  for (const x of allWorkspaces(w.root, 'o/requests')) {
-    if (isEnded(x.state)) continue;
-    const files = join(tmp('air-serve-snap-'), 'ws');
-    try {
-      cpSync(x.dir, files, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory() || st.isSymbolicLink(); } });
-      const prev = w.snaps.get(x.state.issue);
-      if (prev) rmSync(prev.files, { recursive: true, force: true });
-      w.snaps.set(x.state.issue, { dir: x.dir, files, state: x.state });
-    } catch {
-      // written to meanwhile: the next tick copies it again
-    }
-  }
+/** Copies #n's delivered workspace (its state and files) into `snaps`, so a test can look into it once it is removed. */
+function snapshot(root: string, snaps: Map<number, Snapshot>, n: number): void {
+  const x = allWorkspaces(root, 'o/requests').find((w) => w.state.issue === n && w.state.phase === 'done')!;
+  const files = join(tmp('air-serve-snap-'), 'ws');
+  cpSync(x.dir, files, { recursive: true, filter: (src) => { const st = lstatSync(src); return st.isFile() || st.isDirectory() || st.isSymbolicLink(); } });
+  snaps.set(n, { dir: x.dir, files, state: x.state });
 }
 
-/** #n's newest workspace as it was last seen, which its delivery has removed. */
+/** #n's delivered workspace as it was just before its removal. */
 function last(w: World, n: number): Snapshot {
   const snap = w.snaps.get(n)!;
   assert.equal(existsSync(snap.dir), false, `#${n}: its workspace is removed once delivered`);
@@ -142,7 +140,6 @@ function last(w: World, n: number): Snapshot {
 async function until(w: World, what: string, check: () => boolean, ms = 20_000, server = w.server): Promise<void> {
   const end = Date.now() + ms;
   for (;;) {
-    snapshot(w);
     await server.tick();
     await server.idle();
     if (check()) return;
