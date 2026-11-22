@@ -1,0 +1,56 @@
+name: Release
+
+# A pushed tag v<version> builds the binaries, writes SHA256SUMS and attaches them all to the tag's GitHub
+# release, creating it if missing. A rerun for the same tag replaces the assets.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the tag is package.json's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          want="v$(node -p 'require("./package.json").version')"
+          test "$TAG" = "$want" || { echo "::error::tag $TAG is not package.json's version $want"; exit 1; }
+
+  build:
+    needs: check
+    uses: ./.github/workflows/build.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: air-*
+          path: dist
+          merge-multiple: true
+      - name: SHA256SUMS
+        working-directory: dist
+        run: |
+          LC_ALL=C sha256sum air-darwin-arm64 air-darwin-x64 air-linux-arm64 air-linux-x64 > SHA256SUMS
+          cat SHA256SUMS
+      - name: create the release if missing
+        run: gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "air $TAG" --notes ""
+      - name: upload the assets
+        working-directory: dist
+        run: gh release upload "$TAG" air-darwin-arm64 air-darwin-x64 air-linux-arm64 air-linux-x64 SHA256SUMS --clobber

@@ -1,5 +1,5 @@
 // The version `air --version` prints. A built binary has it stamped by scripts/build.ts (scripts/version.ts:
-// package.json's version, plus `+<git short sha>` for a non-release build); run from source, it is
+// package.json's version plus `+<git short sha>`, release builds included); run from source, it is
 // package.json's version plus `+source`.
 import pkg from '../package.json' with { type: 'json' };
 
