@@ -27,6 +27,7 @@
 | `src/skill/` | `air skill install`: the bundled Claude Code skill (`bundle.ts`, generated) and its installer |
 | `skills/ai-request/` | the Claude Code skill's source; `npm run skill:bundle` regenerates `src/skill/bundle.ts` after edits |
 | `src/requester/` | `air status`, `wait`, `fetch` and `retry`: a request's state and results, seen from the requester's side |
+| `docs/architecture.md` | the target module layout and its import rules, enforced by `src/boundaries.test.ts` |
 | `docs/decisions.md` | decision log: append, newest last |
 | `src/config.ts`, `src/toml.ts` | config loading and the TOML-subset parser |
-| `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed), `bundle-skill.ts` |
+| `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed), `bundle-skill.ts`, `move.ts` (moves files and rewrites imports), `boundaries.ts` (the check behind `src/boundaries.test.ts`) |

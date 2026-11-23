@@ -641,3 +641,19 @@ Claude Code:
 - `air status` without ISSUE lists every repo's workspaces and this machine's leftovers. It is read-only: it
   judges the serve lock without taking it.
 - CI installs tmux on macOS, so the tmux, serve and trust end-to-end suites run there too.
+
+## 2026-11-22: module boundaries, enforced by a test before any code moves (refactor P0)
+
+The architecture review set a target layout of eight domains (`lib`, `gh`, `request`, `agents`, `setup`,
+`server`, `cli`, `e2e`) with one-way dependency rules (docs/architecture.md). P0 moves no production code: it
+adds `src/boundaries.test.ts`, which maps today's files to their target domains and checks every import under
+`src/`, and `scripts/move.ts`, which later phases use to move files and rewrite imports. Today's 198 violations
+are an explicit allowlist that may only shrink: a new violation fails, and so does a listed one that is gone.
+Why: refactoring in phases is safe only if each phase can see what it fixed and cannot add new tangles.
+Besides the domain rules, the test forbids import cycles between files and between directories, which the
+review named (the `claim` ⇄ `workspace` cycle; every `cli/<cmd>.ts` importing `Invocation` from `main.ts`).
+"Import only `<domain>/index.ts`" holds for every cross-domain import, so most of the allowlist (137) is
+imports that later phases route through an index.
+A relative import names its file with the extension (`.ts`, or `.json`), as nodenext ESM resolution needs
+anyway. The boundary test and `scripts/move.ts` reject any other form rather than guess at resolution, so a
+specifier's target is its path.
