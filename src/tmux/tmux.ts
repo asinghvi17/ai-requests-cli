@@ -286,6 +286,29 @@ export async function serverPanes(run: TmuxRunner): Promise<ServerPane[]> {
   });
 }
 
+/**
+ * The tmux version `version` (a `tmux -V` call) reports; throws unless tmux runs and is new enough. `air serve`
+ * checks with its client's `checkVersion`, `air doctor` without a client.
+ */
+export async function checkTmux(version: () => Promise<string>): Promise<string> {
+  let v: string;
+  try {
+    v = await version();
+  } catch (e) {
+    throw new Error(`tmux is not usable: ${(e as Error).message}. air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer.`);
+  }
+  const problem = tmuxVersionProblem(v);
+  if (problem) throw new Error(problem);
+  return v;
+}
+
+/** `tmux -V`, e.g. "tmux 3.4", by `run` (default: a plain tmux, no client needed). Throws if tmux can't be run. */
+export async function tmuxVersion(run: TmuxRunner = defaultRunner('air')): Promise<string> {
+  const r = await run(['-V']);
+  if (r.code !== 0) throw new Error(`tmux -V: ${r.stderr.trim() || `exit ${r.code}`}`);
+  return r.stdout.trim();
+}
+
 export function createTmux(options: TmuxOptions) {
   const repo = options.repo;
   checkRepo(repo); // goes on the tmux command line: owner/name only, never a separator
@@ -370,22 +393,12 @@ export function createTmux(options: TmuxOptions) {
 
   /** `tmux -V`, e.g. "tmux 3.4". Throws if tmux can't be run. */
   async function version(): Promise<string> {
-    const r = await run(['-V']);
-    if (r.code !== 0) throw new Error(`tmux -V: ${r.stderr.trim() || `exit ${r.code}`}`);
-    return r.stdout.trim();
+    return tmuxVersion(run);
   }
 
   /** Throws unless tmux runs and is new enough (see MIN_TMUX). */
   async function checkVersion(): Promise<string> {
-    let v: string;
-    try {
-      v = await version();
-    } catch (e) {
-      throw new Error(`tmux is not usable: ${(e as Error).message}. air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer.`);
-    }
-    const problem = tmuxVersionProblem(v);
-    if (problem) throw new Error(problem);
-    return v;
+    return checkTmux(version);
   }
 
   /** The raw `list-panes -a` result in air's format, for `air debug panes`. */

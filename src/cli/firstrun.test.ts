@@ -68,6 +68,7 @@ beforeEach(() => {
   firstRunDeps.configPath = () => path;
   firstRunDeps.gh = () => 'ok';
   firstRunDeps.ghLogin = () => 0;
+  firstRunDeps.os = () => 'debian';
   firstRunDeps.home = () => '/home/u';
   firstRunDeps.detect = async () => [
     { name: 'claude', harness: 'claude', found: true },
@@ -76,6 +77,7 @@ beforeEach(() => {
   firstRunDeps.writeClaudeTrust = (file, dir) => { written.push(`${file} ${dir}`); return dir; };
   jobDeps.loadConfig = () => loadConfig(path, '/home/u');
   jobDeps.preflight = () => ready;
+  jobDeps.workspaceRoot = () => undefined; // /home/u/air: a test writes no workspace
   jobDeps.stateDir = () => tmp();
   jobDeps.env = () => ({ PATH: '/bin', HOME: '/home/u', TERM: 'xterm-256color', CLAUDECODE: '1', GIT_AUTHOR_NAME: 'Me' });
   jobDeps.self = () => ['/usr/local/bin/air'];
@@ -198,8 +200,29 @@ test('gh: offers `gh auth login` when logged out; a missing gh stops serve', asy
   terminal(['n']);
   assert.deepEqual(await call('serve'), { code: 1, out: '', err: 'air needs the GitHub CLI logged in: run `gh auth login`, then run this again\n' });
   state = 'missing';
-  assert.deepEqual(await call('serve'), { code: 1, out: '', err: 'air needs the GitHub CLI: install it from https://cli.github.com, then run this again\n' });
+  // The install command is this system's (Debian here), indented under the message.
+  const missing = await call('serve');
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /^air needs the GitHub CLI\. Install it, then run this again:\n  \(type -p wget[^\n]*\\\n    && sudo mkdir -p -m 755 \/etc\/apt\/keyrings[^]*\n    && sudo apt install gh -y\n$/);
   assert.equal(started.length, 1);
+});
+
+test('serve stops when tmux is unusable or workspace_root can not be made, with the fix', async () => {
+  const file = join(tmp(), 'not-a-dir');
+  writeFileSync(file, '');
+  writeFileSync(path, `repo = "acme/requests"\nworkspace_root = "${file}/air"\n`);
+  jobDeps.workspaceRoot = saved.jobs.workspaceRoot;
+  assert.deepEqual(await call('serve'), {
+    code: 1, out: '',
+    err: `air: ${file}, where air would create workspace_root ${file}/air, is not a directory.\n  fix: set workspace_root in ${join(process.env.XDG_CONFIG_HOME ?? join(process.env.HOME!, '.config'), 'air', 'config.toml')} to a folder you can write\n`,
+  });
+  const context = jobDeps.context;
+  jobDeps.context = (config, repo, echo) => {
+    const ctx = context(config, repo, echo);
+    return { ...ctx, tmux: { ...ctx.tmux, checkVersion: async () => { throw new Error('tmux 2.9 is too old'); } } } as ServeContext;
+  };
+  assert.deepEqual(await call('serve'), { code: 1, out: '', err: 'air: tmux 2.9 is too old\n  fix: sudo apt install tmux\n' });
+  assert.equal(started.length, 0);
 });
 
 test('serve asks before writing each missing folder trust, then checks again', async () => {

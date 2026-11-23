@@ -21,6 +21,9 @@ On a terminal, `air serve` sets up whatever is missing, then serves:
 Later runs skip what is already done. If a server is already running, `air serve` attaches you to it. From
 a window of air's own session, it switches you to the `serve` window.
 
+It also stops if tmux is missing or older than 3.0, or if it can't create `workspace_root`. `air doctor`
+runs these same checks and changes nothing ([doctor.md](doctor.md)).
+
 Codex needs no trust step: air tells it to trust each job's directory when it starts it.
 
 An agent that fails its checks takes no new work. The other agent keeps working.

@@ -64,10 +64,14 @@ export async function readSubscription(cfg: SubscriptionConfig, o: ReadOpts = {}
     const { ledger, error } = loadLedger(ledgerFile(dir));
     return readManual(cfg, ledger, o.now, error);
   }
-  const read = o.readers?.[cfg.harness] ? () => o.readers![cfg.harness]!(cfg)
-    : cfg.harness === 'claude' ? () => readClaude({ bin: cfg.bin, configDir: cfg.configDir })
-    : () => readCodex({ bin: cfg.bin, codexHome: cfg.codexHome });
-  return cachedRead({ name: cfg.name, harness: cfg.harness, stateDir: dir, read, now: o.now, refresh: o.refresh });
+  return cachedRead({ name: cfg.name, harness: cfg.harness, stateDir: dir, read: () => readUncached(cfg, o), now: o.now, refresh: o.refresh });
+}
+
+/** A claude or codex login's usage straight from its CLI, without the cache (which this never writes). */
+export function readUncached(cfg: Exclude<SubscriptionConfig, { harness: 'manual' }>, o: Pick<ReadOpts, 'readers'> = {}): Promise<Reading> {
+  return o.readers?.[cfg.harness] ? o.readers[cfg.harness]!(cfg)
+    : cfg.harness === 'claude' ? readClaude({ bin: cfg.bin, configDir: cfg.configDir })
+    : readCodex({ bin: cfg.bin, codexHome: cfg.codexHome });
 }
 
 export const readAll = (cfgs: SubscriptionConfig[], o: ReadOpts = {}) => Promise.all(cfgs.map(c => readSubscription(c, o)));

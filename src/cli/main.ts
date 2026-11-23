@@ -7,6 +7,7 @@ import { VERSION } from '../version.ts';
 import { usageCommand } from '../usage/index.ts';
 import { loadConfig } from '../config.ts';
 import { claimCommand } from './claim.ts';
+import { doctorCommand } from './doctor.ts';
 import { releaseCommand } from './release.ts';
 import { CommandError, UsageError } from './requests.ts';
 import { setupCommand } from './setup.ts';
@@ -37,6 +38,13 @@ const HELP: FlagSpecs = { help: { type: 'boolean', short: 'h' } };
 const REPO: FlagSpecs = { repo: { type: 'string' } };
 
 export const COMMANDS: Record<string, Command> = {
+  doctor: {
+    usage: 'doctor',
+    summary: "check this machine's setup (tmux, git, gh, Claude Code or Codex, the config, workspace_root, air on PATH) and print the fix for each problem; writes nothing; exit 0 when ready",
+    args: [],
+    flags: {},
+    run: doctorCommand,
+  },
   submit: {
     usage: 'submit [--body FILE|-] [--dry-run] [--allow-file PATH]... [DIR]',
     summary: 'file a request; DIR becomes its context zip (also: --repo, --title, --expires YYYY-MM-DD, --exclude NAME, --no-default-excludes)',

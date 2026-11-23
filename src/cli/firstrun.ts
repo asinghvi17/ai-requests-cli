@@ -7,8 +7,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { configPath, configTemplate, DEFAULT_AGENTS, loadConfig } from '../config.ts';
-import { resolveBinary, type AgentCheck } from '../serve/preflight.ts';
+import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS } from '../config.ts';
+import { hostOs, installHint, type Os } from '../serve/hints.ts';
+import { configState, ghState, resolveBinary, type AgentCheck, type GhState } from '../serve/preflight.ts';
 import { writeClaudeTrust } from '../serve/trust.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, readAll } from '../usage/index.ts';
 import type { Io } from './main.ts';
@@ -26,10 +27,8 @@ export const firstRunDeps = {
     const rl = createInterface({ input: process.stdin, output: process.stderr });
     return { ask: (q) => rl.question(q), close: () => rl.close() };
   },
-  gh: (): 'ok' | 'logged-out' | 'missing' => {
-    const r = spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' });
-    return r.error ? 'missing' : r.status === 0 ? 'ok' : 'logged-out';
-  },
+  gh: (): GhState => ghState(),
+  os: (): Os => hostOs(),
   ghLogin: (): number => spawnSync('gh', ['auth', 'login'], { stdio: 'inherit' }).status ?? 1,
   detect: (): Promise<Detected[]> => detectSubscriptions(),
   home: (): string => homedir(),
@@ -66,7 +65,7 @@ async function ask(question: string): Promise<string> {
 export async function ensureGh(io: Io, interactive: boolean): Promise<boolean> {
   let state = firstRunDeps.gh();
   if (state === 'missing') {
-    io.err('air needs the GitHub CLI: install it from https://cli.github.com, then run this again\n');
+    io.err(`air needs the GitHub CLI. Install it, then run this again:\n  ${installHint('gh', firstRunDeps.os()).replace(/\n/g, '\n  ')}\n`);
     return false;
   }
   if (state === 'logged-out' && interactive && !/^n(o)?$/i.test(await ask('The GitHub CLI is not logged in. Run `gh auth login` now? [Y/n] '))) {
@@ -108,13 +107,10 @@ async function askBudget(d: Detected): Promise<number> {
  */
 export async function ensureConfig(io: Io, repo: string | undefined, interactive: boolean): Promise<void> {
   const path = firstRunDeps.configPath();
-  let text: string | undefined;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-  }
-  if (text !== undefined && loadConfig(path).repo !== undefined) return;
+  const c = configState(path);
+  if (c.state === 'ok') return;
+  if (c.state === 'invalid') throw new ConfigError(c.error);
+  const text = c.state === 'no-repo' ? readFileSync(path, 'utf8') : undefined;
   if (repo === undefined && !interactive) throw new CommandError(`no requests repo in ${path}, and no terminal to ask on: pass --repo OWNER/NAME`);
   repo ??= await askRepo();
   if (text !== undefined) {

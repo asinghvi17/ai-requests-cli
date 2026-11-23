@@ -1,3 +1,6 @@
+// The startup checks `air serve` runs and `air doctor` reports: the GitHub CLI's login, the config file,
+// workspace_root, air on PATH, git (here), tmux (`checkTmux` in tmux.ts), and the agents (below).
+//
 // Can each configured agent run unattended? `air serve` checks at startup, offers the folder trust fix on a
 // terminal, and refuses new work for any login that still fails. Checks: the binary runs and reports a
 // version; its launch args carry an unattended mode (Claude Code `--permission-mode auto`, Codex
@@ -9,8 +12,9 @@
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { AGENT_HARNESSES, DEFAULT_AGENTS, type Agent, type Config } from '../config.ts';
+import { AGENT_HARNESSES, DEFAULT_AGENTS, loadConfig, type Agent, type Config } from '../config.ts';
 import type { SubscriptionConfig } from '../usage/types.ts';
+import { hostOs, installHint, type Os } from './hints.ts';
 
 export type Harness = (typeof AGENT_HARNESSES)[number];
 
@@ -52,6 +56,8 @@ export interface PreflightDeps {
   env: Record<string, string | undefined>;
   /** air's config file, named in fixes. */
   configFile: string;
+  /** Picks the install command a fix gives. */
+  os: Os;
   /** Runs `argv` (a `--version` call) and returns its exit status and output. */
   run(argv: string[], env: Record<string, string | undefined>): { status: number | null; stdout: string; error?: string };
   readFile(path: string): string | undefined;
@@ -61,6 +67,7 @@ export const defaultPreflightDeps = (configFile: string): PreflightDeps => ({
   home: process.env.HOME ?? '',
   env: process.env,
   configFile,
+  os: hostOs(),
   run(argv, env) {
     const r = spawnSync(argv[0]!, argv.slice(1), { env: env as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'ignore'] });
     return { status: r.status, stdout: r.stdout ?? '', ...(r.error ? { error: r.error.message } : {}) };
@@ -92,10 +99,71 @@ export function loginsOf(subs: SubscriptionConfig[], config: Config): Login[] {
   return out;
 }
 
-const DOCS: Record<Harness, string> = {
-  claude: 'https://code.claude.com/docs/en/setup',
-  codex: 'https://developers.openai.com/codex/cli',
-};
+export type GhState = 'ok' | 'logged-out' | 'missing';
+
+/** Whether the GitHub CLI is installed and logged in (`gh auth status`). */
+export function ghState(): GhState {
+  const r = spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' });
+  return r.error ? 'missing' : r.status === 0 ? 'ok' : 'logged-out';
+}
+
+/** `git --version`, or undefined when git can't be run. */
+export function gitVersion(): string | undefined {
+  const r = spawnSync('git', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return r.status === 0 ? r.stdout.trim() : undefined;
+}
+
+export type ConfigState =
+  | { state: 'missing' }
+  | { state: 'invalid'; error: string }
+  | { state: 'no-repo' | 'ok'; config: Config };
+
+/** air's config file at `path`: there, valid, and naming the requests repo. */
+export function configState(path: string, home?: string): ConfigState {
+  if (!existsSync(path)) return { state: 'missing' };
+  let config: Config;
+  try {
+    config = loadConfig(path, home);
+  } catch (e) {
+    return { state: 'invalid', error: (e as Error).message };
+  }
+  return { state: config.repo === undefined ? 'no-repo' : 'ok', config };
+}
+
+/**
+ * Why air can't make job dirs in workspace_root `root`, or undefined. It need not exist yet (air creates it),
+ * but then its nearest existing parent must be a directory air can write.
+ */
+export function workspaceRootProblem(root: string, configFile: string): Problem | undefined {
+  let d = root;
+  while (!existsSync(d) && dirname(d) !== d) d = dirname(d);
+  const what = d === root ? `workspace_root ${root}` : `${d}, where air would create workspace_root ${root},`;
+  const fix = `set workspace_root in ${configFile} to a folder you can write`;
+  if (!statSync(d).isDirectory()) return { what: `${what} is not a directory.`, fix };
+  try {
+    accessSync(d, constants.W_OK | constants.X_OK);
+  } catch {
+    return { what: `${what} is not writable.`, fix };
+  }
+  return undefined;
+}
+
+/**
+ * Whether the `air` a shell finds on `env.PATH` is `self` (this air's executable): 'other' when PATH finds a
+ * different one first, 'missing' when it finds none.
+ */
+export function airOnPath(self: string, env: Record<string, string | undefined>, home: string): 'ok' | 'other' | 'missing' {
+  const found = resolveBinary('air', env, home);
+  if (!found) return 'missing';
+  const real = (p: string) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  return real(found) === real(self) ? 'ok' : 'other';
+}
 
 const sh = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 const tomlArray = (xs: string[]) => `[${xs.map((x) => JSON.stringify(x)).join(', ')}]`;
@@ -240,7 +308,7 @@ export function preflight(config: Config, logins: Login[], deps: PreflightDeps):
     if (!bin) {
       check.problems.push({
         what: `\`${agent.command[0]}\` was not found${agent.command[0]!.includes('/') ? '' : ' on PATH'} (or is not executable).`,
-        fix: `install it (${DOCS[harness]}), or set command = ${tomlArray(['/path/to/' + harness])} under [agents.${harness}] in ${deps.configFile}`,
+        fix: `${installHint(harness, deps.os)}\nor set command = ${tomlArray(['/path/to/' + harness])} under [agents.${harness}] in ${deps.configFile}`,
       });
       continue;
     }
@@ -249,7 +317,7 @@ export function preflight(config: Config, logins: Login[], deps: PreflightDeps):
     if (r.status !== 0 || !/\d+\.\d+/.test(first)) {
       check.problems.push({
         what: `\`${[bin, ...agent.command.slice(1), '--version'].join(' ')}\` did not report a version (${r.error ?? `exit ${r.status}`}).`,
-        fix: `run that command by hand to see why, and reinstall ${harness} if it fails (${DOCS[harness]})`,
+        fix: `run that command by hand to see why; if it fails, reinstall ${harness}:\n${installHint(harness, deps.os)}`,
       });
       continue;
     }
@@ -279,13 +347,18 @@ export function refusals(checks: AgentCheck[]): Record<string, string> {
   return out;
 }
 
+/** `p`'s fix as printed; `fixing` when `air serve` is about to offer the trust fixes itself. */
+export function fixOf(p: Problem, fixing = false): string {
+  return p.trust && !fixing ? `run \`air serve\` in a terminal, or ${p.fix}` : p.fix;
+}
+
 /** The report `air serve` prints at startup; `fixing` when it is about to offer the trust fixes. */
 export function formatPreflight(checks: AgentCheck[], fixing = false): string {
   if (!checks.length) return 'no claude or codex logins to serve: config.toml has no [subscriptions.NAME] for one (docs/config.md)\n';
   const lines: string[] = [];
   const problem = (p: Problem) => {
     lines.push(`    problem: ${p.what}`);
-    const [head, ...rest] = (p.trust && !fixing ? `run \`air serve\` in a terminal, or ${p.fix}` : p.fix).split('\n');
+    const [head, ...rest] = fixOf(p, fixing).split('\n');
     lines.push(`    fix:     ${head}`, ...rest.map((l) => `             ${l}`));
   };
   for (const c of checks) {
