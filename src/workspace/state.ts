@@ -9,7 +9,6 @@ import type { Subscription } from '../usage/types.ts';
 export const STATE_FILE = 'state.json';
 export const LOG_FILE = 'setup.log';
 export const REQUEST_FILE = 'request.md';
-export const TASK_FILE = 'AIR_TASK.md';
 
 /**
  * claiming: the claim is being posted and checked; recorded first, so a claim cut off by a crash is found
@@ -65,6 +64,8 @@ export interface JobRecord {
   sessions?: string[];
   /** `@air_nonce` of the job's tmux pane, so a different pane for the same issue is never adopted. */
   paneNonce?: string;
+  /** A fresh start whose agent has not been sent its task yet (`sendTask`): it waits for the agent's screen. */
+  taskPending?: boolean;
   /** Start of the current run; agent time before it is in `runMs`. */
   startedAt?: string;
   runMs: number;

@@ -10,7 +10,6 @@ import { createTrust, markedComments } from '../claim/trust.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
 import { currentClaim, formatMarker, parseMarkers } from '../spec/markers.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from './git-fixture.ts';
-import { launchInput, TASK_INSTRUCTION } from './launch.ts';
 import { githubRepo } from './git.ts';
 import { readState, updateState } from './state.ts';
 import { setup, type SetupOptions } from './setup.ts';
@@ -89,9 +88,7 @@ test('runs setup and check in the workspace with a clean env and writes AIR_TASK
   assert.match(log, /check exited 0\n.*setup passed/);
   assert.equal(readState(dir).phase, 'ready');
   assert.deepEqual(gh.issues.get(7)!.labels, ['ai-request', 'air:claimed']);
-  // ready to launch, and setup refuses to run twice
-  const li = launchInput(dir, readState(dir), ['claude']);
-  assert.deepEqual(li, { issue: 7, cwd: dir, argv: ['claude', TASK_INSTRUCTION], env: { AIR_WORKSPACE: dir, AIR_CONTEXT: join(dir, 'context'), AIR_OUT: join(dir, 'out') } });
+  // setup refuses to run twice
   assert.equal((await setup(opts)).status, 'refused');
 });
 

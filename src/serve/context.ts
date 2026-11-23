@@ -44,6 +44,8 @@ export interface ServeContext {
   stopGraceMs: number;
   /** After `--resume`, how long the agent must stay up for the resume to count as working. */
   resumeCheckMs: number;
+  /** After a fresh start, how long to wait for the agent's screen to be ready for its task (`sendTask`). */
+  agentReadyMs: number;
   claimWaitMs?: number;
   setupTimeoutMs?: number;
   download?: Download;
@@ -112,5 +114,6 @@ export function serveContext(config: Config, repo: string, opts: { echo?: (line:
     now: () => new Date(),
     stopGraceMs: 10_000,
     resumeCheckMs: 15_000,
+    agentReadyMs: 60_000,
   };
 }

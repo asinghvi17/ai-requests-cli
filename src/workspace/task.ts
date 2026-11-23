@@ -5,6 +5,8 @@ import type { State } from './state.ts';
 
 /** The agent creates this file in the workspace root when it is done; `air serve` then delivers. */
 export const DONE_FILE = 'AIR_DONE';
+/** The full task (`taskPrompt`), written by setup; the agent gets it as its first message and re-reads it here. */
+export const TASK_FILE = 'AIR_TASK.md';
 /** The agent's running notes in `out/`: what is done, what is next, decisions made (spec §5). */
 export const PROGRESS_FILE = 'PROGRESS.md';
 

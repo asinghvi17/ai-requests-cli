@@ -27,6 +27,7 @@ import { allWorkspaces, readState, updateState, type State } from '../workspace/
 import { CANCEL_LABEL, claim, LABELS, release, STATE_LABELS } from '../claim/claim.ts';
 import { extractZip } from '../workspace/zip.ts';
 import type { ServeContext } from './context.ts';
+import { taskMessage } from './agent.ts';
 import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';
 import { fakeGh, type FakeGh } from './fake-gh.ts';
 import { serveGitHub } from './github.ts';
@@ -106,7 +107,7 @@ function world(o: { manual?: boolean; timeoutMs?: number; budget?: ManualConfig[
       const m = /^#(\d+): delivered \(/.exec(s);
       if (m) snapshot(root, snaps, Number(m[1]));
     },
-    now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, claimWaitMs: 0,
+    now: () => new Date(Date.now() + clock.offset), stopGraceMs: 3000, resumeCheckMs: 400, agentReadyMs: 10_000, claimWaitMs: 0,
     download: releaseDownload(gh, 'github.com'),
   };
   if (o.budget || o.transcripts) {
@@ -164,9 +165,17 @@ const argvLog = (dir: string) => {
     return [];
   }
 };
-/** Ticks until #n is running and its agent has started `starts` times (so an interrupt reaches a live agent). */
+/** The first messages the fake agent got (agent-message.log), one per fresh start. */
+const messageLog = (dir: string) => {
+  try {
+    return readFileSync(join(dir, 'agent-message.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as string);
+  } catch {
+    return [];
+  }
+};
+/** Ticks until #n is running, its agent has started `starts` times and has its task (so an interrupt reaches a live agent). */
 const running = (w: World, n: number, starts = 1) =>
-  until(w, `#${n} running`, () => status(w, n) === 'running' && argvLog(job(w, n)!.dir).length >= starts && readFileSync(join(job(w, n)!.dir, 'agent-argv.log'), 'utf8').endsWith('\n'));
+  until(w, `#${n} running`, () => status(w, n) === 'running' && !job(w, n)!.state.job!.taskPending && argvLog(job(w, n)!.dir).length >= starts && readFileSync(join(job(w, n)!.dir, 'agent-argv.log'), 'utf8').endsWith('\n'));
 /** The `air-result` of #n's last comment (or the last one matching `which`), without host and nonce. */
 const resultOf = (w: World, n: number, which: (c: string) => boolean = () => true) => {
   const r = parseResult(comments(w, n).filter(which).at(-1) ?? '');
@@ -225,12 +234,33 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     const [argv] = argvLog(ws.files);
     assert.equal(argv![0], '--session-id');
     assert.equal(argv![1], ws.state.job!.sessionId);
-    assert.deepEqual(argv!.slice(2), ['--model', 'sonnet', '--permission-mode', 'acceptEdits', 'Read AIR_TASK.md in this directory and do the task it describes.']);
+    assert.deepEqual(argv!.slice(2), ['--model', 'sonnet', '--permission-mode', 'acceptEdits'], 'no prompt on argv');
+    // The task came as the first message, pasted in once the agent's input box was up.
+    assert.deepEqual(messageLog(ws.files), [taskMessage(readFileSync(join(ws.files, 'AIR_TASK.md'), 'utf8'))]);
+    assert.ok(w.logs.some((l) => /^#1: sent the agent its task \(\d+ characters\)$/.test(l)));
     assert.equal(await tmuxClient.isAlive(1), false);
     assert.match(readFileSync(join(ws.files, 'AIR_TASK.md'), 'utf8'), /create the empty file `AIR_DONE`/);
     // Labels moved claimed -> running -> done, each added before the previous one was removed.
     const order = w.store.log.filter((l) => /^(addLabels|removeLabel) 1 /.test(l));
     assert.deepEqual(order, ['addLabels 1 air:claimed', 'addLabels 1 air:running', 'removeLabel 1 air:claimed', 'addLabels 1 air:done', 'removeLabel 1 air:running']);
+  });
+
+  test('an agent that shows a dialog before its input box gets its task from a later tick, once the box is up', async () => {
+    const w = world();
+    w.ctx.agentReadyMs = 300;
+    w.ctx.agentEnv = () => ({ FAKE_PROMPT_FIRST: 'claude-trust' });
+    w.store.addIssue({ number: 2, body: body('comment later') });
+    await until(w, 'the start to stop waiting', () => w.logs.includes("#2: the agent's screen is not ready for its task after 0.3 s; air sends it once it is"));
+    const dir = job(w, 2)!.dir;
+    assert.equal(job(w, 2)!.state.job!.taskPending, true);
+    assert.equal(status(w, 2), 'running');
+    await w.server.tick();
+    await w.server.idle();
+    assert.deepEqual(messageLog(dir), [], 'not pasted into the dialog');
+    writeFileSync(join(dir, 'ready'), '');
+    await until(w, 'delivered', () => status(w, 2) === 'done');
+    assert.match(comments(w, 2).at(-1)!, /^later\n/);
+    assert.equal(messageLog(last(w, 2).files).length, 1);
   });
 
   test('a manual budget is charged what each job cost at API prices, from its transcripts', async () => {
@@ -766,7 +796,10 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(starts[2]!.slice(0, 2), ['--resume', sessionId]);
     assert.equal(starts[3]![0], '--session-id');
     assert.notEqual(starts[3]![1], sessionId);
-    assert.match(starts[3]!.at(-1)!, /^Read AIR_TASK\.md .* interrupted: first read out\/PROGRESS\.md/);
+    assert.equal(starts[3]!.at(-1), 'acceptEdits', 'a fresh start has no prompt on argv');
+    const messages = messageLog(ws.dir);
+    assert.equal(messages.length, 2, 'the first start and the fresh one got the task pasted; the resumes did not');
+    assert.match(messages[1]!, /^This task was started before and interrupted: first read out\/PROGRESS\.md to see where it stands.*\n\nYour task follows\. It is also in AIR_TASK\.md/s);
     ws = job(w, 8)!;
     assert.equal(ws.state.job!.status, 'running');
     assert.equal(ws.state.job!.sessionId, starts[3]![1]);
@@ -933,7 +966,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
       w.ctx.config.agents = {};
       w.store.addIssue({ number: 46, body: body('comment hi') });
       await until(w, 'delivered', () => status(w, 46) === 'done');
-      assert.deepEqual(argvLog(last(w, 46).files)[0]!.slice(-3), ['--permission-mode', 'auto', 'Read AIR_TASK.md in this directory and do the task it describes.']);
+      assert.deepEqual(argvLog(last(w, 46).files)[0]!.slice(-2), ['--permission-mode', 'auto']);
     } finally {
       process.env.PATH = path;
     }

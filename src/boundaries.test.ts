@@ -154,7 +154,6 @@ const ALLOWED = new Set<string>([
   'workspace/context.ts -> gh/gh.ts: not via gh/index.ts',
   'workspace/context.ts -> workspace/zip.ts: not via lib/index.ts',
   'workspace/git.ts -> spec/frontmatter.ts: lib may not import request',
-  'workspace/launch.ts -> workspace/state.ts: agents may not import server',
   'workspace/setup.ts -> claim/claim.ts: directory cycle',
   'workspace/setup.ts -> claim/text.ts: directory cycle',
   'workspace/setup.ts -> claim/text.ts: not via request/index.ts',

@@ -34,6 +34,11 @@
   id is read from its rollout file (`$CODEX_HOME/sessions/**/rollout-*.jsonl`, `session_meta.cwd` = workspace)
   when stopping. A resume that dies within `resumeCheckMs` falls back to a fresh start told to read `out/` and
   the git log first.
+- The task: a fresh start has no prompt on argv (`job.taskPending`). `sendTask` waits up to `agentReadyMs` for
+  the agent's input box (`agentReady`, matched on the captured ready screens), then the tmux layer's `send`
+  pastes `taskMessage` (AIR_TASK.md's text, naming the file for re-reading) with `load-buffer` and
+  `paste-buffer -p` and presses Enter. A box that isn't up in time (a dialog first) is looked for again every
+  tick. A session that never got its task is started fresh, not resumed. Resumes keep a short argv instruction.
 - Restart: live tagged panes are re-adopted (matched by `@air_nonce` recorded in `job.paneNonce`; only panes whose
   `@air_repo` is this server's requests repo are seen at all, so servers for two repos can share the socket). A `running`
   job whose window is gone at startup is resumed; one whose window disappears while the server runs was closed

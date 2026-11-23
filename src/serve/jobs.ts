@@ -20,12 +20,12 @@ import { usd } from '../usage/prices.ts';
 import { spend as spendUsd } from '../usage/manual.ts';
 import { claudeSpent, codexSpent, type Spent } from '../usage/spent.ts';
 import type { Subscription } from '../usage/types.ts';
-import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
+import { airEnv } from '../workspace/launch.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
-import { DONE_FILE } from '../workspace/task.ts';
+import { DONE_FILE, TASK_FILE } from '../workspace/task.ts';
 import { removeWorkspace } from '../workspace/teardown.ts';
 import { ENDED, readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
-import { agentArgv, exitResumeInstruction, findCodexSession, type Harness, restartInstruction, RESUME_INSTRUCTION } from './agent.ts';
+import { agentArgv, agentReady, exitResumeInstruction, findCodexSession, type Harness, RESUME_INSTRUCTION, taskMessage } from './agent.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import { checkpoint, deliver } from './deliver.ts';
 import { pidLock } from './state.ts';
@@ -143,7 +143,8 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   await ensureHeld(ctx, dir);
   const request = requestOf(dir);
   const agent = ctx.config.agents[job.harness] ?? DEFAULT_AGENTS[job.harness];
-  const resume = !opts.fresh && job.starts > 0 ? job.sessionId : undefined;
+  // A session that was never sent its task has nothing to resume.
+  const resume = !opts.fresh && job.starts > 0 && !job.taskPending ? job.sessionId : undefined;
   let sessionId = resume;
   const real = realpathSync(dir);
   let argv: string[];
@@ -152,10 +153,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
     argv = agentArgv({ harness: job.harness, agent, model: job.model, resume, instruction, dir: real });
   } else {
     sessionId = job.harness === 'claude' ? randomUUID() : undefined;
-    argv = agentArgv({
-      harness: job.harness, agent, model: job.model, sessionId, dir: real,
-      instruction: job.starts > 0 ? restartInstruction(request.repos.length > 0) : TASK_INSTRUCTION,
-    });
+    argv = agentArgv({ harness: job.harness, agent, model: job.model, sessionId, dir: real });
   }
   const usageBefore = job.usageBefore ?? (await reading(ctx, job.subscription));
   const sessions = sessionId !== undefined && job.harness === 'claude' && !job.sessions?.includes(sessionId) ? [...job.sessions ?? [], sessionId] : job.sessions;
@@ -164,12 +162,18 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   const pane = (await ctx.tmux.listJobs()).find((j) => j.issue === n);
   job = saveJob(ctx, dir, {
     status: 'running', sessionId, sessions, paneNonce: pane?.nonce, startedAt: startedAt.toISOString(), starts: job.starts + 1,
-    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, waiting: undefined, ...(usageBefore ? { usageBefore } : {}),
+    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, waiting: undefined, taskPending: resume === undefined || undefined,
+    ...(usageBefore ? { usageBefore } : {}),
   });
   ctx.log(`#${n}: started ${job.harness} (${job.model}) ${resume ? `resuming session ${resume}` : 'fresh'}: ${argv.map((a) => JSON.stringify(a)).join(' ')}`);
   await moveLabel(ctx, dir, 'air:running');
 
-  if (resume === undefined) return;
+  if (resume === undefined) {
+    if (!(await sendTask(ctx, dir, ctx.agentReadyMs)) && readState(dir).job?.taskPending) {
+      ctx.log(`#${n}: the agent's screen is not ready for its task after ${ctx.agentReadyMs / 1000} s; air sends it once it is`);
+    }
+    return;
+  }
   // A resume that can't find its session exits at once: then start fresh, pointed at the work so far.
   const end = Date.now() + ctx.resumeCheckMs;
   for (;;) {
@@ -188,6 +192,40 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
     if (Date.now() >= end) return;
     await sleep(Math.min(200, Math.max(0, end - Date.now())));
   }
+}
+
+/** How often `sendTask` looks at the agent's screen while it waits for it to be ready. */
+export const READY_POLL_MS = 250;
+
+/**
+ * Sends a fresh start's task (`taskPending`) to its agent as the first message (`taskMessage`, the text of
+ * AIR_TASK.md), once the agent's screen is ready (`agentReady`) and has stopped changing. Waits up to `waitMs`
+ * for that; with 0 it looks once, as each `air serve` tick does while the task is pending (say, while the
+ * agent shows a trust prompt). Returns true once the task is sent.
+ */
+export async function sendTask(ctx: ServeContext, dir: string, waitMs: number): Promise<boolean> {
+  const state = readState(dir);
+  const job = jobOf(state);
+  const n = state.issue;
+  if (job.status !== 'running' || !job.taskPending) return false;
+  const end = Date.now() + waitMs;
+  for (let last: string | undefined; ;) {
+    const screen = await ctx.tmux.screen(n);
+    if (screen === null) return false;
+    if (agentReady(job.harness, screen) && (waitMs === 0 || screen === last)) break;
+    if (Date.now() >= end) return false;
+    last = screen;
+    await sleep(Math.min(READY_POLL_MS, Math.max(0, end - Date.now())));
+  }
+  // `air stop`, a cancel or another start may have taken the job over meanwhile.
+  const cur = readState(dir).job;
+  if (cur?.status !== 'running' || !cur.taskPending || cur.paneNonce !== job.paneNonce) return false;
+  const restart = job.starts > 1 ? { hasRepo: requestOf(dir).repos.length > 0 } : undefined;
+  const message = taskMessage(readFileSync(join(dir, TASK_FILE), 'utf8'), restart);
+  if (!(await ctx.tmux.send(n, message))) return false;
+  saveJob(ctx, dir, { taskPending: undefined });
+  ctx.log(`#${n}: sent the agent its task (${message.length} characters)`);
+  return true;
 }
 
 /**

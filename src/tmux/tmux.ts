@@ -4,17 +4,13 @@
 // volunteer's windows or the jobs of a server for another requests repo on the same socket.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, statSync, writeFileSync } from 'node:fs';
-import { constants } from 'node:os';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { checkRepo } from '../gh/issues.ts';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
 import { launcherPid, launcherStatus, removeLauncher, writeLauncher } from './launcher.ts';
-
-/** The file in the workspace that holds the full task; the agent's argv only points at it. */
-export const TASK_FILE = 'AIR_TASK.md';
-export const TASK_INSTRUCTION = `Read ${TASK_FILE} in this directory and do the task it describes.`;
 
 export interface RunResult { code: number; stdout: string; stderr: string }
 /** Runs `tmux -L <socket> ...args`. Injectable for unit tests. */
@@ -80,12 +76,10 @@ export interface StartJobInput {
   argv: string[];
   /** Added to (or overriding) the caller's environment, which the job inherits whole. */
   env?: Record<string, string>;
-  /**
-   * The full task. Written to `<cwd>/AIR_TASK.md`; argv gets TASK_INSTRUCTION as its last argument, so a long
-   * task never reaches argv (E2BIG) or tmux's size-limited command messages.
-   */
-  task?: string;
 }
+
+/** After pasting a message, how long `send` waits before Enter, so the agent has taken the paste in first. */
+export const PASTE_SETTLE_MS = 500;
 
 export interface StopOptions {
   /** How long to wait for the agent to exit after the interrupt keys (default 5000). */
@@ -432,11 +426,7 @@ export function createTmux(options: TmuxOptions) {
     if (!existsSync(input.cwd) || !statSync(input.cwd).isDirectory()) throw new Error(`tmux: workspace ${input.cwd} is not a directory`);
     if (await findJob(input.issue)) throw new Error(`tmux: job #${input.issue} already has a window`);
     const env = jobEnv(input.env);
-    let argv = input.argv;
-    if (input.task !== undefined) {
-      writeFileSync(join(input.cwd, TASK_FILE), input.task);
-      argv = [...argv, TASK_INSTRUCTION];
-    }
+    const argv = input.argv;
     await ensureSession();
     // The pane is a tmux terminal, whatever terminal air itself runs in.
     env.TERM = (await run(['show-options', '-sv', 'default-terminal'])).stdout.trim() || 'tmux-256color';
@@ -500,6 +490,30 @@ export function createTmux(options: TmuxOptions) {
     if (r.code === 0) return r.stdout;
     if (vanished(r.stderr)) return null;
     throw new Error(`tmux capture-pane: ${r.stderr.trim()}`);
+  }
+
+  /**
+   * Types `text` into the job's pane as the agent's next message: tmux loads it into a buffer from a private
+   * file (`load-buffer`), pastes it as one bracketed paste (`paste-buffer -p`, so its newlines don't submit
+   * it line by line), and Enter submits it PASTE_SETTLE_MS later. Nothing goes on the agent's argv or stdin,
+   * and the text never rides a tmux command line, so its length doesn't matter. Each step checks the pane
+   * still carries the job's nonce. Returns false when there is no such job, it has exited, or its pane changed.
+   */
+  async function send(issue: number, text: string): Promise<boolean> {
+    const job = await findJob(issue);
+    if (!job || job.dead) return false;
+    const dir = mkdtempSync(join(tmpdir(), 'air-paste-')); // mode 0700
+    const buffer = `air-${job.nonce}`;
+    try {
+      const file = join(dir, 'message');
+      writeFileSync(file, text, { mode: 0o600 });
+      if (!(await guarded(job, ['load-buffer', '-b', buffer, file]))) return false;
+      if (!(await guarded(job, ['paste-buffer', '-p', '-d', '-b', buffer, '-t', job.paneId]))) return false;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    await sleep(PASTE_SETTLE_MS);
+    return guarded(job, ['send-keys', '-t', job.paneId, 'Enter']);
   }
 
   /**
@@ -608,7 +622,7 @@ export function createTmux(options: TmuxOptions) {
     return true;
   }
 
-  return { socket, session, version, checkVersion, ensureSession, startServer, startJob, listJobs, listPanesRaw, panes, stopJob, isAlive, capture, screen, setNotice, attachArgs, closeIfIdle, killServer };
+  return { socket, session, version, checkVersion, ensureSession, startServer, startJob, listJobs, listPanesRaw, panes, stopJob, isAlive, capture, screen, send, setNotice, attachArgs, closeIfIdle, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;

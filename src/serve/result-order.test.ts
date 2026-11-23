@@ -50,7 +50,7 @@ async function held(label: string, job: Partial<JobRecord> = {}) {
   const ctx: ServeContext = {
     gh, api: {} as ServeGitHub, tmux: { listJobs: async () => [], stopJob: async () => {} } as unknown as Tmux, config: {} as Config,
     root, host: 'box', ghHost: 'github.com', env: process.env, stateDir: tmp(), trust: createTrust(gh),
-    usage: async () => [], agentEnv: () => ({}), log: () => {}, now: () => new Date(), stopGraceMs: 0, resumeCheckMs: 0,
+    usage: async () => [], agentEnv: () => ({}), log: () => {}, now: () => new Date(), stopGraceMs: 0, resumeCheckMs: 0, agentReadyMs: 0,
   };
   return { gh, ctx, dir: won.dir, from: gh.log.length };
 }

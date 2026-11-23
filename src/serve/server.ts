@@ -18,7 +18,7 @@ import { allWorkspaces, ENDED, isEnded, readState, updateState, type JobRecord, 
 import { matchConfig, type ServeContext } from './context.ts';
 import {
   agentMs, cancelJob, jobSpent, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
-  PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, startAgent, startOrDeliver, stopAgent, vanished, type Workspace,
+  PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, sendTask, startAgent, startOrDeliver, stopAgent, vanished, type Workspace,
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
@@ -326,6 +326,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       return track(n, 'quota stop', stopAgent(ctx, dir, 'quota', out.resetsAt).then(() => {}));
     }
     await watchPrompt(dir, n, job, pane.windowId);
+    // A fresh start whose agent was not ready for its task in time (a prompt was in the way, say) gets it now.
+    if (job.taskPending) track(n, 'task', sendTask(ctx, dir, 0).then(() => {}));
   }
 
   /**

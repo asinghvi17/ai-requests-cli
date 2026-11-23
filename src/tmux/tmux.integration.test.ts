@@ -3,11 +3,11 @@
 import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, existsSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { createTmux, defaultRunner, socketPath, TASK_FILE, TASK_INSTRUCTION } from './tmux.ts';
+import { createTmux, defaultRunner, socketPath } from './tmux.ts';
 import { clientEnv } from './env.ts';
 import { REAP_GRACE_SECONDS } from './launcher.ts';
 
@@ -94,11 +94,10 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.deepEqual((await t.listJobs()).find((j) => j.issue === 77)?.nonce, jobs[0]!.nonce);
   });
 
-  test("a job runs interactively in its workspace with the caller's environment and a task file", async () => {
+  test("a job runs interactively in its workspace with the caller's environment", async () => {
     const out = join(dir, 'env.txt');
-    const script = `{ env; echo "pwd=$(pwd)"; echo "arg=$1"; [ -t 0 ] && echo stdin=tty; } > ${out}.tmp; mv ${out}.tmp ${out}`;
-    const task = 'fix the bug\n'.repeat(200_000); // ~2.4 MB: would be E2BIG in argv
-    const id = await t.startJob({ issue: 11, cwd: dir, argv: ['/bin/sh', '-c', script, 'sh'], env: { AIR_EXTRA: 'yes' }, task });
+    const script = `{ env; echo "pwd=$(pwd)"; echo "args=$#"; [ -t 0 ] && echo stdin=tty; } > ${out}.tmp; mv ${out}.tmp ${out}`;
+    const id = await t.startJob({ issue: 11, cwd: dir, argv: ['/bin/sh', '-c', script, 'sh'], env: { AIR_EXTRA: 'yes' } });
     assert.match(id, /^@\d+$/);
     await until('env file', () => existsSync(out));
     const env = readFileSync(out, 'utf8');
@@ -110,9 +109,36 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.match(env, new RegExp(`^TMUX=.*/${socket},\\d+,\\d+$`, 'm'));
     assert.match(env, /^TERM=/m);
     assert.match(env, new RegExp(`^pwd=${dir}$`, 'm'));
-    assert.match(env, new RegExp(`^arg=${TASK_INSTRUCTION.replace(/\./g, '\\.')}$`, 'm'));
+    assert.match(env, /^args=0$/m);
     assert.match(env, /^stdin=tty$/m);
-    assert.equal(readFileSync(join(dir, TASK_FILE), 'utf8'), task);
+  });
+
+  test('send pastes a long multi-line message into the pane as one bracketed paste, then presses Enter', async () => {
+    // A stand-in TUI: bracketed paste on, raw input; it saves what it reads up to the first bare Enter.
+    const out = join(dir, 'pasted.txt');
+    const reader = join(dir, 'reader.ts');
+    writeFileSync(reader, [
+      "import { writeFileSync } from 'node:fs';",
+      "process.stdout.write('\\x1b[?2004hready\\n');",
+      'process.stdin.setRawMode(true);',
+      "let got = '';",
+      "process.stdin.on('data', (d) => {",
+      "  got += d.toString('utf8');",
+      "  const end = got.indexOf('\\x1b[201~');",
+      "  if (end >= 0 && got.slice(end + 6).includes('\\r')) { writeFileSync(process.argv[2], got); process.exit(0); }",
+      '});',
+    ].join('\n'));
+    const message = `${'fix the bug\n'.repeat(5000)}Your task is also in AIR_TASK.md.\n`; // ~60 KB: far over tmux's command size
+    await t.startJob({ issue: 12, cwd: dir, argv: [process.execPath, reader, out] });
+    await until('the reader to start', async () => (await t.screen(12))?.includes('ready') === true);
+    assert.equal(await t.send(12, message), true);
+    await until('the pasted message', () => existsSync(out));
+    const got = readFileSync(out, 'utf8');
+    assert.ok(got.startsWith('\x1b[200~'), 'one bracketed paste');
+    const body = got.slice(6, got.indexOf('\x1b[201~'));
+    assert.equal(body.replace(/\r/g, '\n'), message, 'the whole message, newlines kept inside the paste');
+    assert.equal(got.slice(got.indexOf('\x1b[201~') + 6), '\r', 'then Enter');
+    assert.equal(await t.send(99, message), false);
   });
 
   test('regression: argv words that look like tmux separators are passed literally, never run', async () => {

@@ -1,0 +1,40 @@
+╭───────────────────────────────────────────────────────────────╮
+│ ✨ Update available! 0.164.0 -> 0.171.0                       │
+│ See https://github.com/openai/codex for installation options. │                 
+│                                                               │
+│ See full release notes:                                       │
+│ https://github.com/openai/codex/releases/latest               │
+╰───────────────────────────────────────────────────────────────╯
+ 
+ 
+  >_ OpenAI Codex (v0.164.0)
+     /home/u/air/o__requests/12-abc
+                                                             
+                                                                      
+                                                                        
+                                                                         
+                                                                          
+                                                                          
+                                                                           
+                                                                            
+                                                                            
+                                                                             
+                                                                            
+                                                                            
+                                                                           
+                                                                         
+                                                                      
+                                                                     
+                                                                   
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+› Ask Codex to do anything
+ 
+  gpt-5 default · /home/u/air/o__requests/12-abc
+  ? for shortcuts                                                                              ⚠ 1 warning · f2 to view

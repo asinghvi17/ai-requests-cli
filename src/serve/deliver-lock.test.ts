@@ -51,7 +51,7 @@ async function finished() {
   const ctx: ServeContext = {
     gh, api, tmux: { listJobs: async () => [], stopJob: async () => {} } as unknown as Tmux, config: {} as Config,
     root, host: 'box', ghHost: 'github.com', env: process.env, stateDir: tmp(), trust: createTrust(gh),
-    usage: async () => [], agentEnv: () => ({}), log: () => {}, now: () => new Date(), stopGraceMs: 0, resumeCheckMs: 0,
+    usage: async () => [], agentEnv: () => ({}), log: () => {}, now: () => new Date(), stopGraceMs: 0, resumeCheckMs: 0, agentReadyMs: 0,
   };
   const comments = () => gh.log.filter((l) => l === 'comment 7').length;
   return { gh, ctx, dir: won.dir, uploads, comments, before: comments() };
