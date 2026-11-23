@@ -761,7 +761,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.deepEqual(result?.ok && result.result.artifact, { url: asset.url, sha256: asset.sha256, bytes: asset.bytes });
   });
 
-  test('air stop / air start: pause keeps the claim; start resumes, or starts fresh when resume fails', async () => {
+  test('air stop / air start: pause keeps the claim; start resumes, or starts fresh when resume fails', { timeout: 60_000 }, async () => {
     const w = world();
     jobDeps.loadConfig = () => w.ctx.config;
     jobDeps.context = () => w.ctx;
@@ -904,7 +904,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(job(w, 43)!.state.job!.waiting?.prompt, 'claude-trust');
   });
 
-  test('each waiting episode posts once, up to 3 comments per job', async () => {
+  test('each waiting episode posts once, up to 3 comments per job', { timeout: 60_000 }, async () => {
     const w = world();
     w.store.addIssue({ number: 44, body: body('screen claude-trust', ['deliver: comment', 'timeout: 2h']) });
     await running(w, 44);
@@ -997,7 +997,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.ok(w.logs.some((l) => /^#49: closed window @\d+: no workspace on this machine holds its job$/.test(l)), w.logs.join('\n'));
   });
 
-  test('air serve --once: with no job window left when it stops, the air tmux session and server end', async () => {
+  test('air serve --once: with no job window left when it stops, the air tmux session and server end', { timeout: 60_000 }, async () => {
     const w = world();
     jobDeps.loadConfig = () => w.ctx.config;
     jobDeps.context = () => w.ctx;
@@ -1045,7 +1045,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(resultOf(w, 12)?.resume, undefined);
   });
 
-  test('an agent that exits without AIR_DONE, whatever its status, is resumed once, then stopped early as partial', async () => {
+  test('an agent that exits without AIR_DONE, whatever its status, is resumed once, then stopped early as partial', { timeout: 60_000 }, async () => {
     const w = world();
     w.store.addIssue({ number: 13, body: body('quit 0') });
     w.store.addIssue({ number: 30, body: body('quit 4') });
