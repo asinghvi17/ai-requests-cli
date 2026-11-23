@@ -4,7 +4,7 @@
 import { randomBytes } from 'node:crypto';
 import { lstatSync, readdirSync, realpathSync, renameSync, rmSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { checkRepo } from '../gh/issues.ts';
+import { checkRepo } from '../gh/index.ts';
 
 const WORKSPACE_NAME = /^\d+-[A-Za-z0-9]{8,64}$/;
 /** A workspace renamed aside for removal (`removeWorkspace`); one a crash left is removed by `removeTrash`. */

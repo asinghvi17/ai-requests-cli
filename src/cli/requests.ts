@@ -2,7 +2,7 @@
 // (`--repo` or the config's `repo`) and the workspace root.
 import { loadConfig, type Config } from '../config.ts';
 import { requestsRepo, type RequestsRepo } from '../gh/issues.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 
 export type Target = { gh: RequestsRepo; issue: number; root: string; config: Config };
 

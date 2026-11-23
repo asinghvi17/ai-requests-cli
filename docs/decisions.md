@@ -672,3 +672,14 @@ specifier's target is its path.
 - `air serve` now refuses to start when workspace_root can't be made (not a directory, or not writable),
   instead of failing at the first claim.
 - An agent or login problem fails doctor only when no login is ready; with one ready it is a warning (`!`).
+
+## 2026-11-23: #30 and #31 under the P0 boundary test
+
+- `air doctor` (#30) and the cleanup work (#31) were written before the boundary test and added 19 violations.
+  They are fixed in the code; ALLOWED did not grow. The first domain indexes (`lib`, `gh`, `setup`, `server`,
+  `agents`) export only what their importers need today, and grow as later phases route imports through them.
+- `Io` lives in `lib/io.ts` and `Invocation` in `cli/args.ts`, not in `cli/main.ts`, so no command imports the
+  router that imports it. That removed every `cli` file cycle: 49 entries left ALLOWED.
+- `serve/hints.ts` is in the setup domain (install fixes for a volunteer's machine), and `resolveBinary` moved
+  there from `serve/preflight.ts`, which imports it, so hints no longer import preflight back.
+- `pid.ts` is in lib.

@@ -11,10 +11,10 @@
 // printed.
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { AGENT_HARNESSES, DEFAULT_AGENTS, loadConfig, type Agent, type Config } from '../config.ts';
 import type { SubscriptionConfig } from '../usage/types.ts';
-import { hostOs, installHint, type Os } from './hints.ts';
+import { hostOs, installHint, resolveBinary, type Os } from './hints.ts';
 
 export type Harness = (typeof AGENT_HARNESSES)[number];
 
@@ -167,25 +167,6 @@ export function airOnPath(self: string, env: Record<string, string | undefined>,
 
 const sh = (s: string) => (/^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
 const tomlArray = (xs: string[]) => `[${xs.map((x) => JSON.stringify(x)).join(', ')}]`;
-
-/** `command[0]` resolved on PATH (or as given, when it is a path), if it is an executable file. */
-export function resolveBinary(cmd: string, env: Record<string, string | undefined>, home: string): string | undefined {
-  const ok = (p: string) => {
-    try {
-      accessSync(p, constants.X_OK);
-      return statSync(p).isFile();
-    } catch {
-      return false;
-    }
-  };
-  if (cmd.includes('/')) return ok(cmd) ? cmd : undefined;
-  for (const dir of (env.PATH ?? '').split(delimiter)) {
-    if (!dir) continue;
-    const p = join(dir.startsWith('~/') ? join(home, dir.slice(2)) : dir, cmd);
-    if (ok(p)) return p;
-  }
-  return undefined;
-}
 
 /** The value of `--flag VALUE` or `--flag=VALUE` (any of `names`) in `args`, last one wins. */
 function flagValue(args: string[], names: string[]): string | undefined {

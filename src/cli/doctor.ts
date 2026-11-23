@@ -6,15 +6,13 @@
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
-import { configPath, parseConfig, type Config } from '../config.ts';
-import { hostOs, installHint, LOGIN_HINT, OS_NAMES, type Os } from '../serve/hints.ts';
 import {
-  airOnPath, configState, defaultPreflightDeps, fixOf, ghState, gitVersion, loginsOf, preflight, workspaceRootProblem,
-  type AgentCheck, type GhState, type Login,
-} from '../serve/preflight.ts';
-import { checkTmux, tmuxVersion } from '../tmux/tmux.ts';
-import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, readUncached, type Reading, type SubscriptionConfig } from '../usage/index.ts';
-import type { Invocation } from './main.ts';
+  airOnPath, configPath, configState, defaultPreflightDeps, fixOf, ghState, gitVersion, hostOs, installHint, LOGIN_HINT, loginsOf,
+  OS_NAMES, parseConfig, preflight, workspaceRootProblem, type AgentCheck, type Config, type GhState, type Login, type Os,
+} from '../setup/index.ts';
+import { checkTmux, tmuxVersion } from '../server/index.ts';
+import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, readUncached, type Reading, type SubscriptionConfig } from '../agents/index.ts';
+import type { Invocation } from './args.ts';
 
 export type Mark = 'ok' | 'warn' | 'fail';
 export interface Line {

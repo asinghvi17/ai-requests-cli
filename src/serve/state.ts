@@ -6,7 +6,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { thisHost, writerGone } from '../pid.ts';
+import { thisHost, writerGone } from '../lib/index.ts';
 
 export const SERVER_STATE_FILE = 'serve.json';
 

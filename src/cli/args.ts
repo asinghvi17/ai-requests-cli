@@ -1,8 +1,11 @@
 // Hand-rolled argv parser. Flags are declared up front so `--flag value` and boolean flags are unambiguous.
 // Supports `--name value`, `--name=value`, boolean `--name`, `-h`-style short aliases and `--` to end flags.
 // Any other argument starting with `-` (`-repo`, `-r=x`) is an unknown flag; a lone `-` is a positional (stdin).
+import type { Io } from '../lib/index.ts';
 
-export type FlagSpec = { type: 'string' | 'boolean'; short?: string; multiple?: boolean };
+/** A command's parsed argv, and where it writes. */
+export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
+export type FlagSpec ={ type: 'string' | 'boolean'; short?: string; multiple?: boolean };
 export type FlagSpecs = Record<string, FlagSpec>;
 export type Parsed = { flags: Record<string, string | boolean | string[]>; positionals: string[] };
 

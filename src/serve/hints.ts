@@ -1,10 +1,30 @@
 // How to install what air needs, on this machine: `detectOs` names the package manager to use, and
 // `installHint` gives the command. The startup checks (`air serve`, `air doctor`) print these as fixes. gh, Claude
 // Code and Codex use their projects' own install commands (cli/cli docs/install_linux.md, code.claude.com setup,
-// the openai/codex README); tmux and git come from the system's package manager.
-import { existsSync, readFileSync } from 'node:fs';
+// the openai/codex README); tmux and git come from the system's package manager. `resolveBinary` says whether
+// a tool is installed.
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolveBinary } from './preflight.ts';
+import { delimiter, join } from 'node:path';
+
+/** `command[0]` resolved on PATH (or as given, when it is a path), if it is an executable file. */
+export function resolveBinary(cmd: string, env: Record<string, string | undefined>, home: string): string | undefined {
+  const ok = (p: string) => {
+    try {
+      accessSync(p, constants.X_OK);
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
+  if (cmd.includes('/')) return ok(cmd) ? cmd : undefined;
+  for (const dir of (env.PATH ?? '').split(delimiter)) {
+    if (!dir) continue;
+    const p = join(dir.startsWith('~/') ? join(home, dir.slice(2)) : dir, cmd);
+    if (ok(p)) return p;
+  }
+  return undefined;
+}
 
 /** A machine, by how software is installed on it. `macos-nobrew` is macOS without Homebrew. */
 export type Os = 'macos' | 'macos-nobrew' | 'debian' | 'fedora' | 'rhel' | 'arch' | 'other';

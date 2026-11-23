@@ -8,11 +8,11 @@ import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS } from '../config.ts';
-import { hostOs, installHint, type Os } from '../serve/hints.ts';
-import { configState, ghState, resolveBinary, type AgentCheck, type GhState } from '../serve/preflight.ts';
+import { hostOs, installHint, resolveBinary, type Os } from '../serve/hints.ts';
+import { configState, ghState, type AgentCheck, type GhState } from '../serve/preflight.ts';
 import { writeClaudeTrust } from '../serve/trust.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, readAll } from '../usage/index.ts';
-import type { Io } from './main.ts';
+import type { Io } from '../lib/index.ts';
 import { CommandError } from './requests.ts';
 
 /** A claude or codex login, and whether air found a subscription on it it can serve. */

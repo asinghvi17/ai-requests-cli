@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // air: the CLI entry. Routes argv to a command. Usage errors exit 2, as do unimplemented commands; a GitHub
 // error exits 1.
-import { ArgError, parseArgs, type FlagSpecs } from './args.ts';
+import { ArgError, parseArgs, type FlagSpecs, type Invocation } from './args.ts';
+import type { Io } from '../lib/index.ts';
 import { GhError } from '../gh/gh.ts';
 import { VERSION } from '../version.ts';
 import { usageCommand } from '../usage/index.ts';
@@ -22,8 +23,6 @@ import { cancelCommand } from './cancel.ts';
 import { skillCommand } from './skill.ts';
 import { attachCommand, debugCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
-export type Io = { out: (s: string) => void; err: (s: string) => void };
-export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
 type Command = {
   usage: string;
   summary: string;

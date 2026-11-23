@@ -4,7 +4,7 @@
 import { resolve } from 'node:path';
 import { defaultSkillDir, installSkill, InstallError, SKILL_NAME } from '../skill/install.ts';
 import { ensureConfig, firstRunDeps } from './firstrun.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { CommandError, UsageError } from './requests.ts';
 
 /** Injectable for tests. */

@@ -2,7 +2,7 @@
 import type { Trust } from '../claim/trust.ts';
 import type { Releases } from '../gh/releases.ts';
 import { sweep } from '../sweep/sweep.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { repoName } from './submit.ts';
 
 /** Injectable for tests; undefined means the real repo through gh. */

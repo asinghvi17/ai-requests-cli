@@ -3,14 +3,13 @@
 // `air status` without ISSUE: this machine's jobs and what air left behind on it (serve/tidy.ts), or that it is clean.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, type Config } from '../config.ts';
+import { loadConfig, type Config } from '../setup/index.ts';
 import { formatStatus, readStatus, statusJson } from '../requester/status.ts';
-import { LOCK_FILE, staleLock } from '../serve/state.ts';
-import { formatMachineStatus, leftovers, machineStatus } from '../serve/tidy.ts';
-import { defaultRunner, serverPanes, type ServerPane } from '../tmux/tmux.ts';
-import { stateDir } from '../usage/index.ts';
-import { activeWorkspace } from '../workspace/state.ts';
-import type { Invocation } from './main.ts';
+import {
+  activeWorkspace, defaultRunner, formatMachineStatus, leftovers, LOCK_FILE, machineStatus, serverPanes, staleLock, type ServerPane,
+} from '../server/index.ts';
+import { stateDir } from '../agents/index.ts';
+import type { Invocation } from './args.ts';
 import { target } from './requests.ts';
 
 /** Injectable for tests. */

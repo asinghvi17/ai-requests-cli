@@ -8,7 +8,7 @@
 // a symlink. A workspace whose job still has a process (a live delivery lock, or a tmux pane) is never removed.
 import { lstatSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { alive } from '../pid.ts';
+import { alive } from '../lib/index.ts';
 import { removeLauncher, staleLaunchers } from '../tmux/launcher.ts';
 import type { ServerPane } from '../tmux/tmux.ts';
 import { allWorkspaces, everyWorkspace, isEnded, STATE_FILE, type State } from '../workspace/state.ts';
