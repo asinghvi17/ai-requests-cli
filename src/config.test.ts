@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS, loadConfig, parseConfig } from './config.ts';
+import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS, DEFAULT_RESERVE, loadConfig, parseConfig } from './config.ts';
 
 const HOME = '/home/u';
 
@@ -63,7 +63,7 @@ args = ["--permission-mode", "acceptEdits"]
     tick_seconds: 30,
     subscriptions: {
       max: { harness: 'claude', window_usd: 1500, reserve: 0.3 },
-      'codex-pro': { harness: 'codex', reserve: 0 },
+      'codex-pro': { harness: 'codex', reserve: DEFAULT_RESERVE },
     },
     models: {
       claude: { small: 'haiku', medium: 'sonnet', large: 'claude-opus-5-5' },

@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS } from '../config.ts';
+import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS, DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from '../config.ts';
 import { hostOs, installHint, resolveBinary, type Os } from '../serve/hints.ts';
 import { configState, ghState, type AgentCheck, type GhState } from '../serve/preflight.ts';
 import { writeClaudeTrust } from '../serve/trust.ts';
@@ -85,12 +85,17 @@ async function askRepo(): Promise<string> {
   throw new CommandError('no requests repo given: pass --repo OWNER/NAME');
 }
 
-/** The per-window budget (`window_usd`) first run writes when nobody is asked, or nothing is answered. */
-export const DEFAULT_WINDOW_USD = 20;
+/** What first run says before it asks each login's `window_usd`. */
+export const BUDGET_HELP = `What is a whole weekly window of each login worth, in US dollars at API prices? air weighs each request's
+effort, priced in the same dollars, against it. A Max plan's week is worth hundreds of dollars to over a thousand;
+a Pro or Plus plan's far less. air suggests $${DEFAULT_WINDOW_USD} (Enter takes it), and keeps ${DEFAULT_RESERVE * 100}% of each window for you
+whatever you answer. Each job's final comment shows its cost and the share of the window it used, to check this
+by; change window_usd in config.toml any time, and a running air serve picks it up.
+`;
 
 async function askBudget(d: Detected): Promise<number> {
   for (let i = 0; i < 3; i++) {
-    const answer = (await ask(`Per-window budget for ${d.name} (${d.harness}), in US dollars at API prices [${DEFAULT_WINDOW_USD}]: `)).replace(/^\$/, '');
+    const answer = (await ask(`Per-window budget (window_usd) for ${d.name} (${d.harness}) [${DEFAULT_WINDOW_USD}]: `)).replace(/^\$/, '');
     if (answer === '') return DEFAULT_WINDOW_USD;
     const usd = Number(answer);
     if (Number.isFinite(usd) && usd > 0) return usd;
@@ -121,8 +126,10 @@ export async function ensureConfig(io: Io, repo: string | undefined, interactive
   io.out('looking for Claude Code and Codex subscriptions...\n');
   const detected = await firstRunDeps.detect();
   for (const d of detected) io.out(`  ${d.name} (${d.harness}): ${d.found ? 'found a subscription' : `${d.why}; not serving it`}\n`);
+  const found = detected.filter((x) => x.found);
+  if (interactive && found.length) io.out(`\n${BUDGET_HELP}`);
   const subs = [];
-  for (const d of detected.filter((x) => x.found)) subs.push({ ...d, windowUsd: interactive ? await askBudget(d) : DEFAULT_WINDOW_USD });
+  for (const d of found) subs.push({ ...d, windowUsd: interactive ? await askBudget(d) : DEFAULT_WINDOW_USD });
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, configTemplate(repo, subs), { flag: 'wx' });
   io.out(`wrote ${path}\n`);

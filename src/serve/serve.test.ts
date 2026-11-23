@@ -151,7 +151,7 @@ test('committedUsage adds what held jobs are still to spend, in dollars', () => 
     dir: `/x/${spent}`,
     state: { job: { status, harness: 'claude', subscription, model: 'sonnet', runMs: 0, starts: 1, expectedCost } },
   }) as never;
-  const config = { models: {}, subscriptions: { max: { window_usd: 1000 } } };
+  const config = { models: {}, subscriptions: { max: { window_usd: 1000, reserve: 0.3 } } };
   const spent = (w: { dir: string }) => Number(w.dir.slice(3));
   const [s, m] = committedUsage([now, manual], [ws('max', 'running', 10, 2), ws('max', 'done', 100, 0), ws('team', 'running', 10, 12), ws('team', 'paused', 30, 5)], config, spent);
   // a readable meter already shows the $2 spent: $8 more of a $1,000 window

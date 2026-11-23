@@ -683,3 +683,42 @@ specifier's target is its path.
 - `serve/hints.ts` is in the setup domain (install fixes for a volunteer's machine), and `resolveBinary` moved
   there from `serve/preflight.ts`, which imports it, so hints no longer import preflight back.
 - `pid.ts` is in lib.
+
+## 2026-11-23: fixes from the second volunteer trial (v0.4.0, a Mac)
+
+- The default `window_usd` is 500, up from 20. At 20, an effort S request ($3) is 15% of a week, so a window
+  70% used with its 30% reserve took nothing, and every tick logged a no-fit nobody saw. A Max plan's weekly
+  window is worth hundreds of dollars to over a thousand at API prices; 500 is the low end of that, so a
+  volunteer on Max undercounts their window rather than overcounts it. A Pro or Plus plan is worth far less,
+  and first run says so. Too high a value only makes each effort a smaller share of the week than it really
+  is; the reserve still holds, since air rereads usage every tick.
+- First run explains what `window_usd` means, suggests 500 and takes it on Enter. Without a terminal it
+  writes 500.
+- `reserve` stays 0.3, and is now one default (`DEFAULT_RESERVE` in config.ts): config.toml without a
+  `reserve` used to read as 0, while the matcher's own default was 0.3. The reserve and what is left are both
+  shares of the window, both scaled by `window_usd`, so `window_usd` doesn't move where air stops (70% used);
+  it sets the share each effort is. The $152 reserve the trial logged at `window_usd = 1000` was 30% of $1000
+  tapered to about half, 12 hours before the reset: the taper is meant (quota about to reset goes to use).
+- When requests wait only on budget or reserve (a subscription would take one but for its dollars, and the
+  poll claims nothing), the server logs it once, when that starts (at startup too), naming the request, each
+  subscription's numbers, the exact keys (`subscriptions.NAME.window_usd`, `.reserve`, or a manual budget's
+  `budget.usd`), the file, and the smallest `window_usd` that would take it (none when the window is used
+  past its reserve: then only a lower reserve or the reset helps). The tmux status bar says so while it
+  lasts. Per-request no-fit lines are unchanged.
+- `air serve` rereads config.toml every tick and applies it when its text changes, except `workspace_root`
+  (the workspaces in use are under it), which is logged as changing on restart. A file that can't be read
+  or parsed keeps the config in use and is logged once until it changes. subscriptions.json is still read
+  at start.
+- A fresh agent gets its whole task as its first message: AIR_TASK.md's text, saying the file is there to
+  read again (after a compaction, say). Not on argv (length limits) nor stdin (the agent runs interactively
+  in tmux, for volunteers to attach): air waits for the agent's input box (patterns from the captured Claude
+  Code 2.1.311 and Codex 0.164.0 ready screens), loads the text into a tmux buffer from a private file,
+  pastes it as one bracketed paste (`paste-buffer -p`, so its newlines don't submit it early) and presses
+  Enter 200 ms later. Checked by hand on both CLIs with 40- and 60-line pastes and Enter 100 ms to 1 s
+  after. A dialog in the way (folder trust, say) holds the task back; each tick looks again. A session that
+  never got its task is started fresh, since there is nothing to resume. Resumes keep their short argv
+  instruction: their session already holds the task.
+- An effort S request ran on sonnet because effort never picks the model: a request's `model` (spec v0 §2,
+  "Minimum model tier. Default `medium`") does, and the trial's request did not ask for `small`. That is the
+  spec's design, so it stays. The small tier is reachable with `model: small`; the docs and the requester
+  skill now say when to use it.

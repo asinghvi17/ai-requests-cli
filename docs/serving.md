@@ -50,8 +50,13 @@ delete their comment. [spec/v0.md §9](../spec/v0.md#9-claiming) has the details
 
 air then sets up a fresh workspace under `workspace_root`: the context zip and any repos the request names.
 
-It starts the agent in a new tmux window. When the agent finishes, air delivers the result as a comment,
-a pull request or an artifact, as the request asks.
+It starts the agent in a new tmux window and, once the agent's input box is up, pastes the whole task in as
+its first message. The task stays in `AIR_TASK.md` in the workspace, for the agent to read again. When the
+agent finishes, air delivers the result as a comment, a pull request or an artifact, as the request asks.
+
+A request runs on the model tier its `model` names (`small`, `medium`, `large`; default `medium`), mapped by
+`[models.HARNESS]` in the config. Effort doesn't pick the tier: an S request without `model` runs on medium
+(Sonnet), and `model: small` runs it on Haiku.
 
 The labels are listed in [spec/v0.md](../spec/v0.md#8-labels). `air serve` creates any the repo lacks.
 
@@ -63,9 +68,24 @@ whatever your plan costs. A request's effort is such an estimate: XS $1, S $3, M
 air reads each subscription's quota as a percentage of its weekly window. `window_usd` in the config says
 what the whole window is worth, so 60% used of a $1000 window leaves $400.
 
-The first run asks for each subscription's per-window budget, defaulting to a conservative $20. Raise it
-from your first jobs: each final comment gives the job's cost and the window's usage before and after. A $12
-job that moved the window from 40% to 41.5% puts the whole window near $800.
+The first run asks for each subscription's `window_usd` and suggests $500 (Enter takes it). A Max plan's week
+is worth hundreds of dollars to over a thousand at API prices, so $500 is the low end of a Max plan; a Pro or
+Plus plan's week is worth far less. Check it from your first jobs: each final comment gives the job's cost and
+the window's usage before and after. A $12 job that moved the window from 40% to 41.5% puts the whole window
+near $800.
+
+`reserve` (default 0.3) is the share of each window kept for you: air takes no new work once the window is 70%
+used. In the last 24 hours before the window resets the reserve shrinks to 0, so quota that would otherwise
+go unused gets used. Both are shares of the window, so `window_usd` doesn't change where air stops; it
+changes how big a share of the week each effort is. At $20, an S request is 15% of the week; at $500 it is
+0.6%.
+
+When the only thing keeping air from a request is budget or reserve, the log says so once, when that starts
+(at startup too), with the exact key to change (`subscriptions.NAME.window_usd`, or `reserve`), the file, and
+the `window_usd` that would take the request. The tmux status bar says so while it lasts.
+
+`air serve` reads config.toml again every tick, so a change takes effect without a restart (`workspace_root`
+excepted). A file that doesn't parse is logged once, and the config in use stays.
 
 A job that costs more than twice its effort's dollars is stopped early, as partial.
 

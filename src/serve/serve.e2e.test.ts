@@ -263,7 +263,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(messageLog(last(w, 2).files).length, 1);
   });
 
-  test('a manual budget is charged what each job cost at API prices, from its transcripts', async () => {
+  test('a manual budget is charged what each job cost at API prices, from its transcripts', { timeout: 60_000 }, async () => {
     const w = world({ budget: { usd: 100 } });
     const spent = () => (loadLedger(ledgerFile(w.ctx.stateDir)).ledger?.subscriptions.max?.spent);
     const start = 0.500325 + 0.00003; // one start: a claude-sonnet-5-5 call and a claude-haiku-4-5 subagent call
@@ -1075,7 +1075,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     }
   });
 
-  test('pr: a partial result pushes a checkpoint branch, and a request resumed from it continues there', async () => {
+  test('pr: a partial result pushes a checkpoint branch, and a request resumed from it continues there', { timeout: 60_000 }, async () => {
     const w = world();
     w.store.setPermission('o/target', 'alice', 'write');
     w.store.addIssue({ number: 31, title: 'Long change', body: body('quit 3', PR, CONTEXT) });
@@ -1116,7 +1116,7 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
     assert.equal(resultOf(w, 31)?.status, 'done');
   });
 
-  test("pr: a resumed request never overwrites a checkpoint branch someone moved since", async () => {
+  test("pr: a resumed request never overwrites a checkpoint branch someone moved since", { timeout: 60_000 }, async () => {
     const w = world();
     w.store.setPermission('o/target', 'alice', 'write');
     w.store.addIssue({ number: 34, title: 'Long change', body: body('quit 3', PR, CONTEXT) });

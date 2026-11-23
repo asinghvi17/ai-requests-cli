@@ -36,6 +36,18 @@ export type Config = {
   agents: Record<string, Agent>;
 };
 
+/**
+ * The `window_usd` first run suggests (and writes without a terminal): the low end of what a Max plan's weekly
+ * window is worth at API prices, which runs from hundreds of dollars to over a thousand. At $500 an effort S
+ * ($3) is 0.6% of a week and XL ($100) 20%. See docs/decisions.md.
+ */
+export const DEFAULT_WINDOW_USD = 500;
+/**
+ * The share of each window kept for the owner when a subscription sets no `reserve`: air takes no new work
+ * once the window is 70% used, until the last 24 hours before it resets, when the reserve tapers to 0.
+ */
+export const DEFAULT_RESERVE = 0.3;
+
 export const AGENT_HARNESSES = ['claude', 'codex'] as const;
 
 export const DEFAULT_MODELS: Record<string, Models> = {
@@ -115,7 +127,7 @@ export function parseConfig(src: string, home = homedir()): Config {
     if (harness === undefined) throw new ConfigError(`${w}.harness is required`);
     const sub: Subscription = {
       harness,
-      reserve: num(t.reserve, `${w}.reserve`, (n) => n >= 0 && n < 1, 'a number in [0, 1)') ?? 0,
+      reserve: num(t.reserve, `${w}.reserve`, (n) => n >= 0 && n < 1, 'a number in [0, 1)') ?? DEFAULT_RESERVE,
     };
     const windowUsd = num(t.window_usd, `${w}.window_usd`, (n) => n > 0, 'a positive number (US dollars)');
     if (windowUsd !== undefined) sub.window_usd = windowUsd;
@@ -172,7 +184,7 @@ const tomlArray = (xs: string[]) => `[${xs.map((x) => JSON.stringify(x)).join(',
 export function configTemplate(repo: string | undefined, subscriptions: { name: string; harness: string; windowUsd: number }[]): string {
   const agent = (h: keyof typeof DEFAULT_AGENTS) => `command = ${tomlArray(DEFAULT_AGENTS[h].command)}\nargs = ${tomlArray(DEFAULT_AGENTS[h].args)}`;
   const key = (name: string) => (/^[A-Za-z0-9_-]+$/.test(name) ? name : JSON.stringify(name));
-  const subs = subscriptions.map((s) => `[subscriptions.${key(s.name)}]\nharness = "${s.harness}"\nwindow_usd = ${s.windowUsd}\nreserve = 0.3      # share of each window kept for yourself\n`);
+  const subs = subscriptions.map((s) => `[subscriptions.${key(s.name)}]\nharness = "${s.harness}"\nwindow_usd = ${s.windowUsd}\nreserve = ${DEFAULT_RESERVE}      # share of each window kept for yourself\n`);
   return `# air's config, written by its first run; docs/config.md explains each key.
 ${repo ? `repo = "${repo}"` : '# repo = "OWNER/NAME"   # the requests repo (or pass --repo)'}
 workspace_root = "~/air"   # each job gets a fresh directory under it
@@ -180,8 +192,11 @@ max_jobs = 1               # jobs running at once
 tick_seconds = 60          # how often air serve polls; a job's time limit is its request's \`timeout\`
 
 # One table per login air serves, named as in subscriptions.json. Budgets are US dollars at API prices.
-# window_usd is the per-window budget: what air counts a login's whole weekly window as worth. Start low;
-# raise it once your first jobs' final comments show what the window is really worth (cost / share used).
+# window_usd is what air counts a login's whole weekly window as worth: it sets how big a share of the week a
+# request's effort is (S is $3). A Max plan's week is worth hundreds of dollars to over a thousand; a Pro or
+# Plus plan's far less. reserve is the share you keep: air takes no new work past (1 - reserve) of the
+# window used. Each job's final comment gives its cost and the share of the window it used, to check
+# window_usd against. air serve rereads this file every tick.
 ${subs.length ? subs.join('\n') : '# (no subscription found when this was written)\n'}
 # Request tier -> model. A request never runs below its tier.
 [models.claude]

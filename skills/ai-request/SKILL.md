@@ -41,8 +41,9 @@ If there's none, ask for it and pass `--repo OWNER/NAME` to every `air` command 
   `deliver: none` must use a branch `ref`, and each one gets its own PR. `artifact` when the result is
   files, such as data, a report with figures, or a patch for a repo the user can't push to. Those go in
   `$AIR_OUT` and come back as a zip. Use `comment` only for a short text answer.
-- `model` (`small`/`medium`/`large`), `harness`, `timeout` (default `4h`) and `deadline`, when the task
-  needs them.
+- `model` (`small`/`medium`/`large`): the least model tier, default `medium`. Effort doesn't set it: use
+  `small` for a lookup or a mechanical change a Haiku-class model can do, `large` for hard reasoning.
+- `harness`, `timeout` (default `4h`) and `deadline`, when the task needs them.
 
 Tell the user the effort and deliver you picked, with a one-line reason for each.
 

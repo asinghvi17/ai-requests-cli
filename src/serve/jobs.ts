@@ -195,7 +195,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
 }
 
 /** How often `sendTask` looks at the agent's screen while it waits for it to be ready. */
-export const READY_POLL_MS = 250;
+export const READY_POLL_MS = 100;
 
 /**
  * Sends a fresh start's task (`taskPending`) to its agent as the first message (`taskMessage`, the text of

@@ -50,6 +50,10 @@ Group them by component and list the three that block the most users.
 - The top three each say why they were picked.
 ```
 
+`effort` is what the job may cost; `model` is the least model tier it runs on (`small` is Haiku class,
+`medium` Sonnet class, `large` Opus class; default `medium`). They are separate: a small job a Haiku-class
+model can do runs on one only with `model: small`.
+
 ### The title
 
 The issue title is the first line of `## Task`. A line over 80 characters is cut at a word and ends in

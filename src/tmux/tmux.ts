@@ -79,7 +79,7 @@ export interface StartJobInput {
 }
 
 /** After pasting a message, how long `send` waits before Enter, so the agent has taken the paste in first. */
-export const PASTE_SETTLE_MS = 500;
+export const PASTE_SETTLE_MS = 200;
 
 export interface StopOptions {
   /** How long to wait for the agent to exit after the interrupt keys (default 5000). */

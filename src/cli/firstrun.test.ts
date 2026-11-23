@@ -5,11 +5,11 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configTemplate, loadConfig, parseConfig } from '../config.ts';
+import { configTemplate, DEFAULT_WINDOW_USD, loadConfig, parseConfig } from '../config.ts';
 import type { ServeContext } from '../serve/context.ts';
 import type { AgentCheck } from '../serve/preflight.ts';
 import { acquireServeLock } from '../serve/state.ts';
-import { firstRunDeps } from './firstrun.ts';
+import { BUDGET_HELP, firstRunDeps } from './firstrun.ts';
 import { jobDeps } from './jobs.ts';
 import { main } from './main.ts';
 import { skillDeps } from './skill.ts';
@@ -95,10 +95,10 @@ test('first `air serve` on a terminal: asks for the repo and budgets, writes the
   const asked = terminal(['nope', 'acme/requests', 'lots', '$35']);
   const r = await call('serve');
   assert.equal(r.code, 0, r.err);
-  const budget = 'Per-window budget for claude (claude), in US dollars at API prices [20]: ';
+  const budget = 'Per-window budget (window_usd) for claude (claude) [500]: ';
   assert.deepEqual(asked, ['Requests repo, where your team files AI requests (OWNER/NAME): ', 'Requests repo, where your team files AI requests (OWNER/NAME): ', budget, budget]);
   assert.equal(readFileSync(path, 'utf8'), configTemplate('acme/requests', [{ name: 'claude', harness: 'claude', windowUsd: 35 }]));
-  assert.equal(r.out, `looking for Claude Code and Codex subscriptions...\n  claude (claude): found a subscription\n  codex (codex): not installed; not serving it\nwrote ${path}\n`
+  assert.equal(r.out, `looking for Claude Code and Codex subscriptions...\n  claude (claude): found a subscription\n  codex (codex): not installed; not serving it\n\n${BUDGET_HELP}wrote ${path}\n`
     + 'air serve runs in tmux: detach with C-b d and it keeps serving; `air serve` again comes back\n');
   assert.match(r.err, /^claude: 2\.1\.311 \(Claude Code\): ready/);
   assert.equal(started.length, 1);
@@ -267,7 +267,7 @@ test('skill install writes the config on first run: --repo, or asked on a termin
   assert.equal(r.code, 0);
   assert.equal(asked.length, 2);
   assert.equal(loadConfig(path).repo, 'acme/requests');
-  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, 20, 'an empty answer is the default budget');
+  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, DEFAULT_WINDOW_USD, 'an empty answer is the default budget');
   assert.match(r.out, new RegExp(`wrote ${path}\ninstalled the ai-request skill in ${dir}\n$`));
 
   terminal([]);
@@ -275,7 +275,7 @@ test('skill install writes the config on first run: --repo, or asked on a termin
   firstRunDeps.isTTY = () => false;
   assert.equal((await call('skill', 'install', '--repo', 'acme/x')).code, 0);
   assert.equal(loadConfig(path).repo, 'acme/x');
-  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, 20, 'no terminal: the default budget');
+  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, DEFAULT_WINDOW_USD, 'no terminal: the default budget');
   // The config names a repo now: no flag needed.
   assert.equal((await call('skill', 'install')).code, 0);
   assert.equal((await call('skill', 'install', '--repo', 'nope')).code, 2);

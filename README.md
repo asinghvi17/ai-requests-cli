@@ -65,7 +65,7 @@ air serve
 ```
 
 The first run sets itself up. It asks for the requests repo (or pass `--repo OWNER/NAME`), finds your
-Claude and Codex subscriptions and asks each one's per-window budget (default $20, see
+Claude and Codex subscriptions and asks each one's per-window budget (`window_usd`, suggesting $500; see
 [budgets](docs/serving.md#budgets)), and asks before trusting `~/air` in Claude Code. Then it opens its own tmux session and shows you its log.
 
 Detach with `C-b d` and it keeps serving. Run `air serve` again to come back. `C-c` stops it.
