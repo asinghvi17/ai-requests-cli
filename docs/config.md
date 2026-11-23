@@ -6,7 +6,8 @@ Without a terminal to ask on, `air skill install` needs `--repo OWNER/NAME` to w
 
 A running `air serve` reads the file again every tick, so an edit takes effect without a restart, except
 `workspace_root`, which changes when it restarts. A file that doesn't parse is logged once, and the server
-keeps the config it had.
+keeps the config it had. `[models]` and `[agents]` edits apply from the next agent launch, a resume of a
+running job included; the startup check that each agent can run unattended runs again only on a restart.
 
 ## Top level
 

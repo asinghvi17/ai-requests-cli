@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTmux, parseJobs, quoteTmux, signalName, signalOf, tmuxVersionProblem, socketPath, type RunResult } from './tmux.ts';
+import { createTmux, parseJobs, pasteable, quoteTmux, signalName, signalOf, tmuxVersionProblem, socketPath, type RunResult } from './tmux.ts';
 import { checkJob, clientEnv, jobEnv, SESSION_MARKERS } from './env.ts';
 import { launcherPid, launcherStatus, shQuote, writeLauncher } from './launcher.ts';
 
@@ -448,6 +448,27 @@ describe('tmux (fake runner)', () => {
     assert.deepEqual(guarded.map((c) => c[5]!.split(' ; ')[0]), [
       `'load-buffer' '-b' 'air-n1' '${file}'`, "'paste-buffer' '-p' '-d' '-b' 'air-n1' '-t' '%4'", "'send-keys' '-t' '%4' 'Enter'"]);
     assert.ok(f.calls.every((c) => c.join(' ').length < 1000), 'the text never rides a tmux command line');
+  });
+
+  test('pasteable drops ESC and control characters but newline and tab, so a request cannot end the paste or send keys', () => {
+    assert.equal(pasteable('a\tb\nc'), 'a\tb\nc');
+    assert.equal(pasteable('done\x1b[201~\rrm -rf ~\r\n'), 'done[201~rm -rf ~\n');
+    assert.equal(pasteable('x\x03\x04\x1a\x00\x7f\x9b201~é ünïcode ✓'), 'x201~é ünïcode ✓');
+  });
+
+  test('send pastes the pasteable text, and deletes the buffer when the paste does not happen', async () => {
+    let loaded = '';
+    const f = fake([
+      [is('list-panes'), () => ok(jobRow('42', 'n1', '@4', '%4'))],
+      [is('if-shell'), (a) => {
+        const m = /^'load-buffer' '-b' 'air-n1' '([^']+)'/.exec(a[5]!);
+        if (m) loaded = readFileSync(m[1]!, 'utf8');
+        return ok(m ? 'air-ok\n' : ''); // the pane changed between load and paste
+      }],
+    ]);
+    assert.equal(await createTmux({ repo: REPO, kill: noKill, run: f.run }).send(42, 'go\x1b[201~\x03 on\n'), false);
+    assert.equal(loaded, 'go[201~ on\n');
+    assert.deepEqual(f.calls.at(-1), ['delete-buffer', '-b', 'air-n1']);
   });
 
   test('send to a job that is gone, has exited or changed panes sends nothing', async () => {

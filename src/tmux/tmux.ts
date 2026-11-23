@@ -81,6 +81,15 @@ export interface StartJobInput {
 /** After pasting a message, how long `send` waits before Enter, so the agent has taken the paste in first. */
 export const PASTE_SETTLE_MS = 200;
 
+/**
+ * `text` as `send` pastes it: without ESC and the other control characters (C0 but newline and tab, DEL, C1),
+ * so text from a request can't end the bracketed paste early (`ESC [201~`, or C1 CSI `201~`) or send the agent
+ * keys such as C-c or C-d. A CR goes too: CRLF line ends paste as LF.
+ */
+export function pasteable(text: string): string {
+  return text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+}
+
 export interface StopOptions {
   /** How long to wait for the agent to exit after the interrupt keys (default 5000). */
   graceMs?: number;
@@ -496,21 +505,26 @@ export function createTmux(options: TmuxOptions) {
    * Types `text` into the job's pane as the agent's next message: tmux loads it into a buffer from a private
    * file (`load-buffer`), pastes it as one bracketed paste (`paste-buffer -p`, so its newlines don't submit
    * it line by line), and Enter submits it PASTE_SETTLE_MS later. Nothing goes on the agent's argv or stdin,
-   * and the text never rides a tmux command line, so its length doesn't matter. Each step checks the pane
-   * still carries the job's nonce. Returns false when there is no such job, it has exited, or its pane changed.
+   * and the text never rides a tmux command line, so its length doesn't matter. The text is `pasteable` first.
+   * Each step checks the pane still carries the job's nonce; a buffer left by a paste that didn't happen is
+   * deleted. Returns false when there is no such job, it has exited, or its pane changed.
    */
   async function send(issue: number, text: string): Promise<boolean> {
     const job = await findJob(issue);
     if (!job || job.dead) return false;
     const dir = mkdtempSync(join(tmpdir(), 'air-paste-')); // mode 0700
     const buffer = `air-${job.nonce}`;
+    let loaded = false, pasted = false;
     try {
       const file = join(dir, 'message');
-      writeFileSync(file, text, { mode: 0o600 });
-      if (!(await guarded(job, ['load-buffer', '-b', buffer, file]))) return false;
-      if (!(await guarded(job, ['paste-buffer', '-p', '-d', '-b', buffer, '-t', job.paneId]))) return false;
+      writeFileSync(file, pasteable(text), { mode: 0o600 });
+      loaded = await guarded(job, ['load-buffer', '-b', buffer, file]);
+      if (!loaded) return false;
+      pasted = await guarded(job, ['paste-buffer', '-p', '-d', '-b', buffer, '-t', job.paneId]);
+      if (!pasted) return false;
     } finally {
       rmSync(dir, { recursive: true, force: true });
+      if (loaded && !pasted) await run(['delete-buffer', '-b', buffer]).catch(() => undefined);
     }
     await sleep(PASTE_SETTLE_MS);
     return guarded(job, ['send-keys', '-t', job.paneId, 'Enter']);

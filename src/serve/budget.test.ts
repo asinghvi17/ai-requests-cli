@@ -13,7 +13,7 @@ import type { Tmux } from '../tmux/tmux.ts';
 import type { Subscription } from '../usage/types.ts';
 import type { ServeContext } from './context.ts';
 import type { ListedIssue, ServeGitHub } from './github.ts';
-import { budgetNote, createServer } from './server.ts';
+import { budgetKeys, budgetNote, createServer } from './server.ts';
 
 const dirs: string[] = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -51,7 +51,7 @@ function world(windowUsd: number) {
     await server.tick();
     await server.idle();
   };
-  return { gh, ctx, configFile, logs, notices, tick, use: (pct: number) => { usage = reading(pct); } };
+  return { gh, ctx, server, configFile, logs, notices, tick, use: (pct: number) => { usage = reading(pct); } };
 }
 
 const budgetLines = (logs: string[]) => logs.filter((l) => l.startsWith('budget: '));
@@ -94,6 +94,36 @@ test('requests that wait only on budget are said so once when that begins, with 
   await w.tick();
   assert.equal(budgetLines(w.logs).length, 2);
   assert.match(budgetLines(w.logs)[1]!, /^budget: #22 /);
+});
+
+test('the budget notice is logged again when what to change does, not while it stays the same', async () => {
+  const w = world(20);
+  w.gh.addIssue({ number: 21, body: body('S') });
+  await w.tick();
+  w.use(71); // the numbers move, the fix doesn't
+  await w.tick();
+  assert.equal(budgetLines(w.logs).length, 1);
+  w.use(95); // used past the reserve: now only a lower reserve helps
+  await w.tick();
+  const notes = budgetLines(w.logs);
+  assert.equal(notes.length, 2);
+  assert.match(notes[1]!, /The window is used past its reserve: lower subscriptions\.claude\.reserve/);
+  // Every subscription short of budget is named, each for the first request it turns down.
+  const s = (subscription: string, fitsAt?: number): Short => ({ subscription, manual: false, size: 20, left: 6, reserve: 3, cost: 3, ...(fitsAt ? { fitsAt } : {}) });
+  const waits = [{ issue: 21, effort: 'S', short: [s('claude', 100)] }, { issue: 22, effort: 'S', short: [s('claude', 100), s('work')] }];
+  assert.equal(budgetKeys(waits), 'claude: window_usd, work: reserve');
+  assert.match(budgetNote(waits, parseConfig(toml(20)), { config: 'c', subscriptions: 's' }), /claude: .*#21 costs .* work: .*#22 costs/);
+});
+
+test('the status-bar notice is cleared when the server stops', async () => {
+  const w = world(20);
+  w.gh.addIssue({ number: 21, body: body('S') });
+  const stop = new AbortController();
+  const running = w.server.run({ signal: stop.signal, tickMs: 10 });
+  while (!w.notices.at(-1)) await new Promise((r) => setTimeout(r, 10));
+  stop.abort();
+  await running;
+  assert.equal(w.notices.at(-1), undefined);
 });
 
 test('a request turned down for something else is not a budget wait', async () => {

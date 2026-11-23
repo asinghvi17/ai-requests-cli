@@ -722,3 +722,16 @@ specifier's target is its path.
   "Minimum model tier. Default `medium`") does, and the trial's request did not ask for `small`. That is the
   spec's design, so it stays. The small tier is reachable with `model: small`; the docs and the requester
   skill now say when to use it.
+- Review follow-ups:
+  - The task is pasted only once the agent's ready screen is the same on two looks, on every path (a tick's
+    look included), so a box still drawing, before its TUI turns bracketed paste on, isn't pasted into.
+  - The pasted text loses ESC and the other control characters but newline and tab (`pasteable` in
+    tmux.ts, the one place): a request can't end the paste early or send C-c. AIR_TASK.md keeps the raw text.
+  - `[models]` and `[agents]` edits apply from the next agent launch, resumes included. That is meant: the
+    waiting-prompt fixes say to edit `[agents.*] args`, and a reload exists so that needs no restart. The
+    startup unattended check is not rerun; a restart does that.
+  - The budget notice is logged again when the subscriptions short of budget, or the key to change for one,
+    change; the status bar is cleared when `air serve` stops.
+  - `serve/server.ts` still imports `config.ts` directly, as it did before (an allowlisted entry). Through
+    `setup/index.ts` it would make three directory cycles, since that index re-exports `serve/preflight.ts`
+    and `serve/hints.ts`; it goes once those move to `src/setup/`.

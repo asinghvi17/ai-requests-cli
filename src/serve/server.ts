@@ -32,6 +32,11 @@ export interface ServerOptions {
   manual?: boolean;
 }
 
+/** `run`'s options: see `run`. */
+export interface RunOptions {
+  once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number; oncePollTries?: number; onceRetryMs?: number;
+}
+
 const HELD_PHASES = ['claiming', 'claimed', 'setting-up', 'ready'];
 /** A `claiming` workspace this old was left by a claim that died (`claim()` takes seconds). */
 export const CLAIM_STALE_MS = 10 * 60_000;
@@ -104,22 +109,37 @@ const bodyHash = (body: string) => createHash('sha256').update(body).digest('hex
 /** A request a poll left unclaimed only because its subscriptions' budgets are short (`NoChoice.short`). */
 export interface BudgetWait { issue: number; effort: string; short: Short[] }
 
+/** Each subscription short of budget for `waits`, with the first request it turns down. */
+function shortSubscriptions(waits: BudgetWait[]): { issue: number; s: Short }[] {
+  const seen = new Map<string, { issue: number; s: Short }>();
+  for (const w of waits) for (const s of w.short) if (!seen.has(s.subscription)) seen.set(s.subscription, { issue: w.issue, s });
+  return [...seen.values()];
+}
+
 /**
- * What `air serve` logs when the requests it could take all wait on budget: the first one, what each of its
- * subscriptions lacks, and the config keys and files that change that. `config` and `subscriptions` are the
- * paths of config.toml and subscriptions.json.
+ * Which subscriptions `budgetNote` names for `waits`, and the key it says to change for each: a new episode
+ * starts when this changes.
+ */
+export function budgetKeys(waits: BudgetWait[]): string {
+  return shortSubscriptions(waits).map(({ s }) => `${s.subscription}: ${s.fitsAt === undefined ? 'reserve' : s.manual ? 'budget.usd' : 'window_usd'}`).join(', ');
+}
+
+/**
+ * What `air serve` logs when the requests it could take all wait on budget: the first one, what each
+ * subscription short of budget lacks for the first request it turns down, and the config keys and files that
+ * change that. `config` and `subscriptions` are the paths of config.toml and subscriptions.json.
  */
 export function budgetNote(waits: BudgetWait[], config: Config, files: { config: string; subscriptions: string }): string {
   const [first] = waits;
   if (!first) return '';
   const more = waits.length > 1 ? ` and ${waits.length - 1} more` : '';
   const head = `budget: #${first.issue} (effort ${first.effort}, ${usd(first.short[0]!.cost)})${more} can't be taken only because of budget or reserve, so this server takes no work.`;
-  const subs = first.short.map((s) => {
+  const subs = shortSubscriptions(waits).map(({ issue, s }) => {
     const key = `subscriptions.${s.subscription}`;
     const reserve = `${key}.reserve (now ${config.subscriptions[s.subscription]?.reserve})`;
-    const state = `${s.subscription}: ${usd(s.left)} of its ${usd(s.size)} window left, ${usd(s.reserve)} of that kept as reserve, and #${first.issue} costs ${usd(s.cost)}.`;
+    const state = `${s.subscription}: ${usd(s.left)} of its ${usd(s.size)} window left, ${usd(s.reserve)} of that kept as reserve, and #${issue} costs ${usd(s.cost)}.`;
     if (s.fitsAt === undefined) return `${state} The window is used past its reserve: lower ${reserve} in ${files.config}, or wait for the window to reset.`;
-    const fits = `${usd(Math.ceil(s.fitsAt * 100) / 100)} or more takes #${first.issue}`;
+    const fits = `${usd(Math.ceil(s.fitsAt * 100) / 100)} or more takes #${issue}`;
     return s.manual
       ? `${state} Raise its budget.usd in ${files.subscriptions} (${fits}; read at start, so restart air serve), or lower ${reserve} in ${files.config}.`
       : `${state} Raise ${key}.window_usd (now ${s.size}: what the whole window is worth at API prices; ${fits}) or lower ${reserve} in ${files.config}.`;
@@ -157,6 +177,8 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   let notice: string | undefined;
   /** The status-bar notice while every request this server could take waits on budget (`budgetNote`). */
   let budget: string | undefined;
+  /** `budgetKeys` of the budget notice last logged, while that state lasts. */
+  let budgetShort: string | undefined;
 
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -593,15 +615,18 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   /**
    * Logs `budgetNote` when the requests this server could take start to wait only on budget (at startup, or
-   * whenever that begins again), and keeps a notice in the tmux status bar while they do. Not every tick.
+   * whenever that begins again, or when the subscriptions short of budget, or what to change for one, change),
+   * and keeps a notice in the tmux status bar while they do. Not every tick.
    */
   function noteBudget(waits: BudgetWait[]): void {
     if (!waits.length) {
-      budget = undefined;
+      budget = budgetShort = undefined;
       return;
     }
     const file = ctx.configFile ?? configPath();
-    if (budget === undefined) ctx.log(budgetNote(waits, ctx.config, { config: file, subscriptions: subscriptionsFile() }));
+    const keys = budgetKeys(waits);
+    if (keys !== budgetShort) ctx.log(budgetNote(waits, ctx.config, { config: file, subscriptions: subscriptionsFile() }));
+    budgetShort = keys;
     budget = `air takes no work: requests wait on budget; raise window_usd in ${file} (see the serve log)`;
   }
 
@@ -717,11 +742,24 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
    * Runs ticks until `signal` aborts. With `once`, runs one full tick, then only watches (every `watchMs`)
    * until no job needs it any more. A `once` poll that finds no candidates polls again every `oncePollMs`
    * for up to `onceWaitMs` (list lag, ONCE_WAIT_MS). A `once` poll that fails is tried `oncePollTries` times in
-   * all, `onceRetryMs` apart and doubling; then the run fails.
+   * all, `onceRetryMs` apart and doubling; then the run fails. Its tmux status-bar notice goes with it.
    */
-  async function run(o: {
-    once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number; oncePollTries?: number; onceRetryMs?: number;
-  } = {}): Promise<void> {
+  async function run(o: RunOptions = {}): Promise<void> {
+    try {
+      await serve(o);
+    } finally {
+      budget = budgetShort = undefined;
+      notices.clear();
+      try {
+        if (notice !== undefined) await ctx.tmux.setNotice(undefined);
+        notice = undefined;
+      } catch (e) {
+        ctx.log(`tmux status: ${err(e)}`);
+      }
+    }
+  }
+
+  async function serve(o: RunOptions): Promise<void> {
     // (A function: config.toml may change tick_seconds while the server runs.)
     const tickMs = () => o.tickMs ?? ctx.config.tick_seconds * 1000;
     ctx.log(`air serve on ${ctx.host}: ${repo}, ${opts.manual ? 'manual' : 'auto'} start, max ${ctx.config.max_jobs} job(s), tick ${tickMs() / 1000} s`);

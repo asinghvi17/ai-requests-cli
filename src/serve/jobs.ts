@@ -199,9 +199,10 @@ export const READY_POLL_MS = 100;
 
 /**
  * Sends a fresh start's task (`taskPending`) to its agent as the first message (`taskMessage`, the text of
- * AIR_TASK.md), once the agent's screen is ready (`agentReady`) and has stopped changing. Waits up to `waitMs`
- * for that; with 0 it looks once, as each `air serve` tick does while the task is pending (say, while the
- * agent shows a trust prompt). Returns true once the task is sent.
+ * AIR_TASK.md), once the agent's screen is ready (`agentReady`) and the same on two looks READY_POLL_MS apart,
+ * so the TUI has finished drawing (and turned bracketed paste on). Waits up to `waitMs` for that, but always
+ * takes those two looks: with 0, as each `air serve` tick does while the task is pending (say, while the agent
+ * shows a trust prompt), it takes just them. Returns true once the task is sent.
  */
 export async function sendTask(ctx: ServeContext, dir: string, waitMs: number): Promise<boolean> {
   const state = readState(dir);
@@ -212,10 +213,10 @@ export async function sendTask(ctx: ServeContext, dir: string, waitMs: number): 
   for (let last: string | undefined; ;) {
     const screen = await ctx.tmux.screen(n);
     if (screen === null) return false;
-    if (agentReady(job.harness, screen) && (waitMs === 0 || screen === last)) break;
-    if (Date.now() >= end) return false;
+    if (agentReady(job.harness, screen) && screen === last) break;
+    if (last !== undefined && Date.now() >= end) return false;
     last = screen;
-    await sleep(Math.min(READY_POLL_MS, Math.max(0, end - Date.now())));
+    await sleep(READY_POLL_MS);
   }
   // `air stop`, a cancel or another start may have taken the job over meanwhile.
   const cur = readState(dir).job;

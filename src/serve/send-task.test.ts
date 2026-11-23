@@ -101,7 +101,12 @@ test('an agent showing a dialog is not sent its task; a later look (as a tick do
   assert.equal(readState(dir).job!.taskPending, true);
   assert.ok(logs.includes("#7: the agent's screen is not ready for its task after 0.3 s; air sends it once it is"));
   assert.equal(await sendTask(ctx, dir, 0), false, 'still the dialog');
-  screens.push(CLAUDE_READY);
+  // The box has just been drawn and is still changing on the tick's second look: not yet.
+  const looks = [CLAUDE_READY, CLAUDE_READY.replace('auto mode on', 'auto mode on (shift+tab to cycle)')];
+  ctx.tmux.screen = async () => (looks.length > 1 ? looks.shift()! : looks[0]!);
+  assert.equal(await sendTask(ctx, dir, 0), false, 'a ready screen that is still changing');
+  assert.deepEqual(sent, []);
+  // The next tick sees it the same twice.
   assert.equal(await sendTask(ctx, dir, 0), true);
   assert.deepEqual(sent, [taskMessage(TASK)]);
   assert.equal(await sendTask(ctx, dir, 0), false, 'sent once');
