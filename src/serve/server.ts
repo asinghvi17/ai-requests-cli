@@ -393,8 +393,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       return track(n, 'quota stop', stopAgent(ctx, dir, 'quota', out.resetsAt).then(() => {}));
     }
     await watchPrompt(dir, n, job, pane.windowId);
-    // A fresh start whose agent was not ready for its task in time (a prompt was in the way, say) gets it now.
-    if (job.taskPending) track(n, 'task', sendTask(ctx, dir, 0).then(() => {}));
+    // A fresh start whose agent was not ready for its task in time (a prompt was in the way, say) gets it now;
+    // not while the start (an `air start` in another shell, say) may still be waiting to send it itself.
+    if (job.taskPending && now.getTime() - Date.parse(job.startedAt ?? '') > ctx.agentReadyMs) {
+      track(n, 'task', sendTask(ctx, dir, 0).then(() => {}));
+    }
   }
 
   /**
