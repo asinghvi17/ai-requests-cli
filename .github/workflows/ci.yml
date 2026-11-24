@@ -47,11 +47,11 @@ jobs:
           echo "ptys at end: $(ls /dev/ttys* 2>/dev/null | wc -l)"
           echo "orphans: $(ps -axo ppid=,tty=,command= | awk '$1 == 1 && $2 != "??"' | wc -l)"
           clean() { pkill -f 'sleep 2147483647' || true; pkill -f 'sleep 999' || true; sleep 2; }
-          for p in cat 'sleep 2147483647'; do
-            bash scripts/diag/stress.sh "$p" 300 kill; clean
-            bash scripts/diag/stress.sh "$p" 300 keep; clean
-            for k in 1 2 3; do bash scripts/diag/stress.sh "$p" 200 kill & done; wait; clean
+          for r in 1 2 3; do
+            for p in cat hold direct 'sleep 2147483647'; do bash scripts/diag/stress.sh "$p" 400 keep; clean; done
           done
+          bash scripts/diag/stress.sh direct 300 kill; clean
+          for k in 1 2 3; do bash scripts/diag/stress.sh direct 200 kill & done; wait; clean
           tmux -L probe new-session -d -s p 'sleep 1000'
           i=0; while out=$(tmux -L probe new-window -d -t p: 'sleep 1000' 2>&1); do i=$((i+1)); [ $i -ge 700 ] && break; done
           echo "probe: $i more windows, $(ls /dev/ttys* | wc -l) ptys; then: $out"

@@ -7,7 +7,14 @@ tmux -L $s new-session -d -s p 'sleep 1000'
 before=$(ptys)
 for i in $(seq $n); do
   t=tmp$i
-  if ! w=$(tmux -L $s new-window -d -P -F '#{window_id}' -t p: -n $t -- $1 \; set-option -w -t p:=$t remain-on-exit on \; respawn-pane -k -t p:=$t -- sleep 999 \; rename-window -t p:=$t job$i 2>>"$errs"); then
+  if [ "$1" = hold ]; then
+    w=$(tmux -L $s new-window -d -P -F '#{window_id}' -t p: -n $t -- "trap '' HUP; exec sleep 3" \; set-option -w -t p:=$t remain-on-exit on \; respawn-pane -k -t p:=$t -- sleep 999 \; rename-window -t p:=$t job$i 2>>"$errs")
+  elif [ "$1" = direct ]; then
+    w=$(tmux -L $s new-window -d -P -F '#{window_id}' -t p: -n $t -- sleep 999 \; set-option -w -t p:=$t remain-on-exit on \; rename-window -t p:=$t job$i 2>>"$errs")
+  else
+    w=$(tmux -L $s new-window -d -P -F '#{window_id}' -t p: -n $t -- $1 \; set-option -w -t p:=$t remain-on-exit on \; respawn-pane -k -t p:=$t -- sleep 999 \; rename-window -t p:=$t job$i 2>>"$errs")
+  fi
+  if [ $? -ne 0 ]; then
     fails=$((fails+1))
   fi
   w=$(printf '%s\n' "$w" | grep -m1 '^@')
