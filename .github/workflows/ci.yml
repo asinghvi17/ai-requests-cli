@@ -30,32 +30,8 @@ jobs:
       # The tmux suites (tmux integration, serve and trust end to end) skip without tmux: run them on macOS too.
       - if: runner.os == 'macOS'
         run: brew install tmux
-      # DIAGNOSTIC (temporary): sample pty usage on macOS during the tests.
-      - if: runner.os == 'macOS'
-        run: |
-          sysctl kern.tty.ptmx_max || true
-          echo "ptys at start: $(ls /dev/ttys* 2>/dev/null | wc -l)"
-          ps -axo tty= | sort | uniq -c | sort -rn | head -20
-          nohup sh -c 'max=0; while :; do n=$(ls /dev/ttys* 2>/dev/null | wc -l | tr -d " "); echo "$(date +%T) $n" >> "$RUNNER_TEMP/pty.log"; if [ "$n" -gt "$max" ]; then max=$n; { echo "== $(date +%T) $n ptys"; ps -axo pid,ppid,tty,stat,etime,command | grep -v " ?? " ; } > "$RUNNER_TEMP/pty-peak.log"; fi; sleep 0.5; done' > /dev/null 2>&1 &
       - run: npm ci && npm test
       - run: npm run test:bun
-      - if: always() && runner.os == 'macOS'
-        run: |
-          sort -k2 -n "$RUNNER_TEMP/pty.log" | tail -5
-          awk '{print $2}' "$RUNNER_TEMP/pty.log" | uniq -c | head -100
-          cat "$RUNNER_TEMP/pty-peak.log" | head -200
-          echo "ptys at end: $(ls /dev/ttys* 2>/dev/null | wc -l)"
-          echo "orphans: $(ps -axo ppid=,tty=,command= | awk '$1 == 1 && $2 != "??"' | wc -l)"
-          clean() { pkill -f 'sleep 2147483647' || true; pkill -f 'sleep 999' || true; sleep 2; }
-          for r in 1 2 3; do
-            for p in cat hold direct 'sleep 2147483647'; do bash scripts/diag/stress.sh "$p" 400 keep; clean; done
-          done
-          bash scripts/diag/stress.sh direct 300 kill; clean
-          for k in 1 2 3; do bash scripts/diag/stress.sh direct 200 kill & done; wait; clean
-          tmux -L probe new-session -d -s p 'sleep 1000'
-          i=0; while out=$(tmux -L probe new-window -d -t p: 'sleep 1000' 2>&1); do i=$((i+1)); [ $i -ge 700 ] && break; done
-          echo "probe: $i more windows, $(ls /dev/ttys* | wc -l) ptys; then: $out"
-          tmux -L probe kill-server
 
   build:
     uses: ./.github/workflows/build.yml
