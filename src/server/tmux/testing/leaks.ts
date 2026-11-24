@@ -1,8 +1,7 @@
 // Test teardown: what of a throwaway tmux server's panes outlived it. tmux puts TMUX=<socket path>,<server
-// pid>,<session> in the environment of every process it forks for a pane (startJob's placeholder included),
-// and its children inherit it, so a process that holds one of the server's ptys after the server is gone is
-// found by its environment. Such a process keeps its pty, and on macOS (511 ptys) a CI run that leaks one per
-// job runs out: `fork failed: Device not configured`.
+// pid>,<session> in the environment of every process it forks for a pane, and its children inherit it, so a
+// process that still holds one of the server's ptys after the server is gone is found by its environment.
+// Each keeps a pty (macOS has 511): startJob's old placeholder leaked one in about one start in five there.
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 

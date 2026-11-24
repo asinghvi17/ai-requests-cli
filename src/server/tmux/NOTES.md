@@ -10,9 +10,11 @@ Adapted (not imported) from factory `packages/coordinator-mcp/src/heads.ts`:
 - "no server running" / "error connecting" means no jobs, not an error.
 - `env -u ...` launch wrapper became `env K=V ... argv`: the job inherits the caller's whole environment, with the
   caller's extras on top (TMUX and TMUX_PANE are tmux's own for the pane; TERM is tmux's `default-terminal`).
-New here: one tmux invocation creates the window on a placeholder, tags it `@air_state=starting`, sets remain-on-exit,
-`respawn-pane -k`s the agent and marks it `running`. Chained commands default to the session's *current* pane, so each
-targets the new window by an exact unique temp name (`=air:=air-new-<nonce>`). Leftover `starting` panes are killed.
+New here: one tmux invocation creates the window on the job's launcher, tags it (nonce first, then
+`@air_state=starting`), sets remain-on-exit and marks it `running`. tmux runs a client's command list to the end before
+its event loop sees any pane output or exit, so no one lists the window untagged, and a job that exits at once keeps its
+window and status. Chained commands default to the session's *current* pane, so each targets the new window by an exact
+unique temp name (`=air:=air-new-<nonce>`). Leftover `starting` panes are killed.
 Caller words (argv, env values, cwd) never go on a tmux command line: a word equal to or ending in `;` is a tmux
 separator, so `x;` `run-shell ...` would run tmux commands. They go into a private self-deleting sh launcher
 (`launcher.ts`); tmux runs only `/bin/sh <tmpdir>/air-launch-*/run.sh`.
@@ -65,3 +67,17 @@ A process that makes its own process group or session escapes both; agents don't
 
 The launcher dir lives until the window is killed (`killOwned`). Unit tests with made-up pane pids pass a fake `kill`, so
 they never signal real process groups.
+
+## No placeholder, no `respawn-pane` (macOS CI flake, 2026-11-24)
+
+Job windows used to start on a `sleep 2147483647` placeholder that the same command queue replaced with `respawn-pane -k`.
+On GitHub's macOS runners CI runs failed now and then (2 of 7 pull_request runs) with `respawn pane failed: fork failed: Device not configured`.
+Two separate macOS problems, both measured there by running the chain in a loop (`kern.tty.ptmx_max` is 511):
+- The respawn itself: with a few hundred windows open, about 1 respawn in 300 failed with that error, with any
+  placeholder (`sleep`, `cat`, one that ignores HUP and holds its pty a few seconds), far below the pty limit.
+  `new-window` straight on the command never failed (2,100 starts). So the window now starts on the launcher.
+- The placeholder leaked: closing a pty hangs up only its session leader, and a placeholder that had not yet made the
+  pty its controlling terminal (tmux respawned microseconds after the fork) got no signal, so it lived on, orphaned,
+  holding its pty: 5 to 30% of starts, more under load; 37 left by one CI run of the test suites.
+The tmux suites now check in teardown that no process with the test server's TMUX in its environment outlives the
+server (`testing/leaks.ts`).
