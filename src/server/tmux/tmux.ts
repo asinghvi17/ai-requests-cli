@@ -70,6 +70,16 @@ export interface ServerPane { windowId: string; windowName: string; paneId: stri
 /** The pane option that marks air's own windows: `log` (ensureSession) and `serve` (startServer). */
 const OWN = '@air_own';
 
+/**
+ * What a job window runs until `respawn-pane -k` replaces it, in the same tmux command queue. It must end once
+ * its pty is closed. The hangup signals the tty's session leader only, and on macOS a pane child that has not
+ * yet made the pty its controlling terminal when tmux closes it (tmux respawns microseconds after the fork)
+ * gets no signal at all: a `sleep` there lived on, orphaned, and kept its pty, until a CI run that started a
+ * few hundred jobs ran out of ptys (`fork failed: Device not configured`). `cat` reads the pty, so it gets
+ * EOF (or EIO) and exits whether or not the hangup reached it. Nothing writes to the pane before the respawn.
+ */
+export const PLACEHOLDER = ['cat'];
+
 export interface StartJobInput {
   issue: number;
   cwd: string;
@@ -447,7 +457,7 @@ export function createTmux(options: TmuxOptions) {
     // new window by an exact, unique temporary name.
     const tmp = `air-new-${nonce}`, w = `${target}:=${tmp}`;
     const r = await run(['new-window', '-d', '-P', '-F', '#{window_id} #{pane_id}', '-t', `${target}:`, '-n', tmp,
-      '--', 'sleep', '2147483647', ';',
+      '--', ...PLACEHOLDER, ';',
       'set-option', '-p', '-t', w, '@air_repo', repo, ';',
       'set-option', '-p', '-t', w, '@air_job', String(input.issue), ';',
       'set-option', '-p', '-t', w, '@air_nonce', nonce, ';',

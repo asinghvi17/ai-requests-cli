@@ -10,6 +10,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createTmux, defaultRunner, socketPath } from './tmux.ts';
 import { clientEnv } from './env.ts';
 import { REAP_GRACE_SECONDS } from './launcher.ts';
+import { leftoverPaneProcesses } from './testing/leaks.ts';
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0;
 const socket = `air-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -71,10 +72,11 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     for (const job of await t.listJobs()) await t.stopJob(job.issue, { graceMs: 0 });
     killGroups();
   });
-  after(() => {
+  after(async () => {
     killTestServer();
     if (saved === undefined) delete process.env.AIR_TEST_INHERITED; else process.env.AIR_TEST_INHERITED = saved;
     if (dir) rmSync(dir, { recursive: true, force: true });
+    assert.deepEqual(await leftoverPaneProcesses(socket), [], 'pane processes outlived the tmux server');
   });
 
   test('regression: a caller without a UTF-8 locale still sees its jobs (tmux sanitises tabs for non-UTF-8 clients)', async () => {

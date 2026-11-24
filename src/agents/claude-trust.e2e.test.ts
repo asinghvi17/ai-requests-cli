@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DEFAULT_AGENTS } from '../setup/config.ts';
 import { createTmux, socketPath } from '../server/tmux/tmux.ts';
+import { leftoverPaneProcesses } from '../server/tmux/testing/leaks.ts';
 import { makeBareRepo } from '../lib/git-fixture.ts';
 import { agentArgv, type Agent, type Harness } from './harness.ts';
 import { matchPrompt } from './prompts.ts';
@@ -32,6 +33,7 @@ after(async () => {
   await t.killServer().catch(() => {});
   rmSync(socketPath(socket), { force: true });
   rmSync(base, { recursive: true, force: true });
+  assert.deepEqual(await leftoverPaneProcesses(socket), [], 'pane processes outlived the tmux server');
 });
 
 const root = join(base, 'air');
