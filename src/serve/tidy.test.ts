@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utim
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { staleLaunchers, writeLauncher } from '../tmux/launcher.ts';
-import { thisHost } from '../pid.ts';
+import { thisHost } from '../lib/pid.ts';
 import { createWorkspace, readState, writeState, type JobStatus, type Phase, type State } from '../workspace/state.ts';
 import { DELIVERY_LOCK } from './jobs.ts';
 import { LOCK_FILE, LOCK_GRACE_MS } from './state.ts';

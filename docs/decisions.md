@@ -735,3 +735,12 @@ specifier's target is its path.
   - `serve/server.ts` still imports `config.ts` directly, as it did before (an allowlisted entry). Through
     `setup/index.ts` it would make three directory cycles, since that index re-exports `serve/preflight.ts`
     and `serve/hints.ts`; it goes once those move to `src/setup/`.
+
+## 2026-11-24: shared code in `src/lib/` (refactor P1)
+
+- `toml`, `version`, `pid`, `lock`, `exec`, `zip`, `zipwrite` and `zipout` moved to `src/lib/` with
+  `scripts/move.ts`. No behaviour changed. Other domains import them through `lib/index.ts`, and 14 entries
+  left ALLOWED (148 to 134).
+- `workspace/git.ts` stays put: it imports `RepoEntry` from the request domain, which lib may not.
+- `usage/run.ts` stays in `agents`: its environment allowlist and window names are about the usage CLIs, not
+  shared code. Mapping it with the rest of `usage/` removed three of the 14 entries.

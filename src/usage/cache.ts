@@ -3,7 +3,7 @@
 // A stale or incomplete reading leaves this module with every number nulled: no caller can use one by mistake.
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { withLock, writeAtomic } from './lock.ts';
+import { withLock, writeAtomic } from '../lib/index.ts';
 import type { Reading, Subscription, Window } from './types.ts';
 
 export const REUSE_MS = 5 * 60000;

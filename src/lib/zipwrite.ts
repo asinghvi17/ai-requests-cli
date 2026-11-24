@@ -5,7 +5,7 @@ import { closeSync, constants, createReadStream, fstatSync, lstatSync, openSync,
 import { Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createDeflateRaw } from 'node:zlib';
-import { crc32 } from '../workspace/zip.ts';
+import { crc32 } from './zip.ts';
 
 export class ZipWriteError extends Error {}
 

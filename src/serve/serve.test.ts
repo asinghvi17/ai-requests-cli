@@ -5,14 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseMarkers, parseResult } from '../spec/markers.ts';
 import type { Subscription } from '../usage/types.ts';
-import { extractZip } from '../workspace/zip.ts';
+import { extractZip } from '../lib/zip.ts';
 import { agentArgv, agentReady, codexTrust, findCodexSession, taskMessage } from './agent.ts';
 import { COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
 import { costLine, exitDetail } from './jobs.ts';
 import { committedUsage, exhausted } from './server.ts';
 import { acquireServeLock, FOREIGN_LOCK_MS, LOCK_GRACE_MS, readServerState, staleLock, updateServerState } from './state.ts';
-import { thisHost } from '../pid.ts';
-import { zipDir } from './zipout.ts';
+import { thisHost } from '../lib/pid.ts';
+import { zipDir } from '../lib/zipout.ts';
 
 const dirs: string[] = [];
 const tmp = () => {

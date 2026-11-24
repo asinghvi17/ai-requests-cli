@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { alive, thisHost, writerGone } from './pid.ts';
-import { withLock } from './usage/lock.ts';
+import { withLock } from './lock.ts';
 
 const deadPid = () => Number(spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim());
 

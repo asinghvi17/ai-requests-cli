@@ -3,7 +3,7 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { TAG } from '../version.ts';
+import { TAG } from '../lib/index.ts';
 import { SKILL_FILES } from './bundle.ts';
 
 export const SKILL_NAME = 'ai-request';

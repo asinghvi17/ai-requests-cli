@@ -14,7 +14,7 @@ import { PROGRESS_FILE } from '../workspace/task.ts';
 import { readState, updateState, type JobRecord, type RepoDelivery, type State, type UploadedAsset } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import { ARTIFACTS_TAG } from './github.ts';
-import { zipDir } from './zipout.ts';
+import { zipDir } from '../lib/index.ts';
 
 /** GitHub's limit on a comment body. */
 export const COMMENT_LIMIT = 65_536;

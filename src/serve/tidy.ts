@@ -43,7 +43,7 @@ export interface Leftovers {
 
 /**
  * The state dir's temp files, by what writes them: `.serve.json.<pid>.tmp` (updateServerState), a pidLock's
- * `.serve.lock.<pid>.<hex>` and its `.stale` (pidLock) and `<file>.<pid>.<hex>.tmp` (usage/lock.ts writeAtomic).
+ * `.serve.lock.<pid>.<hex>` and its `.stale` (pidLock) and `<file>.<pid>.<hex>.tmp` (lib/lock.ts writeAtomic).
  * Each lives for milliseconds: one older than LOCK_GRACE_MS whose pid is not alive here is left over. (The age
  * also covers a state dir shared with another host, whose pids can't be judged here.)
  */

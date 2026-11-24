@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { thisHost } from '../pid.ts';
+import { thisHost } from '../lib/pid.ts';
 import { emptyLedger, loadLedger, period, readManual, recordSpend, resetLedger, spend } from './manual.ts';
 import type { ManualConfig } from './types.ts';
 

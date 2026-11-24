@@ -25,7 +25,7 @@ import type { ManualConfig, Subscription } from '../usage/types.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
 import { allWorkspaces, readState, updateState, type State } from '../workspace/state.ts';
 import { CANCEL_LABEL, claim, LABELS, release, STATE_LABELS } from '../claim/claim.ts';
-import { extractZip } from '../workspace/zip.ts';
+import { extractZip } from '../lib/zip.ts';
 import type { ServeContext } from './context.ts';
 import { taskMessage } from './agent.ts';
 import { COMMENT_LIMIT, TRUNCATED_LINE } from './deliver.ts';

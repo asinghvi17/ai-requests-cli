@@ -13,7 +13,7 @@ import type { Asset } from '../spec/frontmatter.ts';
 import { lint } from '../spec/lint.ts';
 import { textAboveResult } from '../spec/markers.ts';
 import { fetchContext, releaseDownload, type Download } from '../workspace/context.ts';
-import { exec } from '../workspace/exec.ts';
+import { exec } from '../lib/index.ts';
 import { checkRef, cloneAt } from '../workspace/git.ts';
 import { readStatus, type LatestResult } from './status.ts';
 

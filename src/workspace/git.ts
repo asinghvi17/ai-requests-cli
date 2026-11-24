@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RepoEntry } from '../spec/frontmatter.ts';
-import { exec, SETUP_TIMEOUT_MS, type ExecResult } from './exec.ts';
+import { exec, SETUP_TIMEOUT_MS, type ExecResult } from '../lib/exec.ts';
 
 /** Resolving a repo at claim time (ls-remote, or a treeless clone for a commit). */
 export const RESOLVE_TIMEOUT_MS = 10 * 60_000;

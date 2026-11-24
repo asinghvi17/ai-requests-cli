@@ -13,7 +13,7 @@ import type { Request } from '../spec/frontmatter.ts';
 import { currentClaim } from '../spec/markers.ts';
 import { fetchContext, releaseDownload, type Download } from './context.ts';
 import { childEnv } from './env.ts';
-import { exec, SETUP_TIMEOUT_MS, type ExecResult } from './exec.ts';
+import { exec, SETUP_TIMEOUT_MS, type ExecResult } from '../lib/index.ts';
 import { checkoutCheckpoint, cloneAt } from './git.ts';
 import { airEnv } from './launch.ts';
 import { activeWorkspace, LOG_FILE, REQUEST_FILE, updateState, type State } from './state.ts';

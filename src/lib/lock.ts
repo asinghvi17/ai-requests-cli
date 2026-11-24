@@ -3,7 +3,7 @@
 import { randomBytes } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { thisHost, writerGone } from '../pid.ts';
+import { thisHost, writerGone } from './pid.ts';
 
 /** A lock older than this is abandoned even if its pid looks alive (pid reuse). Holders keep it for milliseconds. */
 const STALE_LOCK_MS = 30000;

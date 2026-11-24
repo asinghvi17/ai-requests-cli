@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { extractZip, readCentralDirectory } from '../workspace/zip.ts';
+import { extractZip, readCentralDirectory } from './zip.ts';
 import { badEntryName, writeZip, ZipWriteError } from './zipwrite.ts';
-import { cleanup, tmp, tree } from './fixture.ts';
+import { cleanup, tmp, tree } from '../submit/fixture.ts';
 
 after(cleanup);
 

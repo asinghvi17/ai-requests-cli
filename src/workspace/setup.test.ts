@@ -13,7 +13,7 @@ import { insteadOfAll, makeBareRepo, type BareRepo } from './git-fixture.ts';
 import { githubRepo } from './git.ts';
 import { readState, updateState } from './state.ts';
 import { setup, type SetupOptions } from './setup.ts';
-import { buildZip } from './zip-fixture.ts';
+import { buildZip } from '../lib/zip-fixture.ts';
 
 const dirs: string[] = [];
 let bare: BareRepo;

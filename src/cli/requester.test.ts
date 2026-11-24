@@ -11,7 +11,7 @@ import type { FakeGitHub } from '../gh/fake.ts';
 import { lint } from '../spec/lint.ts';
 import { formatResult, type AirResult } from '../spec/markers.ts';
 import { createWorkspace } from '../workspace/state.ts';
-import { buildZip } from '../workspace/zip-fixture.ts';
+import { buildZip } from '../lib/zip-fixture.ts';
 import { insteadOf, makeBareRepo } from '../workspace/git-fixture.ts';
 import { yamlScalar } from '../spec/frontmatter.ts';
 import { requestBody, requestIssue, result } from '../requester/fixture.ts';

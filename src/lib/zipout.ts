@@ -4,7 +4,7 @@
 import { closeSync, lstatSync, openSync, readdirSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
-import { crc32 } from '../workspace/zip.ts';
+import { crc32 } from './zip.ts';
 
 const LIMIT = 0xffffffff;
 

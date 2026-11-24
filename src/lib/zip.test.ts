@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GhError, type Gh } from '../gh/gh.ts';
-import { ContextError, fetchContext, fetchDownload, releaseAssetUrl, releaseDownload, type Download } from './context.ts';
+import { ContextError, fetchContext, fetchDownload, releaseAssetUrl, releaseDownload, type Download } from '../workspace/context.ts';
 import { buildZip, type FixtureEntry } from './zip-fixture.ts';
 import { crc32, extractZip, extractionCap, ZipError } from './zip.ts';
 

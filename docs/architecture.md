@@ -3,6 +3,18 @@
 air is moving, in phases, to the layout below. `src/boundaries.test.ts` enforces the rules on every import
 under `src/`, and `scripts/move.ts` moves files. Phase P0 added both and moved nothing.
 
+Phase P1 moved the shared code into `src/lib/`: `toml.ts`, `version.ts`, `pid.ts`, `lock.ts` (was
+`usage/lock.ts`), `exec.ts` (was `workspace/exec.ts`), `zip.ts` and its test helper `zip-fixture.ts` (were in
+`workspace/`), `zipwrite.ts` (was `submit/`) and `zipout.ts` (was `serve/`). Other domains import them through
+`lib/index.ts`. Two files the plan put in `lib` stay where they are:
+
+- `workspace/git.ts` imports `RepoEntry` from `spec/frontmatter.ts` (request), so it is still `lib` in the
+  `DOMAIN` table and its imports stay on `ALLOWED` until that dependency is cut.
+- `usage/run.ts` imports nothing, but it is about the agents' usage CLIs: the environment allowlist names
+  their logins (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CLAUDE_CODE_OAUTH_TOKEN`) and `windowOfMinutes` names
+  Codex's quota windows. It is in `agents`, with the rest of `usage/`. Its generic part (`run`, `killGroup`,
+  `command`) can move to `lib` once it is split out.
+
 ## Layout
 
 | Domain | Contents |

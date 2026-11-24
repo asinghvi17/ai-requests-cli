@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import type { Asset } from '../spec/frontmatter.ts';
 import { ContextError, type Download } from '../workspace/context.ts';
 import { insteadOf, insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
-import { buildZip } from '../workspace/zip-fixture.ts';
+import { buildZip } from '../lib/zip-fixture.ts';
 import { fetchResult, FetchError, parsePullUrl, type FetchOptions } from './fetch.ts';
 import { requestBody, requestIssue, result } from './fixture.ts';
 

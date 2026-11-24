@@ -4,7 +4,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { childEnv, isDenied } from './env.ts';
+import { childEnv, isDenied } from '../workspace/env.ts';
 import { exec } from './exec.ts';
 
 const dirs: string[] = [];

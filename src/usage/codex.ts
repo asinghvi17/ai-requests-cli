@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { cliEnv, command, isoOrNull, killGroup, windowOfMinutes } from './run.ts';
 import type { Reading, Window } from './types.ts';
-import { VERSION } from '../version.ts';
+import { VERSION } from '../lib/index.ts';
 
 export interface CodexOpts {
   /** Default `codex` on PATH. */

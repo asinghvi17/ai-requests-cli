@@ -10,7 +10,7 @@ import { splitLines, type Diagnostic } from '../spec/frontmatter.ts';
 import { sha256File } from '../workspace/context.ts';
 import { DEFAULT_EXCLUDES, collectFiles } from './collect.ts';
 import { allowed, findSecrets } from './secrets.ts';
-import { writeZip, ZipWriteError } from './zipwrite.ts';
+import { writeZip, ZipWriteError } from '../lib/index.ts';
 
 export const REQUEST_LABEL = 'ai-request';
 const MAX_ASSET_BYTES = 2 * 1024 ** 3;

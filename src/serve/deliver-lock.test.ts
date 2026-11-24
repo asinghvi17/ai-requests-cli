@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claim } from '../claim/claim.ts';
-import { thisHost } from '../pid.ts';
+import { thisHost } from '../lib/pid.ts';
 import { createTrust } from '../claim/trust.ts';
 import type { Config } from '../config.ts';
 import { fakeGitHub } from '../gh/fake.ts';
