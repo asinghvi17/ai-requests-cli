@@ -20,11 +20,12 @@ import { usd } from '../usage/prices.ts';
 import { spend as spendUsd } from '../usage/manual.ts';
 import { claudeSpent, codexSpent, type Spent } from '../usage/spent.ts';
 import type { Subscription } from '../usage/types.ts';
-import { airEnv, TASK_INSTRUCTION } from '../workspace/launch.ts';
+import { airEnv } from '../workspace/launch.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
-import { DONE_FILE } from '../workspace/task.ts';
+import { DONE_FILE, TASK_FILE } from '../workspace/task.ts';
+import { removeWorkspace } from '../workspace/teardown.ts';
 import { ENDED, readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
-import { agentArgv, exitResumeInstruction, findCodexSession, type Harness, restartInstruction, RESUME_INSTRUCTION } from './agent.ts';
+import { agentArgv, agentReady, exitResumeInstruction, findCodexSession, type Harness, RESUME_INSTRUCTION, taskMessage } from './agent.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import { checkpoint, deliver } from './deliver.ts';
 import { pidLock } from './state.ts';
@@ -142,7 +143,8 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   await ensureHeld(ctx, dir);
   const request = requestOf(dir);
   const agent = ctx.config.agents[job.harness] ?? DEFAULT_AGENTS[job.harness];
-  const resume = !opts.fresh && job.starts > 0 ? job.sessionId : undefined;
+  // A session that was never sent its task has nothing to resume.
+  const resume = !opts.fresh && job.starts > 0 && !job.taskPending ? job.sessionId : undefined;
   let sessionId = resume;
   const real = realpathSync(dir);
   let argv: string[];
@@ -151,10 +153,7 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
     argv = agentArgv({ harness: job.harness, agent, model: job.model, resume, instruction, dir: real });
   } else {
     sessionId = job.harness === 'claude' ? randomUUID() : undefined;
-    argv = agentArgv({
-      harness: job.harness, agent, model: job.model, sessionId, dir: real,
-      instruction: job.starts > 0 ? restartInstruction(request.repos.length > 0) : TASK_INSTRUCTION,
-    });
+    argv = agentArgv({ harness: job.harness, agent, model: job.model, sessionId, dir: real });
   }
   const usageBefore = job.usageBefore ?? (await reading(ctx, job.subscription));
   const sessions = sessionId !== undefined && job.harness === 'claude' && !job.sessions?.includes(sessionId) ? [...job.sessions ?? [], sessionId] : job.sessions;
@@ -163,12 +162,18 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   const pane = (await ctx.tmux.listJobs()).find((j) => j.issue === n);
   job = saveJob(ctx, dir, {
     status: 'running', sessionId, sessions, paneNonce: pane?.nonce, startedAt: startedAt.toISOString(), starts: job.starts + 1,
-    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, waiting: undefined, ...(usageBefore ? { usageBefore } : {}),
+    pausedAt: undefined, pauseReason: undefined, resumeAfter: undefined, waiting: undefined, taskPending: resume === undefined || undefined,
+    ...(usageBefore ? { usageBefore } : {}),
   });
   ctx.log(`#${n}: started ${job.harness} (${job.model}) ${resume ? `resuming session ${resume}` : 'fresh'}: ${argv.map((a) => JSON.stringify(a)).join(' ')}`);
   await moveLabel(ctx, dir, 'air:running');
 
-  if (resume === undefined) return;
+  if (resume === undefined) {
+    if (!(await sendTask(ctx, dir, ctx.agentReadyMs)) && readState(dir).job?.taskPending) {
+      ctx.log(`#${n}: the agent's screen is not ready for its task after ${ctx.agentReadyMs / 1000} s; air sends it once it is`);
+    }
+    return;
+  }
   // A resume that can't find its session exits at once: then start fresh, pointed at the work so far.
   const end = Date.now() + ctx.resumeCheckMs;
   for (;;) {
@@ -189,21 +194,61 @@ export async function startAgent(ctx: ServeContext, dir: string, opts: { fresh?:
   }
 }
 
+/** How often `sendTask` looks at the agent's screen while it waits for it to be ready. */
+export const READY_POLL_MS = 100;
+
+/**
+ * Sends a fresh start's task (`taskPending`) to its agent as the first message (`taskMessage`, the text of
+ * AIR_TASK.md), once the agent's screen is ready (`agentReady`) and the same on two looks READY_POLL_MS apart,
+ * so the TUI has finished drawing (and turned bracketed paste on). Waits up to `waitMs` for that, but always
+ * takes those two looks: with 0, as each `air serve` tick does while the task is pending (say, while the agent
+ * shows a trust prompt), it takes just them. Returns true once the task is sent.
+ */
+export async function sendTask(ctx: ServeContext, dir: string, waitMs: number): Promise<boolean> {
+  const state = readState(dir);
+  const job = jobOf(state);
+  const n = state.issue;
+  if (job.status !== 'running' || !job.taskPending) return false;
+  const end = Date.now() + waitMs;
+  for (let last: string | undefined; ;) {
+    const screen = await ctx.tmux.screen(n);
+    if (screen === null) return false;
+    if (agentReady(job.harness, screen) && screen === last) break;
+    if (last !== undefined && Date.now() >= end) return false;
+    last = screen;
+    await sleep(READY_POLL_MS);
+  }
+  // `air stop`, a cancel or another start may have taken the job over meanwhile.
+  const cur = readState(dir).job;
+  if (cur?.status !== 'running' || !cur.taskPending || cur.paneNonce !== job.paneNonce) return false;
+  const restart = job.starts > 1 ? { hasRepo: requestOf(dir).repos.length > 0 } : undefined;
+  const message = taskMessage(readFileSync(join(dir, TASK_FILE), 'utf8'), restart);
+  if (!(await ctx.tmux.send(n, message))) return false;
+  saveJob(ctx, dir, { taskPending: undefined });
+  ctx.log(`#${n}: sent the agent its task (${message.length} characters)`);
+  return true;
+}
+
 /**
  * Starts the agent, unless it already finished (AIR_DONE is there, say because its window closed as it
- * exited): then closes any window left and delivers instead, or leaves the delivery to another process
- * already making it (`delivering-elsewhere`). Checks the claim before either.
+ * exited): then closes any window left and delivers instead (`finishJob`'s outcome). Checks the claim before either.
+ * A workspace another process delivered and removed meanwhile is `delivered-elsewhere`.
  */
-export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | 'delivered' | 'delivering-elsewhere'> {
-  if (!isDone(dir)) {
-    await startAgent(ctx, dir);
-    return 'started';
+export async function startOrDeliver(ctx: ServeContext, dir: string): Promise<'started' | Awaited<ReturnType<typeof finishJob>>> {
+  try {
+    if (!isDone(dir)) {
+      await startAgent(ctx, dir);
+      return 'started';
+    }
+    await ensureHeld(ctx, dir);
+    const n = readState(dir).issue;
+    if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
+    ctx.log(`#${n}: AIR_DONE is already there; delivering instead of starting the agent`);
+    return await finishJob(ctx, dir);
+  } catch (e) {
+    if (vanished(e, dir)) return 'delivered-elsewhere';
+    throw e;
   }
-  await ensureHeld(ctx, dir);
-  const n = readState(dir).issue;
-  if ((await ctx.tmux.listJobs()).some((j) => j.issue === n)) await ctx.tmux.stopJob(n, { graceMs: ctx.stopGraceMs });
-  ctx.log(`#${n}: AIR_DONE is already there; delivering instead of starting the agent`);
-  return (await finishJob(ctx, dir)) ? 'delivered' : 'delivering-elsewhere';
 }
 
 /** Interrupts the agent, waits the grace period, closes its window; labels `air:paused`. Claim and workspace stay. */
@@ -348,32 +393,65 @@ export const MAX_DELIVERY_ATTEMPTS = 5;
 export const DELIVERY_LOCK = '.air-deliver.lock';
 
 /**
- * Runs `step` (a delivery or a checkpoint) holding the workspace's delivery lock, so `air serve` and
- * `air start/run` never both push, upload or comment for one job. Whoever finds the lock held backs off and
- * resolves false: the holder is delivering, and the next tick sees its outcome. A job that has
- * ended already (the last holder delivered it) is left as it is.
+ * Whether `e` is a read of workspace `dir` that failed because the workspace is gone: another air process
+ * delivered its job and removed it (`finishJob`). Readers treat that as finished, not as a failure.
  */
-async function withDeliveryLock(ctx: ServeContext, dir: string, what: string, step: () => Promise<void>): Promise<boolean> {
-  const lock = pidLock(join(dir, DELIVERY_LOCK));
+export function vanished(e: unknown, dir: string): boolean {
+  return (e as NodeJS.ErrnoException | undefined)?.code === 'ENOENT' && !existsSync(dir);
+}
+
+/**
+ * Runs `step` (a delivery or a checkpoint) holding the workspace's delivery lock, so `air serve` and
+ * `air start/run` never both push, upload or comment for one job. Whoever finds the lock held backs off
+ * (`held`): the holder is delivering, and the next tick sees its outcome. `gone`: the workspace was removed
+ * (its job delivered by another process) before the lock could be taken.
+ */
+async function withDeliveryLock(ctx: ServeContext, dir: string, what: string, step: () => Promise<void>): Promise<'ran' | 'held' | 'gone'> {
+  let lock;
+  try {
+    lock = pidLock(join(dir, DELIVERY_LOCK));
+  } catch (e) {
+    if (vanished(e, dir)) return 'gone';
+    throw e;
+  }
   if ('held' in lock) {
     ctx.log(`#${readState(dir).issue}: ${what} is already in progress (${lock.held}); leaving it to that process`);
-    return false;
+    return 'held';
   }
   try {
-    const job = readState(dir).job;
-    if (!job || !ENDED.includes(job.status)) await step();
-    return true;
+    await step();
+    return 'ran';
   } finally {
     lock.release();
   }
 }
 
 /**
- * Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. Resolves false,
- * having done nothing, when another process is delivering it (`withDeliveryLock`).
+ * Delivers a finished job: `air:done` on success, `air:failed` when the result is missing. Once it is
+ * delivered (now, or by an earlier attempt whose cleanup didn't finish), still holding the delivery lock, it
+ * closes any window of the job and deletes the workspace (`removeWorkspace`), and resolves `delivered`.
+ * `delivering-elsewhere`: another process holds the lock, and nothing was done. `delivered-elsewhere`: the
+ * workspace is gone, delivered by another process. `undelivered`: it failed, a retry is due next tick, or the
+ * claim was lost.
  */
-export function finishJob(ctx: ServeContext, dir: string): Promise<boolean> {
-  return withDeliveryLock(ctx, dir, 'delivery', () => deliverJob(ctx, dir));
+export async function finishJob(ctx: ServeContext, dir: string): Promise<'delivered' | 'undelivered' | 'delivering-elsewhere' | 'delivered-elsewhere'> {
+  let delivered = false;
+  const r = await withDeliveryLock(ctx, dir, 'delivery', async () => {
+    const job = readState(dir).job;
+    if (!job || !ENDED.includes(job.status)) await deliverJob(ctx, dir);
+    const state = readState(dir);
+    if (state.phase !== 'done') return;
+    delivered = true;
+    try {
+      if ((await ctx.tmux.listJobs()).some((j) => j.issue === state.issue)) await ctx.tmux.stopJob(state.issue, { graceMs: ctx.stopGraceMs });
+      removeWorkspace(ctx.root, dir);
+    } catch (e) {
+      ctx.log(`#${state.issue}: delivered, but its workspace could not be removed (the daily cleanup tries again): ${(e as Error).message}`);
+    }
+  });
+  if (r === 'held') return 'delivering-elsewhere';
+  if (r === 'gone') return 'delivered-elsewhere';
+  return delivered ? 'delivered' : 'undelivered';
 }
 
 async function deliverJob(ctx: ServeContext, dir: string): Promise<void> {
@@ -416,7 +494,10 @@ async function deliverJob(ctx: ServeContext, dir: string): Promise<void> {
  * after MAX_DELIVERY_ATTEMPTS the request fails. Holds the delivery lock like `finishJob`.
  */
 export async function partialJob(ctx: ServeContext, dir: string, reason?: { why: string; timeout?: boolean }): Promise<void> {
-  await withDeliveryLock(ctx, dir, 'checkpoint', () => checkpointJob(ctx, dir, reason));
+  await withDeliveryLock(ctx, dir, 'checkpoint', async () => {
+    const job = readState(dir).job;
+    if (!job || !ENDED.includes(job.status)) await checkpointJob(ctx, dir, reason);
+  });
 }
 
 async function checkpointJob(ctx: ServeContext, dir: string, reason?: { why: string; timeout?: boolean }): Promise<void> {

@@ -10,17 +10,20 @@ import { parseConfig } from '../config.ts';
 import type { FakeGitHub } from '../gh/fake.ts';
 import { lint } from '../spec/lint.ts';
 import { formatResult, type AirResult } from '../spec/markers.ts';
+import { createWorkspace } from '../workspace/state.ts';
 import { buildZip } from '../workspace/zip-fixture.ts';
 import { insteadOf, makeBareRepo } from '../workspace/git-fixture.ts';
 import { yamlScalar } from '../spec/frontmatter.ts';
 import { requestBody, requestIssue, result } from '../requester/fixture.ts';
 import { fetchDeps } from './fetch.ts';
 import { main } from './main.ts';
+import { statusDeps } from './status.ts';
 import { deps } from './requests.ts';
 import { waitDeps } from './wait.ts';
 
 const dirs: string[] = [];
 const saved = { ...deps };
+const savedStatus = { ...statusDeps };
 after(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
   Object.assign(deps, saved);
@@ -62,6 +65,23 @@ test('air status prints the state, and --json the same as an object', async () =
   assert.equal(s.result.status, 'failed');
   assert.equal(s.result.current, true);
   assert.deepEqual((await call('status', '7')), { code: 1, out: '', err: 'air status: Not Found (HTTP 404)\n' });
+});
+
+test('air status without ISSUE: the jobs and leftovers on this machine, or that it is clean; --json too', async () => {
+  const root = tmp(), stateDir = tmp();
+  deps.loadConfig = () => parseConfig(`workspace_root = "${root}"\n`);
+  Object.assign(statusDeps, { loadConfig: deps.loadConfig, stateDir: () => stateDir, panes: async () => [] });
+  const r = await call('status');
+  assert.equal(r.code, 0);
+  assert.equal(r.out, `air on this machine: workspace_root ${root}, state dir ${stateDir}\nserve: not running\njobs held: 0\ntmux (-L air): no server\nclean: nothing left behind\n`);
+  const at = new Date().toISOString();
+  const dir = createWorkspace(root, { version: 1, repo: 'o/requests', issue: 3, title: 't', author: 'a', url: 'u', host: 'box', nonce: 'aaaaaaaaaaaa', repos: [], phase: 'done', createdAt: at, updatedAt: at }, 'body');
+  statusDeps.panes = async () => { throw new Error('no tmux'); };
+  const left = await call('status');
+  assert.match(left.out, new RegExp(`tmux: could not be asked\nworkspaces due for removal: 1\n  o/requests#3 done: ${dir}\nleft behind: 1; `));
+  const j = JSON.parse((await call('status', '--json')).out);
+  assert.deepEqual([j.clean, j.left, j.due[0].dir, j.tmux], [false, 1, dir, null]);
+  Object.assign(statusDeps, savedStatus);
 });
 
 test('air wait exit codes: 0 done, 3 partial, 1 failed or released, 4 timeout, 2 usage', async () => {

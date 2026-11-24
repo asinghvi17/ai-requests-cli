@@ -1,6 +1,6 @@
 // `air setup ISSUE`: prepare the workspace of a claimed request.
 import { setup } from '../workspace/setup.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { target } from './requests.ts';
 
 export async function setupCommand(inv: Invocation): Promise<number> {

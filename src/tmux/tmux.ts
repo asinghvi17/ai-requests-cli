@@ -4,17 +4,13 @@
 // volunteer's windows or the jobs of a server for another requests repo on the same socket.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, statSync, writeFileSync } from 'node:fs';
-import { constants } from 'node:os';
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { checkRepo } from '../gh/issues.ts';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
 import { launcherPid, launcherStatus, removeLauncher, writeLauncher } from './launcher.ts';
-
-/** The file in the workspace that holds the full task; the agent's argv only points at it. */
-export const TASK_FILE = 'AIR_TASK.md';
-export const TASK_INSTRUCTION = `Read ${TASK_FILE} in this directory and do the task it describes.`;
 
 export interface RunResult { code: number; stdout: string; stderr: string }
 /** Runs `tmux -L <socket> ...args`. Injectable for unit tests. */
@@ -65,17 +61,33 @@ export interface Job {
   launcher?: string;
 }
 
+/**
+ * A pane on air's tmux server (`panes()`): `issue`, `repo` and `nonce` only on a job's pane; `own` on air's
+ * own `log` and `serve` windows (pane option `@air_own`).
+ */
+export interface ServerPane { windowId: string; windowName: string; paneId: string; issue?: number; repo?: string; nonce?: string; launcher?: string; own?: 'log' | 'serve' }
+
+/** The pane option that marks air's own windows: `log` (ensureSession) and `serve` (startServer). */
+const OWN = '@air_own';
+
 export interface StartJobInput {
   issue: number;
   cwd: string;
   argv: string[];
   /** Added to (or overriding) the caller's environment, which the job inherits whole. */
   env?: Record<string, string>;
-  /**
-   * The full task. Written to `<cwd>/AIR_TASK.md`; argv gets TASK_INSTRUCTION as its last argument, so a long
-   * task never reaches argv (E2BIG) or tmux's size-limited command messages.
-   */
-  task?: string;
+}
+
+/** After pasting a message, how long `send` waits before Enter, so the agent has taken the paste in first. */
+export const PASTE_SETTLE_MS = 200;
+
+/**
+ * `text` as `send` pastes it: without ESC and the other control characters (C0 but newline and tab, DEL, C1),
+ * so text from a request can't end the bracketed paste early (`ESC [201~`, or C1 CSI `201~`) or send the agent
+ * keys such as C-c or C-d. A CR goes too: CRLF line ends paste as LF.
+ */
+export function pasteable(text: string): string {
+  return text.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
 }
 
 export interface StopOptions {
@@ -261,6 +273,45 @@ export function tmuxVersionProblem(v: string): string | undefined {
   return `${v.trim()} is too old: air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer (tested with 3.0a to 3.8). Install a newer tmux.`;
 }
 
+/** Every pane on the tmux server `run` talks to, of any requests repo: its window, and its job tags if it is a job's. */
+export async function serverPanes(run: TmuxRunner): Promise<ServerPane[]> {
+  const r = await run(['list-panes', '-a', '-F', ['#{window_id}', '#{window_name}', '#{pane_id}', '#{@air_job}', '#{@air_repo}', '#{@air_launcher}', '#{@air_nonce}', `#{${OWN}}`].join(SEP)]);
+  if (r.code !== 0) {
+    if (noServer(r.stderr)) return [];
+    throw new Error(`tmux list-panes: ${r.stderr.trim()}`);
+  }
+  return r.stdout.split('\n').filter((l) => l.includes(SEP)).map((l) => {
+    const [windowId = '', windowName = '', paneId = '', job = '', repo = '', launcher = '', nonce = '', own = ''] = l.split(SEP);
+    return {
+      windowId, windowName, paneId, ...(/^\d+$/.test(job) ? { issue: Number(job), repo, nonce } : {}), ...(launcher ? { launcher } : {}),
+      ...(own === 'log' || own === 'serve' ? { own } : {}),
+    };
+  });
+}
+
+/**
+ * The tmux version `version` (a `tmux -V` call) reports; throws unless tmux runs and is new enough. `air serve`
+ * checks with its client's `checkVersion`, `air doctor` without a client.
+ */
+export async function checkTmux(version: () => Promise<string>): Promise<string> {
+  let v: string;
+  try {
+    v = await version();
+  } catch (e) {
+    throw new Error(`tmux is not usable: ${(e as Error).message}. air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer.`);
+  }
+  const problem = tmuxVersionProblem(v);
+  if (problem) throw new Error(problem);
+  return v;
+}
+
+/** `tmux -V`, e.g. "tmux 3.4", by `run` (default: a plain tmux, no client needed). Throws if tmux can't be run. */
+export async function tmuxVersion(run: TmuxRunner = defaultRunner('air')): Promise<string> {
+  const r = await run(['-V']);
+  if (r.code !== 0) throw new Error(`tmux -V: ${r.stderr.trim() || `exit ${r.code}`}`);
+  return r.stdout.trim();
+}
+
 export function createTmux(options: TmuxOptions) {
   const repo = options.repo;
   checkRepo(repo); // goes on the tmux command line: owner/name only, never a separator
@@ -296,8 +347,9 @@ export function createTmux(options: TmuxOptions) {
   }
 
   /**
-   * Create the `air` session if missing, with window 0 named `log` running `argv` (default: a shell).
-   * `env` adds variables to window 0 only. Returns true when the session was created.
+   * Create the `air` session if missing, with window 0 named `log` running `argv` (default: a shell), tagged
+   * `@air_own=log` (`closeIfIdle` closes only windows air tagged). `env` adds variables to window 0 only.
+   * Returns true when the session was created.
    */
   async function ensureSession(opts: { argv?: string[]; cwd?: string; env?: Record<string, string> } = {}): Promise<boolean> {
     const has = await run(['has-session', '-t', target]);
@@ -310,6 +362,8 @@ export function createTmux(options: TmuxOptions) {
       ? writeLauncher({ argv: opts.argv?.length ? opts.argv : [process.env.SHELL || '/bin/sh'], env: opts.env, cwd: opts.cwd })
       : undefined;
     if (launcher) args.push('--', ...launcher.argv);
+    // The new session's current pane is window 0's, tagged in the same command queue.
+    args.push(';', 'set-option', '-p', '-t', `${target}:`, OWN, 'log');
     let r = await run(args);
     // A server still shutting down took our connection: wait for it to go, then start a fresh one.
     for (let i = 0; i < 20 && r.code !== 0 && exiting(r.stderr); i++) {
@@ -342,22 +396,12 @@ export function createTmux(options: TmuxOptions) {
 
   /** `tmux -V`, e.g. "tmux 3.4". Throws if tmux can't be run. */
   async function version(): Promise<string> {
-    const r = await run(['-V']);
-    if (r.code !== 0) throw new Error(`tmux -V: ${r.stderr.trim() || `exit ${r.code}`}`);
-    return r.stdout.trim();
+    return tmuxVersion(run);
   }
 
   /** Throws unless tmux runs and is new enough (see MIN_TMUX). */
   async function checkVersion(): Promise<string> {
-    let v: string;
-    try {
-      v = await version();
-    } catch (e) {
-      throw new Error(`tmux is not usable: ${(e as Error).message}. air needs tmux ${MIN_TMUX.major}.${MIN_TMUX.minor} or newer.`);
-    }
-    const problem = tmuxVersionProblem(v);
-    if (problem) throw new Error(problem);
-    return v;
+    return checkTmux(version);
   }
 
   /** The raw `list-panes -a` result in air's format, for `air debug panes`. */
@@ -391,11 +435,7 @@ export function createTmux(options: TmuxOptions) {
     if (!existsSync(input.cwd) || !statSync(input.cwd).isDirectory()) throw new Error(`tmux: workspace ${input.cwd} is not a directory`);
     if (await findJob(input.issue)) throw new Error(`tmux: job #${input.issue} already has a window`);
     const env = jobEnv(input.env);
-    let argv = input.argv;
-    if (input.task !== undefined) {
-      writeFileSync(join(input.cwd, TASK_FILE), input.task);
-      argv = [...argv, TASK_INSTRUCTION];
-    }
+    const argv = input.argv;
     await ensureSession();
     // The pane is a tmux terminal, whatever terminal air itself runs in.
     env.TERM = (await run(['show-options', '-sv', 'default-terminal'])).stdout.trim() || 'tmux-256color';
@@ -462,6 +502,35 @@ export function createTmux(options: TmuxOptions) {
   }
 
   /**
+   * Types `text` into the job's pane as the agent's next message: tmux loads it into a buffer from a private
+   * file (`load-buffer`), pastes it as one bracketed paste (`paste-buffer -p`, so its newlines don't submit
+   * it line by line), and Enter submits it PASTE_SETTLE_MS later. Nothing goes on the agent's argv or stdin,
+   * and the text never rides a tmux command line, so its length doesn't matter. The text is `pasteable` first.
+   * Each step checks the pane still carries the job's nonce; a buffer left by a paste that didn't happen is
+   * deleted. Returns false when there is no such job, it has exited, or its pane changed.
+   */
+  async function send(issue: number, text: string): Promise<boolean> {
+    const job = await findJob(issue);
+    if (!job || job.dead) return false;
+    const dir = mkdtempSync(join(tmpdir(), 'air-paste-')); // mode 0700
+    const buffer = `air-${job.nonce}`;
+    let loaded = false, pasted = false;
+    try {
+      const file = join(dir, 'message');
+      writeFileSync(file, pasteable(text), { mode: 0o600 });
+      loaded = await guarded(job, ['load-buffer', '-b', buffer, file]);
+      if (!loaded) return false;
+      pasted = await guarded(job, ['paste-buffer', '-p', '-d', '-b', buffer, '-t', job.paneId]);
+      if (!pasted) return false;
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      if (loaded && !pasted) await run(['delete-buffer', '-b', buffer]).catch(() => undefined);
+    }
+    await sleep(PASTE_SETTLE_MS);
+    return guarded(job, ['send-keys', '-t', job.paneId, 'Enter']);
+  }
+
+  /**
    * Show `text` in the session's status line (right side) to whoever attaches, or clear it. It goes in as
    * one argv word with `#` doubled, so tmux shows it verbatim.
    */
@@ -520,7 +589,10 @@ export function createTmux(options: TmuxOptions) {
       r = await run(args);
     }
     const id = r.stdout.trim();
-    if (r.code === 0 && /^@\d+$/.test(id)) return { window: id, joined: has.code === 0 };
+    if (r.code === 0 && /^@\d+$/.test(id)) {
+      await run(['set-option', '-p', '-t', id, OWN, 'serve']); // (closeIfIdle never closes a serve window but its caller's)
+      return { window: id, joined: has.code === 0 };
+    }
     launcher.cleanup();
     throw new Error(`tmux ${args[0]}: ${r.stderr.trim() || `exit ${r.code}`}`);
   }
@@ -541,12 +613,30 @@ export function createTmux(options: TmuxOptions) {
     return attachTo(socket, to, env);
   }
 
-  /** Kill the whole tmux server on this socket (tests, `air serve --stop`). */
+  /** Kill the whole tmux server on this socket (tests). */
   async function killServer(): Promise<void> {
     await run(['kill-server']);
   }
 
-  return { socket, session, version, checkVersion, ensureSession, startServer, startJob, listJobs, listPanesRaw, stopJob, isAlive, capture, screen, setNotice, attachArgs, killServer };
+  const panes = () => serverPanes(run);
+
+  /**
+   * Lets air's session end once nothing of air's needs it: `air serve` calls this as it stops. Unless a job
+   * window is there (of any requests repo) or another `serve` window (another server, or one showing its last
+   * words), it closes air's `log` windows and sets `exit-empty`, so the session ends when its last window
+   * closes, the caller's own (`self`, its `serve` pane) as the caller exits. It closes only windows air
+   * tagged, never one of the user's, and never kills the server: a window of the user's keeps it. Returns
+   * whether it closed air's windows.
+   */
+  async function closeIfIdle(self?: string): Promise<boolean> {
+    const all = await panes();
+    if (all.some((p) => p.issue !== undefined || (p.own === 'serve' && p.paneId !== self))) return false;
+    await run(['set-option', '-s', 'exit-empty', 'on']);
+    for (const w of new Set(all.filter((p) => p.own === 'log' && p.paneId !== self).map((p) => p.windowId))) await run(['kill-window', '-t', w]);
+    return true;
+  }
+
+  return { socket, session, version, checkVersion, ensureSession, startServer, startJob, listJobs, listPanesRaw, panes, stopJob, isAlive, capture, screen, send, setNotice, attachArgs, closeIfIdle, killServer };
 }
 
 export type Tmux = ReturnType<typeof createTmux>;

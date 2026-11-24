@@ -16,3 +16,8 @@ Composed: `claude-output-mentions-prompt.txt`, an idle Claude Code screen whose 
 (it must match nothing), and, because producing them needs a working model login, `claude-permission.txt` and
 `codex-approval.txt`, laid out like the real prompts from the strings in each CLI's binary ("Do you want to
 proceed?", "Yes, and don't ask again for", "Esc to cancel"; "Would you like to run the following command?").
+
+Ready screens, for `agentReady` (`serve.test.ts`): `claude-ready.txt` (Claude Code 2.1.311, onboarded config,
+trusted folder, `--permission-mode auto`, an approved fake API key) and `codex-ready.txt` (Codex CLI 0.164.0,
+API-key login, the job dir trusted with `-c projects={...}`, `-a never -s workspace-write`): each CLI's empty
+input box, as air finds it before it pastes the task.

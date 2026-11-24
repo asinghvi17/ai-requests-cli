@@ -9,8 +9,6 @@ import type { Subscription, Window } from '../usage/types.ts';
 export { EFFORT_USD, EFFORTS, type Effort };
 export type Tier = 'small' | 'medium' | 'large';
 
-/** Fraction of the primary window kept for the owner when a subscription sets none. */
-export const DEFAULT_RESERVE = 0.3;
 /** Harnesses a request can name and the server can run; `any` matches both. */
 export const EXECUTABLE_HARNESSES: readonly string[] = ['claude', 'codex'];
 /** Tolerance for dollar arithmetic, so exact fits are not lost to float error. */
@@ -35,8 +33,8 @@ export interface SubscriptionSettings {
   /** US dollars at API prices a full primary window of this plan is worth. Required for a subscription whose
    *  meter is a percentage (claude, codex); a manual one has its budget in dollars. */
   window_usd?: number;
-  /** Fraction (0-1) of the primary window kept back. Default 0.3. */
-  reserve?: number;
+  /** Fraction (0-1) of the primary window kept back (config.toml's default: DEFAULT_RESERVE). */
+  reserve: number;
 }
 
 export interface MatchConfig {
@@ -50,9 +48,17 @@ export interface MatchConfig {
 }
 
 export interface Choice { subscription: Subscription; model: string; cost: number; reason: string }
-export interface NoChoice { none: true; reasons: string[] }
+/** `short`: the subscriptions that would take the request but for their budget. */
+export interface NoChoice { none: true; reasons: string[]; short: Short[] }
 
-export interface Verdict { ok: boolean; reason: string; headroom: number; cost: number; model?: string }
+/**
+ * A subscription that turned work down for budget alone: its window is worth `size` dollars, `left` of it is
+ * left, `reserve` of that is kept back (tapered), and the work costs `cost`. `fitsAt`: the smallest window size
+ * that would take it with the same share used, when one would (less reserve can always make room).
+ */
+export interface Short { subscription: string; manual: boolean; size: number; left: number; reserve: number; cost: number; fitsAt?: number }
+
+export interface Verdict { ok: boolean; reason: string; headroom: number; cost: number; model?: string; short?: Short }
 
 const fmt = (n: number): string => String(Math.round(n * 10) / 10);
 export function canTakeMore(running: number, maxJobs: number = DEFAULT_MAX_JOBS): boolean {
@@ -109,8 +115,6 @@ export function evaluate(
   }
   if (config.refused && Object.hasOwn(config.refused, sub.name)) return no(`not served: ${config.refused[sub.name]}`);
   const settings = config.subscriptions?.[sub.name];
-  const baseReserve = settings?.reserve ?? DEFAULT_RESERVE;
-  if (!finite(baseReserve) || baseReserve < 0) return no(`invalid reserve ${baseReserve}, takes nothing`);
   const cost = EFFORT_USD[effort];
   if (!harnessAllowed(harness, allowed)) return no(`harness ${harness} not allowed (wants ${allowed!.join(', ')})`, cost);
   let model: string | undefined;
@@ -123,16 +127,23 @@ export function evaluate(
   const label = win?.kind === 'monthly' ? 'monthly' : 'weekly';
   if (!win || !finite(win.usedPct) || win.usedPct < 0) return no(`${label} usage unknown, takes nothing`, cost);
   const size = windowSize(sub, config);
-  if (size === undefined) return no('no window_usd in config.toml, so its window has no dollar size; takes nothing', cost);
+  // (A manual subscription has its table: it names its harness there.)
+  if (size === undefined || settings === undefined) return no('no window_usd in config.toml, so its window has no dollar size; takes nothing', cost);
   if (!finite(size) || size <= 0) return no(`invalid window size $${size}, takes nothing`, cost);
+  if (!finite(settings.reserve) || settings.reserve < 0) return no(`invalid reserve ${settings.reserve}, takes nothing`, cost);
   const left = ((100 - win.usedPct) / 100) * size;
-  const reserve = reserveFor(baseReserve * size, win.resetsAt, now);
+  const reserve = reserveFor(settings.reserve * size, win.resetsAt, now);
   const headroom = left - cost - reserve;
   const why = `${label} ${usd(left)} left, needs ${usd(cost)} + ${usd(reserve)} reserve`;
   if (!Number.isFinite(headroom)) return no(`${label} usage unknown, takes nothing`, cost);
   // Round to 1e-9 so exact fits survive float error and ordering by headroom stays a strict weak order.
   const rounded = Math.round(headroom / EPS) * EPS;
-  if (rounded < 0) return { ok: false, reason: `${sub.name}: ${why}`, headroom: rounded, cost };
+  if (rounded < 0) {
+    // Left and reserve are shares of the window, so a bigger window fits the cost when they leave room.
+    const room = (left - reserve) / size;
+    const short: Short = { subscription: sub.name, manual: sub.harness === 'manual', size, left, reserve, cost, ...(room > EPS ? { fitsAt: cost / room } : {}) };
+    return { ok: false, reason: `${sub.name}: ${why}`, headroom: rounded, cost, short };
+  }
   const fives = sub.windows.filter((w) => w.kind === 'five_hour' && !w.scope);
   for (const five of fives) {
     if (!finite(five.usedPct)) return { ok: false, reason: `${sub.name}: 5-hour window usage unknown, takes nothing`, headroom: rounded, cost };
@@ -154,12 +165,14 @@ export function choose(request: Request, subs: Subscription[], config: MatchConf
   const tier = request.model ?? 'medium';
   const fits: { sub: Subscription; v: Verdict }[] = [];
   const reasons: string[] = [];
+  const short: Short[] = [];
   for (const sub of subs) {
     const v = evaluate(sub, request.effort, request.harness, tier, config, now);
     if (v.ok) fits.push({ sub, v });
     else reasons.push(v.reason);
+    if (v.short) short.push(v.short);
   }
-  if (fits.length === 0) return { none: true, reasons };
+  if (fits.length === 0) return { none: true, reasons, short };
   // Every fit has a finite headroom (evaluate guarantees it), so the comparator below never sees NaN.
   for (const f of fits) if (!Number.isFinite(f.v.headroom)) throw new Error(`non-finite headroom for ${f.sub.name}`);
   fits.sort((a, b) => {

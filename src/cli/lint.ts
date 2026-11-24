@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { lint, type LintResult } from '../spec/lint.ts';
 import { blankTemplateHeader } from '../submit/submit.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 
 /** Injectable for tests. */
 export const lintDeps = {

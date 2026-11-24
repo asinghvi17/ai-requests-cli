@@ -3,21 +3,19 @@
 import { randomBytes } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { thisHost, writerGone } from '../pid.ts';
 
 /** A lock older than this is abandoned even if its pid looks alive (pid reuse). Holders keep it for milliseconds. */
 const STALE_LOCK_MS = 30000;
 const WAIT_MS = 10000;
 const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-function alive(pid: number) {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
-}
-
-/** Remove `lock` if its holder died or it is too old. */
+/** Remove `lock` (`<pid> <ms> <host>`) if its holder died (judged on its own host only) or it is too old. */
 function breakIfStale(lock: string) {
   try {
-    const pid = Number(readFileSync(lock, 'utf8').split(' ')[0]);
-    if ((Number.isInteger(pid) && pid > 0 && !alive(pid)) || Date.now() - statSync(lock).mtimeMs > STALE_LOCK_MS) unlinkSync(lock);
+    const [pid, , host = ''] = readFileSync(lock, 'utf8').split(' ');
+    const n = Number(pid);
+    if ((Number.isInteger(n) && n > 0 && writerGone(n, host)) || Date.now() - statSync(lock).mtimeMs > STALE_LOCK_MS) unlinkSync(lock);
   } catch { /* released meanwhile, or half-written: the next try decides */ }
 }
 
@@ -36,7 +34,7 @@ export function withLock<T>(file: string, fn: () => T): T {
     }
   }
   try {
-    writeSync(fd, `${process.pid} ${Date.now()}`);
+    writeSync(fd, `${process.pid} ${Date.now()} ${thisHost()}`);
     closeSync(fd);
     return fn();
   } finally { try { unlinkSync(lock); } catch { /* broken as stale by another process */ } }

@@ -9,7 +9,7 @@ import { DELIVERIES, EFFORTS, HARNESSES, MODEL_TIERS } from '../spec/frontmatter
 import { DEFAULT_EXCLUDES } from '../submit/collect.ts';
 import { SubmitError, submit } from '../submit/submit.ts';
 import { formatLint, readInput } from './lint.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { deps as requestDeps, UsageError } from './requests.ts';
 
 export type Ask = (question: string) => Promise<string>;

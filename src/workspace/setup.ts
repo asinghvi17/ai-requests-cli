@@ -16,8 +16,8 @@ import { childEnv } from './env.ts';
 import { exec, SETUP_TIMEOUT_MS, type ExecResult } from './exec.ts';
 import { checkoutCheckpoint, cloneAt } from './git.ts';
 import { airEnv } from './launch.ts';
-import { activeWorkspace, LOG_FILE, REQUEST_FILE, TASK_FILE, updateState, type State } from './state.ts';
-import { taskPrompt } from './task.ts';
+import { activeWorkspace, LOG_FILE, REQUEST_FILE, updateState, type State } from './state.ts';
+import { TASK_FILE, taskPrompt } from './task.ts';
 
 export interface SetupOptions {
   gh: RequestsRepo;

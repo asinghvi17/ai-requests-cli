@@ -1,7 +1,7 @@
 // `air fetch ISSUE [DIR]`: the latest result's report, branches, artifact and checkpoint, in DIR (default
 // ./air-ISSUE).
 import { FetchError, fetchResult, type FetchOptions } from '../requester/fetch.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { target, UsageError } from './requests.ts';
 
 /** Injectable for tests. */

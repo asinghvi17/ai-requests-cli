@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // air: the CLI entry. Routes argv to a command. Usage errors exit 2, as do unimplemented commands; a GitHub
 // error exits 1.
-import { ArgError, parseArgs, type FlagSpecs } from './args.ts';
+import { ArgError, parseArgs, type FlagSpecs, type Invocation } from './args.ts';
+import type { Io } from '../lib/index.ts';
 import { GhError } from '../gh/gh.ts';
 import { VERSION } from '../version.ts';
 import { usageCommand } from '../usage/index.ts';
 import { loadConfig } from '../config.ts';
 import { claimCommand } from './claim.ts';
+import { doctorCommand } from './doctor.ts';
 import { releaseCommand } from './release.ts';
 import { CommandError, UsageError } from './requests.ts';
 import { setupCommand } from './setup.ts';
@@ -21,8 +23,6 @@ import { cancelCommand } from './cancel.ts';
 import { skillCommand } from './skill.ts';
 import { attachCommand, debugCommand, pauseCommand, resumeCommand, runCommand, serveCommand, startCommand, stopCommand } from './jobs.ts';
 
-export type Io = { out: (s: string) => void; err: (s: string) => void };
-export type Invocation = { argv: string[]; flags: Record<string, string | boolean | string[]>; positionals: string[]; io: Io };
 type Command = {
   usage: string;
   summary: string;
@@ -37,6 +37,13 @@ const HELP: FlagSpecs = { help: { type: 'boolean', short: 'h' } };
 const REPO: FlagSpecs = { repo: { type: 'string' } };
 
 export const COMMANDS: Record<string, Command> = {
+  doctor: {
+    usage: 'doctor',
+    summary: "check this machine's setup (tmux, git, gh, Claude Code or Codex, the config, workspace_root, air on PATH) and print the fix for each problem; writes nothing; exit 0 when ready",
+    args: [],
+    flags: {},
+    run: doctorCommand,
+  },
   submit: {
     usage: 'submit [--body FILE|-] [--dry-run] [--allow-file PATH]... [DIR]',
     summary: 'file a request; DIR becomes its context zip (also: --repo, --title, --expires YYYY-MM-DD, --exclude NAME, --no-default-excludes)',
@@ -49,9 +56,9 @@ export const COMMANDS: Record<string, Command> = {
     run: submitCommand,
   },
   status: {
-    usage: 'status [--repo OWNER/NAME] [--json] ISSUE',
-    summary: "show a request's state label, holder and latest result; on the machine serving it, whether its agent waits on you",
-    args: ['ISSUE'],
+    usage: 'status [--repo OWNER/NAME] [--json] [ISSUE]',
+    summary: "show a request's state label, holder and latest result; on the machine serving it, whether its agent waits on you. Without ISSUE: this machine's jobs and what air left behind (workspaces kept, stale locks, tmux windows), or that it is clean",
+    args: [],
     flags: { ...REPO, json: { type: 'boolean' } },
     run: statusCommand,
   },

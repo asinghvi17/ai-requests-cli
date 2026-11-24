@@ -1,6 +1,6 @@
 // `air claim ISSUE`: claim a request and create its workspace.
 import { claim } from '../claim/claim.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { target } from './requests.ts';
 
 export async function claimCommand(inv: Invocation): Promise<number> {

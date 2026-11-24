@@ -21,12 +21,13 @@
 | `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`), release assets and repo-wide listings (`releases.ts`), and in-memory fakes for tests |
 | `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
-| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery |
+| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery; `preflight.ts` holds the startup checks `air serve` runs and `air doctor` reports, `hints.ts` the install command for each OS |
 | `src/submit/` | `air submit`: file collection (`.gitignore`), secrets check, zip writer |
 | `src/sweep/` | `air sweep`: expired release assets |
 | `src/skill/` | `air skill install`: the bundled Claude Code skill (`bundle.ts`, generated) and its installer |
 | `skills/ai-request/` | the Claude Code skill's source; `npm run skill:bundle` regenerates `src/skill/bundle.ts` after edits |
 | `src/requester/` | `air status`, `wait`, `fetch` and `retry`: a request's state and results, seen from the requester's side |
+| `docs/architecture.md` | the target module layout and its import rules, enforced by `src/boundaries.test.ts` |
 | `docs/decisions.md` | decision log: append, newest last |
 | `src/config.ts`, `src/toml.ts` | config loading and the TOML-subset parser |
-| `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed), `bundle-skill.ts` |
+| `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed), `bundle-skill.ts`, `move.ts` (moves files and rewrites imports), `boundaries.ts` (the check behind `src/boundaries.test.ts`) |

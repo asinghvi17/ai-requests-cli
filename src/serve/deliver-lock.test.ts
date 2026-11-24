@@ -7,12 +7,13 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claim } from '../claim/claim.ts';
+import { thisHost } from '../pid.ts';
 import { createTrust } from '../claim/trust.ts';
 import type { Config } from '../config.ts';
 import { fakeGitHub } from '../gh/fake.ts';
 import type { Tmux } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../workspace/task.ts';
-import { readState, updateState } from '../workspace/state.ts';
+import { updateState } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import type { Release, ServeGitHub } from './github.ts';
 import { DELIVERY_LOCK, finishJob, startOrDeliver } from './jobs.ts';
@@ -50,7 +51,7 @@ async function finished() {
   const ctx: ServeContext = {
     gh, api, tmux: { listJobs: async () => [], stopJob: async () => {} } as unknown as Tmux, config: {} as Config,
     root, host: 'box', ghHost: 'github.com', env: process.env, stateDir: tmp(), trust: createTrust(gh),
-    usage: async () => [], agentEnv: () => ({}), log: () => {}, now: () => new Date(), stopGraceMs: 0, resumeCheckMs: 0,
+    usage: async () => [], agentEnv: () => ({}), log: () => {}, now: () => new Date(), stopGraceMs: 0, resumeCheckMs: 0, agentReadyMs: 0,
   };
   const comments = () => gh.log.filter((l) => l === 'comment 7').length;
   return { gh, ctx, dir: won.dir, uploads, comments, before: comments() };
@@ -59,24 +60,19 @@ async function finished() {
 test('air serve and air start N delivering one job at once: one upload, one result comment', async () => {
   const { ctx, dir, uploads, comments, before } = await finished();
   const [server, cli] = await Promise.all([finishJob(ctx, dir), startOrDeliver(ctx, dir)]);
-  assert.equal(server, true);
+  assert.equal(server, 'delivered');
   assert.equal(cli, 'delivering-elsewhere');
   assert.deepEqual(uploads, ['air-7-aaaaaaaaaaaa.zip']);
   assert.equal(comments() - before, 1);
-  assert.equal(readState(dir).job!.status, 'done');
-  assert.equal(existsSync(join(dir, DELIVERY_LOCK)), false, 'the lock is released');
-  // A later attempt (the next tick) finds the job done and does nothing.
-  assert.equal(await finishJob(ctx, dir), true);
-  assert.equal(uploads.length, 1);
-  assert.equal(comments() - before, 1);
+  assert.equal(existsSync(dir), false, 'the delivered workspace is removed, its lock with it');
 });
 
 test('a delivery lock held by another live process: back off, nothing written', async () => {
   const { ctx, dir, uploads, comments, before } = await finished();
   const other = spawn('sleep', ['30']);
   try {
-    writeFileSync(join(dir, DELIVERY_LOCK), `${other.pid}\n`);
-    assert.equal(await finishJob(ctx, dir), false);
+    writeFileSync(join(dir, DELIVERY_LOCK), `${other.pid} ${thisHost()}\n`);
+    assert.equal(await finishJob(ctx, dir), 'delivering-elsewhere');
     assert.deepEqual(uploads, []);
     assert.equal(comments() - before, 0);
   } finally {
@@ -87,9 +83,25 @@ test('a delivery lock held by another live process: back off, nothing written', 
 test('a delivery lock left by a dead process is taken over', async () => {
   const { ctx, dir, uploads, comments, before } = await finished();
   const dead = spawnSync('sh', ['-c', 'echo $$']).stdout.toString().trim();
-  writeFileSync(join(dir, DELIVERY_LOCK), `${dead}\n`);
-  assert.equal(await finishJob(ctx, dir), true);
+  writeFileSync(join(dir, DELIVERY_LOCK), `${dead} ${thisHost()}\n`);
+  assert.equal(await finishJob(ctx, dir), 'delivered');
   assert.equal(uploads.length, 1);
   assert.equal(comments() - before, 1);
-  assert.equal(readState(dir).job!.status, 'done');
+});
+
+test('the workspace is removed inside the lock, after its window is closed; a process that comes after finds it finished', async () => {
+  const { ctx, dir, comments, before } = await finished();
+  const seen: string[] = [];
+  ctx.tmux = {
+    listJobs: async () => [{ issue: 7 }],
+    stopJob: async () => { seen.push(`stop: workspace ${existsSync(dir) ? 'there' : 'gone'}, lock ${existsSync(join(dir, DELIVERY_LOCK)) ? 'held' : 'free'}`); },
+  } as unknown as Tmux;
+  assert.equal(await finishJob(ctx, dir), 'delivered');
+  assert.deepEqual(seen, ['stop: workspace there, lock held']);
+  assert.equal(existsSync(dir), false);
+  // `air start N` (or the next tick) arriving after: finished elsewhere, not a crash, and nothing recreated.
+  assert.equal(await finishJob(ctx, dir), 'delivered-elsewhere');
+  assert.equal(await startOrDeliver(ctx, dir), 'delivered-elsewhere');
+  assert.equal(existsSync(dir), false, 'a delivery lock never brings back a removed workspace');
+  assert.equal(comments() - before, 1);
 });

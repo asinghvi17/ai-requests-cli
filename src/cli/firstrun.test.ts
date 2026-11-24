@@ -5,11 +5,11 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configTemplate, loadConfig, parseConfig } from '../config.ts';
+import { configTemplate, DEFAULT_WINDOW_USD, loadConfig, parseConfig } from '../config.ts';
 import type { ServeContext } from '../serve/context.ts';
 import type { AgentCheck } from '../serve/preflight.ts';
 import { acquireServeLock } from '../serve/state.ts';
-import { firstRunDeps } from './firstrun.ts';
+import { BUDGET_HELP, firstRunDeps } from './firstrun.ts';
 import { jobDeps } from './jobs.ts';
 import { main } from './main.ts';
 import { skillDeps } from './skill.ts';
@@ -68,6 +68,7 @@ beforeEach(() => {
   firstRunDeps.configPath = () => path;
   firstRunDeps.gh = () => 'ok';
   firstRunDeps.ghLogin = () => 0;
+  firstRunDeps.os = () => 'debian';
   firstRunDeps.home = () => '/home/u';
   firstRunDeps.detect = async () => [
     { name: 'claude', harness: 'claude', found: true },
@@ -76,6 +77,7 @@ beforeEach(() => {
   firstRunDeps.writeClaudeTrust = (file, dir) => { written.push(`${file} ${dir}`); return dir; };
   jobDeps.loadConfig = () => loadConfig(path, '/home/u');
   jobDeps.preflight = () => ready;
+  jobDeps.workspaceRoot = () => undefined; // /home/u/air: a test writes no workspace
   jobDeps.stateDir = () => tmp();
   jobDeps.env = () => ({ PATH: '/bin', HOME: '/home/u', TERM: 'xterm-256color', CLAUDECODE: '1', GIT_AUTHOR_NAME: 'Me' });
   jobDeps.self = () => ['/usr/local/bin/air'];
@@ -93,10 +95,10 @@ test('first `air serve` on a terminal: asks for the repo and budgets, writes the
   const asked = terminal(['nope', 'acme/requests', 'lots', '$35']);
   const r = await call('serve');
   assert.equal(r.code, 0, r.err);
-  const budget = 'Per-window budget for claude (claude), in US dollars at API prices [20]: ';
+  const budget = 'Per-window budget (window_usd) for claude (claude) [500]: ';
   assert.deepEqual(asked, ['Requests repo, where your team files AI requests (OWNER/NAME): ', 'Requests repo, where your team files AI requests (OWNER/NAME): ', budget, budget]);
   assert.equal(readFileSync(path, 'utf8'), configTemplate('acme/requests', [{ name: 'claude', harness: 'claude', windowUsd: 35 }]));
-  assert.equal(r.out, `looking for Claude Code and Codex subscriptions...\n  claude (claude): found a subscription\n  codex (codex): not installed; not serving it\nwrote ${path}\n`
+  assert.equal(r.out, `looking for Claude Code and Codex subscriptions...\n  claude (claude): found a subscription\n  codex (codex): not installed; not serving it\n\n${BUDGET_HELP}wrote ${path}\n`
     + 'air serve runs in tmux: detach with C-b d and it keeps serving; `air serve` again comes back\n');
   assert.match(r.err, /^claude: 2\.1\.311 \(Claude Code\): ready/);
   assert.equal(started.length, 1);
@@ -122,7 +124,7 @@ test('`air serve` while a server runs joins it, needing no repo; in air\'s tmux 
   jobDeps.stateDir = () => state;
   // The running server was started with --repo: the config names none, and joining needs none.
   writeFileSync(path, 'max_jobs = 1\n');
-  const unlock = acquireServeLock(state);
+  const lock = acquireServeLock(state);
   try {
     const asked = terminal([]);
     const r = await call('serve');
@@ -142,7 +144,7 @@ test('`air serve` while a server runs joins it, needing no repo; in air\'s tmux 
     ]);
     assert.equal(started.length, 0);
   } finally {
-    unlock();
+    lock.release();
   }
 });
 
@@ -152,7 +154,7 @@ test('`air serve --once` on a terminal never attaches: it serves in place and th
   const context = jobDeps.context;
   jobDeps.context = (config, repo, echo) => ({ ...context(config, repo, echo), stateDir: state, log: () => {} }) as ServeContext;
   writeFileSync(path, 'repo = "acme/requests"\n');
-  const unlock = acquireServeLock(state);
+  const lock = acquireServeLock(state);
   try {
     terminal([]);
     const r = await call('serve', '--once');
@@ -162,7 +164,7 @@ test('`air serve --once` on a terminal never attaches: it serves in place and th
     assert.deepEqual(attached, []);
     assert.equal(started.length, 0);
   } finally {
-    unlock();
+    lock.release();
   }
 });
 
@@ -198,8 +200,29 @@ test('gh: offers `gh auth login` when logged out; a missing gh stops serve', asy
   terminal(['n']);
   assert.deepEqual(await call('serve'), { code: 1, out: '', err: 'air needs the GitHub CLI logged in: run `gh auth login`, then run this again\n' });
   state = 'missing';
-  assert.deepEqual(await call('serve'), { code: 1, out: '', err: 'air needs the GitHub CLI: install it from https://cli.github.com, then run this again\n' });
+  // The install command is this system's (Debian here), indented under the message.
+  const missing = await call('serve');
+  assert.equal(missing.code, 1);
+  assert.match(missing.err, /^air needs the GitHub CLI\. Install it, then run this again:\n  \(type -p wget[^\n]*\\\n    && sudo mkdir -p -m 755 \/etc\/apt\/keyrings[^]*\n    && sudo apt install gh -y\n$/);
   assert.equal(started.length, 1);
+});
+
+test('serve stops when tmux is unusable or workspace_root can not be made, with the fix', async () => {
+  const file = join(tmp(), 'not-a-dir');
+  writeFileSync(file, '');
+  writeFileSync(path, `repo = "acme/requests"\nworkspace_root = "${file}/air"\n`);
+  jobDeps.workspaceRoot = saved.jobs.workspaceRoot;
+  assert.deepEqual(await call('serve'), {
+    code: 1, out: '',
+    err: `air: ${file}, where air would create workspace_root ${file}/air, is not a directory.\n  fix: set workspace_root in ${join(process.env.XDG_CONFIG_HOME ?? join(process.env.HOME!, '.config'), 'air', 'config.toml')} to a folder you can write\n`,
+  });
+  const context = jobDeps.context;
+  jobDeps.context = (config, repo, echo) => {
+    const ctx = context(config, repo, echo);
+    return { ...ctx, tmux: { ...ctx.tmux, checkVersion: async () => { throw new Error('tmux 2.9 is too old'); } } } as ServeContext;
+  };
+  assert.deepEqual(await call('serve'), { code: 1, out: '', err: 'air: tmux 2.9 is too old\n  fix: sudo apt install tmux\n' });
+  assert.equal(started.length, 0);
 });
 
 test('serve asks before writing each missing folder trust, then checks again', async () => {
@@ -244,7 +267,7 @@ test('skill install writes the config on first run: --repo, or asked on a termin
   assert.equal(r.code, 0);
   assert.equal(asked.length, 2);
   assert.equal(loadConfig(path).repo, 'acme/requests');
-  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, 20, 'an empty answer is the default budget');
+  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, DEFAULT_WINDOW_USD, 'an empty answer is the default budget');
   assert.match(r.out, new RegExp(`wrote ${path}\ninstalled the ai-request skill in ${dir}\n$`));
 
   terminal([]);
@@ -252,7 +275,7 @@ test('skill install writes the config on first run: --repo, or asked on a termin
   firstRunDeps.isTTY = () => false;
   assert.equal((await call('skill', 'install', '--repo', 'acme/x')).code, 0);
   assert.equal(loadConfig(path).repo, 'acme/x');
-  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, 20, 'no terminal: the default budget');
+  assert.equal(loadConfig(path).subscriptions?.claude?.window_usd, DEFAULT_WINDOW_USD, 'no terminal: the default budget');
   // The config names a repo now: no flag needed.
   assert.equal((await call('skill', 'install')).code, 0);
   assert.equal((await call('skill', 'install', '--repo', 'nope')).code, 2);

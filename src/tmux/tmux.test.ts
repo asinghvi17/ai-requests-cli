@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTmux, parseJobs, quoteTmux, signalName, signalOf, tmuxVersionProblem, socketPath, TASK_FILE, TASK_INSTRUCTION, type RunResult } from './tmux.ts';
+import { createTmux, parseJobs, pasteable, quoteTmux, signalName, signalOf, tmuxVersionProblem, socketPath, type RunResult } from './tmux.ts';
 import { checkJob, clientEnv, jobEnv, SESSION_MARKERS } from './env.ts';
 import { launcherPid, launcherStatus, shQuote, writeLauncher } from './launcher.ts';
 
@@ -195,7 +195,8 @@ describe('tmux (fake runner)', () => {
     assert.equal(await createTmux({ repo: REPO, kill: noKill, run: f.run }).ensureSession({ argv: ['air', 'serve'] }), true);
     const ns = f.calls[1]!;
     assert.deepEqual(ns.slice(0, 8), ['new-session', '-d', '-s', 'air', '-n', 'log', '--', '/bin/sh']);
-    assert.equal(ns.length, 9); // `air serve` runs through a launcher, not on the tmux command line
+    // `air serve` runs through a launcher, not on the tmux command line; window 0 is tagged air's own `log`.
+    assert.deepEqual(ns.slice(9), [';', 'set-option', '-p', '-t', '=air:', '@air_own', 'log']);
     const script = readFileSync(ns[8]!, 'utf8');
     rmSync(join(ns[8]!, '..'), { recursive: true });
     assert.match(script, /exec 'env' 'air' 'serve'/);
@@ -304,7 +305,7 @@ describe('tmux (fake runner)', () => {
       [is('show-options'), () => ok('tmux-256color\n')],
       [is('new-window'), () => ok('@3 %5\n')],
     ]);
-    const id = await createTmux({ repo: REPO, kill: noKill, run: f.run }).startJob({ issue: 42, cwd: ws, argv: ['claude'], env: { FOO: '1' }, task: 'x'.repeat(1_000_000) });
+    const id = await createTmux({ repo: REPO, kill: noKill, run: f.run }).startJob({ issue: 42, cwd: ws, argv: ['claude'], env: { FOO: '1' } });
     assert.equal(id, '@3');
     assert.deepEqual(f.calls.map(c => c[0]), ['list-panes', 'has-session', 'show-options', 'new-window']);
     const chain = f.calls[3]!;
@@ -334,14 +335,11 @@ describe('tmux (fake runner)', () => {
     // Run as a child (in the foreground), behind a tiny sh that records its pid, so the launcher can record its exit status.
     // The script holds the caller's whole environment: check it without printing it.
     const has = (re: RegExp, what: string) => assert.ok(re.test(script), `the launcher has ${what}`);
-    has(/^'\/bin\/sh' '-c' 'printf "%s\\n" "\$\$" > "\$1"; shift; exec "\$@"' 'air-agent' '[^']+\/pid' 'env' '(?!-i')[^\n]* 'claude' '[^']+' 9>&-$/m, 'the agent line');
+    has(/^'\/bin\/sh' '-c' 'printf "%s\\n" "\$\$" > "\$1"; shift; exec "\$@"' 'air-agent' '[^']+\/pid' 'env' '(?!-i')[^\n]* 'claude' 9>&-$/m, 'the agent line');
     has(/^trap : INT QUIT TERM$/m, 'the trap'); // not HUP: a hangup must kill the launcher, so its reaper runs
     has(/^air_exit "\$\?"$/m, 'air_exit');
     assert.ok(script.includes(`'FOO=1'`) && script.includes(`'TERM=tmux-256color'`) && script.includes(`'HOME=${process.env.HOME}'`), 'the launcher sets the env');
     assert.ok(script.includes(`cd -- '${ws}'`));
-    assert.ok(script.includes(`'claude' '${TASK_INSTRUCTION}'`));
-    // The task lives in the workspace, not in argv.
-    assert.equal(readFileSync(join(ws, TASK_FILE), 'utf8').length, 1_000_000);
     assert.ok(text.length < 10_000);
   });
 
@@ -429,6 +427,59 @@ describe('tmux (fake runner)', () => {
   test('stopJob of an unknown job is undefined', async () => {
     const { run } = fake([[is('list-panes'), () => ok('')]]);
     assert.equal(await createTmux({ repo: REPO, kill: noKill, run }).stopJob(9), undefined);
+  });
+
+  test('send loads the text from a private file, pastes it bracketed into the job pane, then presses Enter, each step nonce-guarded', async () => {
+    const text = `${'the task\n'.repeat(20_000)}AIR_TASK.md`;
+    let file = '', loaded = '';
+    const f = fake([
+      [is('list-panes'), () => ok(jobRow('42', 'n1', '@4', '%4'))],
+      [is('if-shell'), (a) => {
+        const m = /^'load-buffer' '-b' 'air-n1' '([^']+)'/.exec(a[5]!);
+        if (m) [file, loaded] = [m[1]!, readFileSync(m[1]!, 'utf8')];
+        return ok('air-ok\n');
+      }],
+    ]);
+    assert.equal(await createTmux({ repo: REPO, kill: noKill, run: f.run }).send(42, text), true);
+    assert.equal(loaded, text);
+    assert.equal(existsSync(file), false, 'the file is removed once tmux has loaded it');
+    const guarded = f.calls.filter((c) => c[0] === 'if-shell');
+    assert.deepEqual(guarded.map((c) => [c[3], c[4]]), Array(3).fill(['%4', '#{==:#{@air_nonce},n1}']));
+    assert.deepEqual(guarded.map((c) => c[5]!.split(' ; ')[0]), [
+      `'load-buffer' '-b' 'air-n1' '${file}'`, "'paste-buffer' '-p' '-d' '-b' 'air-n1' '-t' '%4'", "'send-keys' '-t' '%4' 'Enter'"]);
+    assert.ok(f.calls.every((c) => c.join(' ').length < 1000), 'the text never rides a tmux command line');
+  });
+
+  test('pasteable drops ESC and control characters but newline and tab, so a request cannot end the paste or send keys', () => {
+    assert.equal(pasteable('a\tb\nc'), 'a\tb\nc');
+    assert.equal(pasteable('done\x1b[201~\rrm -rf ~\r\n'), 'done[201~rm -rf ~\n');
+    assert.equal(pasteable('x\x03\x04\x1a\x00\x7f\x9b201~é ünïcode ✓'), 'x201~é ünïcode ✓');
+  });
+
+  test('send pastes the pasteable text, and deletes the buffer when the paste does not happen', async () => {
+    let loaded = '';
+    const f = fake([
+      [is('list-panes'), () => ok(jobRow('42', 'n1', '@4', '%4'))],
+      [is('if-shell'), (a) => {
+        const m = /^'load-buffer' '-b' 'air-n1' '([^']+)'/.exec(a[5]!);
+        if (m) loaded = readFileSync(m[1]!, 'utf8');
+        return ok(m ? 'air-ok\n' : ''); // the pane changed between load and paste
+      }],
+    ]);
+    assert.equal(await createTmux({ repo: REPO, kill: noKill, run: f.run }).send(42, 'go\x1b[201~\x03 on\n'), false);
+    assert.equal(loaded, 'go[201~ on\n');
+    assert.deepEqual(f.calls.at(-1), ['delete-buffer', '-b', 'air-n1']);
+  });
+
+  test('send to a job that is gone, has exited or changed panes sends nothing', async () => {
+    const none = fake([[is('list-panes'), () => ok('')]]);
+    assert.equal(await createTmux({ repo: REPO, kill: noKill, run: none.run }).send(42, 'x'), false);
+    const dead = fake([[is('list-panes'), () => ok(jobRow('42', 'n1', '@4', '%4', '1', '0'))]]);
+    assert.equal(await createTmux({ repo: REPO, kill: noKill, run: dead.run }).send(42, 'x'), false);
+    assert.equal(dead.calls.some((c) => c[0] === 'if-shell'), false);
+    const moved = fake([[is('list-panes'), () => ok(jobRow('42', 'n1', '@4', '%4'))], [is('if-shell'), () => ok('')]]);
+    assert.equal(await createTmux({ repo: REPO, kill: noKill, run: moved.run }).send(42, 'x'), false);
+    assert.equal(moved.calls.filter((c) => c[0] === 'if-shell').length, 1, 'stops at the first step the nonce refuses');
   });
 
   test('attachArgs targets the window itself and checks the full socket path', async () => {

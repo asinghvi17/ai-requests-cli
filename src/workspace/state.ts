@@ -9,7 +9,6 @@ import type { Subscription } from '../usage/types.ts';
 export const STATE_FILE = 'state.json';
 export const LOG_FILE = 'setup.log';
 export const REQUEST_FILE = 'request.md';
-export const TASK_FILE = 'AIR_TASK.md';
 
 /**
  * claiming: the claim is being posted and checked; recorded first, so a claim cut off by a crash is found
@@ -19,6 +18,8 @@ export const TASK_FILE = 'AIR_TASK.md';
  * the claim is not released. While the agent runs, the phase stays `ready` and `job` tracks it.
  */
 export type Phase = 'claiming' | 'claimed' | 'setting-up' | 'ready' | 'failed' | 'released' | 'lost' | 'done';
+/** Phases past the claim: this machine no longer holds the issue. */
+export const ENDED_PHASES: readonly Phase[] = ['failed', 'released', 'lost', 'done'];
 
 /**
  * The agent's lifecycle once setup passed (`air serve`, `air run/stop/start`). ready: waiting for a start
@@ -31,6 +32,11 @@ export type Phase = 'claiming' | 'claimed' | 'setting-up' | 'ready' | 'failed' |
 export type JobStatus = 'ready' | 'running' | 'stopping' | 'paused' | 'delivering' | 'failing' | 'checkpointing' | 'done' | 'failed' | 'partial' | 'cancelled';
 /** Job statuses after which the server does nothing more for the job. */
 export const ENDED: readonly JobStatus[] = ['done', 'failed', 'partial', 'cancelled'];
+
+/** Whether air is through with a workspace: its claim ended (delivered, failed, released, lost) or its job did. */
+export function isEnded(s: State): boolean {
+  return ENDED_PHASES.includes(s.phase) || (s.job !== undefined && ENDED.includes(s.job.status));
+}
 /**
  * operator: `air stop`, or the volunteer closed the window. quota: the subscription ran out (spec §11 rules
  * 1, 2). restart: the window was lost while the server was down. exit: the agent exited without AIR_DONE and
@@ -58,6 +64,8 @@ export interface JobRecord {
   sessions?: string[];
   /** `@air_nonce` of the job's tmux pane, so a different pane for the same issue is never adopted. */
   paneNonce?: string;
+  /** A fresh start whose agent has not been sent its task yet (`sendTask`): it waits for the agent's screen. */
+  taskPending?: boolean;
   /** Start of the current run; agent time before it is in `runMs`. */
   startedAt?: string;
   runMs: number;
@@ -207,6 +215,28 @@ export function allWorkspaces(root: string, repo: string): { dir: string; state:
     }
   }
   return out.sort((a, b) => a.state.createdAt.localeCompare(b.state.createdAt));
+}
+
+/** Every workspace under `root`, of every requests repo with a directory there (`<owner>__<name>`). */
+export function everyWorkspace(root: string): { dir: string; state: State }[] {
+  let names: string[];
+  try {
+    names = readdirSync(root);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw e;
+  }
+  const out: { dir: string; state: State }[] = [];
+  for (const name of names.sort()) {
+    const repo = name.replace('__', '/');
+    try {
+      checkRepo(repo);
+    } catch {
+      continue; // not a repo directory of air's
+    }
+    if (repoDir(root, repo) === join(root, name)) out.push(...allWorkspaces(root, repo));
+  }
+  return out;
 }
 
 /** The newest workspace whose claim is still ours (claimed, setting up or ready). */

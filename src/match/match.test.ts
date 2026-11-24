@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from '../config.ts';
 import type { Subscription } from '../usage/types.ts';
 import { effectiveHarness, canTakeMore, choose, largestEffort, reserveFor, windowSize, type MatchConfig, type Request } from './match.ts';
 
@@ -16,10 +17,10 @@ function sub(name: string, o: {
 
 const config: MatchConfig = {
   models: { claude: { small: 'haiku', medium: 'sonnet', large: 'opus' }, codex: { medium: 'gpt' } },
-  // Every readable test subscription's window is worth $1,000, so $1 is 0.1 points of it.
+  // Every readable test subscription's window is worth $1,000, so $1 is 0.1 points of it; most keep 0.3 of it back.
   subscriptions: {
-    ...Object.fromEntries(['a', 'b', 'c', 'x', 's', 'u', 'i', 'm', 'sub2', 'sub3'].map((n) => [n, { window_usd: 1000 }])),
-    pro: { window_usd: 100 }, lowres: { window_usd: 1000, reserve: 0.1 }, m1: { harness: 'claude' }, m2: { harness: 'bogus' },
+    ...Object.fromEntries(['a', 'b', 'c', 'x', 's', 'u', 'i', 'm', 'sub2', 'sub3'].map((n) => [n, { window_usd: 1000, reserve: 0.3 }])),
+    pro: { window_usd: 100, reserve: 0.3 }, lowres: { window_usd: 1000, reserve: 0.1 }, m1: { harness: 'claude', reserve: 0.3 }, m2: { harness: 'bogus', reserve: 0.3 },
   },
 };
 const req = (r: Partial<Request> = {}): Request => ({ effort: 'M', ...r });
@@ -71,6 +72,58 @@ test('window_usd sizes a readable window; without it a subscription takes nothin
 
 test('per-subscription reserve', () => {
   assert.ok(!('none' in choose({ effort: 'M' }, [sub('lowres', { used: 80 })], config, NOW)));
+});
+
+test('short: what turned a request down for budget alone, and the window size that would take it', () => {
+  // As in the trial: a $20 window 70% used, 12 h before its reset: $6 left, $3 reserve (0.3, half tapered).
+  const trial: MatchConfig = { models: config.models, subscriptions: { claude: { window_usd: 20, reserve: 0.3 } } };
+  const n = choose({ effort: 'M' }, [sub('claude', { used: 70, reset: inH(12) })], trial, NOW);
+  assert.ok('none' in n);
+  assert.deepEqual(n.reasons, ['claude: weekly $6.00 left, needs $10.00 + $3.00 reserve']);
+  const s = n.short[0]!;
+  assert.deepEqual({ ...s, left: Math.round(s.left * 100) / 100, fitsAt: Math.round(s.fitsAt! * 100) / 100 },
+    { subscription: 'claude', manual: false, size: 20, left: 6, reserve: 3, cost: 10, fitsAt: 66.67 });
+  // At that size the same share of the window takes it.
+  const bigger: MatchConfig = { ...trial, subscriptions: { claude: { window_usd: s.fitsAt! + 1e-6, reserve: 0.3 } } };
+  assert.ok(!('none' in choose({ effort: 'M' }, [sub('claude', { used: 70, reset: inH(12) })], bigger, NOW)));
+  // Used past the reserve, no window size helps: only less reserve (or the reset) does.
+  const full = choose({ effort: 'XS' }, [sub('claude', { used: 90 })], trial, NOW);
+  assert.ok('none' in full); assert.equal(full.short[0]!.fitsAt, undefined);
+  // Turned down for anything else, it is not short of budget.
+  for (const o of [{ used: null }, { stale: true }, { five: 95 }]) {
+    const r = choose({ effort: 'XS' }, [sub('claude', o)], trial, NOW);
+    assert.ok('none' in r); assert.deepEqual(r.short, [], JSON.stringify(o));
+  }
+  assert.deepEqual((choose({ effort: 'XS', harness: ['codex'] }, [sub('claude', { used: 90 })], trial, NOW) as { short: unknown[] }).short, []);
+  // A manual budget is short the same way.
+  const m = choose({ effort: 'M' }, [sub('m1', { harness: 'manual', usdBudget: 12 })], config, NOW);
+  assert.ok('none' in m); assert.equal(m.short[0]!.manual, true);
+});
+
+test('effort never picks the model: a request without `model` runs on medium, and `model: small` reaches the small tier', () => {
+  const s = sub('s', { used: 0 });
+  for (const effort of ['XS', 'S', 'XL']) {
+    assert.equal((choose({ effort }, [s], config, NOW) as { model: string }).model, 'sonnet', effort);
+    assert.equal((choose({ effort, model: 'small' }, [s], config, NOW) as { model: string }).model, 'haiku', effort);
+    assert.equal((choose({ effort, model: 'large' }, [s], config, NOW) as { model: string }).model, 'opus', effort);
+  }
+});
+
+test("the default window_usd and reserve take the trial's requests: S to L from a week 70% used, 13 h before its reset", () => {
+  const c: MatchConfig = { models: config.models, subscriptions: { claude: { window_usd: DEFAULT_WINDOW_USD, reserve: DEFAULT_RESERVE } } };
+  const takes = (effort: string) => !('none' in choose({ effort }, [sub('claude', { used: 70, reset: inH(13) })], c, NOW));
+  assert.deepEqual(['XS', 'S', 'M', 'L', 'XL'].map(takes), [true, true, true, true, false]);
+  // The old default, $20, took none of them: S was 15% of its week.
+  const old: MatchConfig = { ...c, subscriptions: { claude: { window_usd: 20, reserve: DEFAULT_RESERVE } } };
+  assert.ok('none' in choose({ effort: 'S' }, [sub('claude', { used: 70, reset: inH(13) })], old, NOW));
+});
+
+test('window_usd scales the reserve with the window: whether work fits depends on the share used and the cost\'s share', () => {
+  // 69% used: 31% left, 30% kept. A $3 job is 0.3% of a $1,000 window and fits; 15% of a $20 one and doesn't.
+  for (const [size, fits] of [[1000, true], [20, false], [300, true], [299, false]] as const) {
+    const c: MatchConfig = { models: config.models, subscriptions: { claude: { window_usd: size, reserve: 0.3 } } };
+    assert.equal(!('none' in choose({ effort: 'S' }, [sub('claude', { used: 69 })], c, NOW)), fits, `$${size}`);
+  }
 });
 
 test('harness filter', () => {

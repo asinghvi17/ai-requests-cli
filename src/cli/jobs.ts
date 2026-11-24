@@ -4,18 +4,20 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { configPath, loadConfig, type Config } from '../config.ts';
+import {
+  configPath, defaultPreflightDeps, formatPreflight, installHint, loadConfig, loginsOf, preflight, refusals, workspaceRootProblem,
+  type AgentCheck, type Config, type Problem,
+} from '../setup/index.ts';
 import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
-import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent } from '../serve/jobs.ts';
-import { acquireServeLock, readServerState, serving, updateServerState } from '../serve/state.ts';
+import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent, vanished } from '../serve/jobs.ts';
+import { acquireServeLock, readServerState, serving, updateServerState, type PidLock } from '../serve/state.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../usage/index.ts';
-import { defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, type AgentCheck } from '../serve/preflight.ts';
 import { clientEnv, jobEnv } from '../tmux/env.ts';
 import { attachTo, socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
 import { ensureConfig, ensureGh, firstRunDeps, fixTrust } from './firstrun.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { CommandError, UsageError } from './requests.ts';
 
 /** Injectable for tests. */
@@ -26,6 +28,8 @@ export const jobDeps = {
   stateDir: (): string => usageStateDir(),
   /** Checks the logins config.toml serves. */
   preflight: (config: Config): AgentCheck[] => preflight(config, loginsOf(loadSubscriptions(subscriptionsFile()).filter((s) => Object.hasOwn(config.subscriptions, s.name)), config), defaultPreflightDeps(configPath())),
+  /** Why jobs can't be made in workspace_root, if they can't. */
+  workspaceRoot: (config: Config): Problem | undefined => workspaceRootProblem(config.workspace_root, configPath()),
   env: (): NodeJS.ProcessEnv => process.env,
   /** argv that runs this air: the single binary, or node and the entry script. */
   self: (): string[] => (process.argv[1]?.startsWith('/$bunfs/') ? [process.execPath] : [process.execPath, ...process.execArgv, process.argv[1]!]),
@@ -88,6 +92,11 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   }
   const ctx = contextFor(inv);
   if (!(await tmuxUsable(ctx, inv))) return 1;
+  const rootProblem = jobDeps.workspaceRoot(ctx.config);
+  if (rootProblem) {
+    inv.io.err(`air: ${rootProblem.what}\n  fix: ${rootProblem.fix}\n`);
+    return 1;
+  }
   // An agent that can't run unattended would sit at a prompt with the claim held: take no work for it.
   let checks = jobDeps.preflight(ctx.config);
   inv.io.err(formatPreflight(checks, interactive));
@@ -105,12 +114,15 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   }
   ctx.refused = refusals(checks);
   for (const [name, why] of Object.entries(ctx.refused)) ctx.log(`not serving ${name}: ${why} (the startup report gives the fix)`);
-  let unlock: () => void;
+  let lock: PidLock;
   try {
-    unlock = acquireServeLock(ctx.stateDir);
+    lock = acquireServeLock(ctx.stateDir);
   } catch (e) {
     throw new CommandError((e as Error).message);
   }
+  // Kept fresh, so a server on another host sharing this state dir never takes it for stale (FOREIGN_LOCK_MS).
+  const fresh = setInterval(() => lock.refresh(), 60_000);
+  fresh.unref();
   const server = createServer(ctx, { manual: inv.flags.manual === true });
   if (ctx.logFile) {
     try {
@@ -131,7 +143,15 @@ export async function serveCommand(inv: Invocation): Promise<number> {
   } finally {
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
-    unlock();
+    clearInterval(fresh);
+    lock.release();
+    // With no job window left, air's tmux session ends with it (from its `serve` window: as that closes), unless
+    // another server took the lock meanwhile.
+    try {
+      if (!serving(ctx.stateDir) && (await ctx.tmux.closeIfIdle(inAir ? env.TMUX_PANE : undefined))) ctx.log('stopped; no job windows were left, so the air tmux session ends');
+    } catch (e) {
+      ctx.log(`tmux: ${(e as Error).message}`);
+    }
   }
   return 0;
 }
@@ -142,7 +162,7 @@ async function tmuxUsable(ctx: ServeContext, inv: Invocation): Promise<boolean> 
     await ctx.tmux.checkVersion();
     return true;
   } catch (e) {
-    inv.io.err(`air: ${(e as Error).message}\n`);
+    inv.io.err(`air: ${(e as Error).message}\n  fix: ${installHint('tmux', firstRunDeps.os())}\n`);
     return false;
   }
 }
@@ -152,13 +172,15 @@ export async function runCommand(inv: Invocation): Promise<number> {
   const ctx = contextFor(inv);
   if (!(await tmuxUsable(ctx, inv))) return 1;
   const dir = workspace(ctx, n);
-  const job = await ensureJob(ctx, dir);
-  if (job.status !== 'ready') throw new CommandError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
-  if (!(await claimHolds(ctx, readState(dir)))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
-  const how = await startOrDeliver(ctx, dir);
-  if (how !== 'started') return delivered(inv, dir, n, how);
-  inv.io.out(`started #${n}; watch it with \`air attach ${n}\`\n`);
-  return 0;
+  return finishedElsewhere(inv, dir, n, async () => {
+    const job = await ensureJob(ctx, dir);
+    if (job.status !== 'ready') throw new CommandError(`#${n} is ${job.status}, not waiting to run${job.status === 'paused' ? ` (use \`air start ${n}\`)` : ''}`);
+    if (!(await claimHolds(ctx, readState(dir)))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
+    const how = await startOrDeliver(ctx, dir);
+    if (how !== 'started') return delivered(inv, dir, n, how);
+    inv.io.out(`started #${n}; watch it with \`air attach ${n}\`\n`);
+    return 0;
+  });
 }
 
 export async function attachCommand(inv: Invocation): Promise<number> {
@@ -181,28 +203,44 @@ export async function startCommand(inv: Invocation): Promise<number> {
   const ctx = contextFor(inv);
   if (!(await tmuxUsable(ctx, inv))) return 1;
   const dir = workspace(ctx, n);
-  const state = readState(dir);
-  const job = jobOf(state);
-  if (job.status !== 'paused') throw new CommandError(`#${n} is ${job.status}, not paused`);
-  if (!(await claimHolds(ctx, state))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
-  const how = await startOrDeliver(ctx, dir);
-  if (how !== 'started') return delivered(inv, dir, n, how);
-  inv.io.out(`started #${n}\n`);
-  return 0;
+  return finishedElsewhere(inv, dir, n, async () => {
+    const state = readState(dir);
+    const job = jobOf(state);
+    if (job.status !== 'paused') throw new CommandError(`#${n} is ${job.status}, not paused`);
+    if (!(await claimHolds(ctx, state))) throw new CommandError(`#${n} is no longer held by this machine's claim`);
+    const how = await startOrDeliver(ctx, dir);
+    if (how !== 'started') return delivered(inv, dir, n, how);
+    inv.io.out(`started #${n}\n`);
+    return 0;
+  });
+}
+
+/** Runs `run` on workspace `dir`; one that vanishes meanwhile (another process delivered it) is reported as such. */
+async function finishedElsewhere(inv: Invocation, dir: string, n: number, run: () => Promise<number>): Promise<number> {
+  try {
+    return await run();
+  } catch (e) {
+    if (vanished(e, dir)) return delivered(inv, dir, n, 'delivered-elsewhere');
+    throw e;
+  }
 }
 
 /** Reports a delivery `startOrDeliver` made (or left to another process) in place of a start (AIR_DONE was already there). */
-function delivered(inv: Invocation, dir: string, n: number, how: 'delivered' | 'delivering-elsewhere'): number {
+function delivered(inv: Invocation, dir: string, n: number, how: Exclude<Awaited<ReturnType<typeof startOrDeliver>>, 'started'>): number {
   if (how === 'delivering-elsewhere') {
     inv.io.out(`#${n} had already finished (AIR_DONE); another air process (such as \`air serve\`) is delivering it\n`);
     return 0;
   }
-  const state = readState(dir);
-  const job = state.job;
-  if (job?.status === 'done') {
-    inv.io.out(`#${n} had already finished (AIR_DONE); delivered it\n`);
+  if (how === 'delivered-elsewhere') {
+    inv.io.out(`#${n} had already finished (AIR_DONE); another air process delivered it and removed its workspace\n`);
     return 0;
   }
+  if (how === 'delivered') {
+    inv.io.out(`#${n} had already finished (AIR_DONE); delivered it and removed its workspace\n`);
+    return 0;
+  }
+  const state = readState(dir);
+  const job = state.job;
   if (job?.status === 'delivering') {
     inv.io.err(`#${n} had already finished (AIR_DONE), but its delivery failed: ${job.lastError ?? 'unknown error'}; \`air serve\` retries it\n`);
   } else if (state.phase === 'lost') {

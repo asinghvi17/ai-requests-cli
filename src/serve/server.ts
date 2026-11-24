@@ -3,30 +3,38 @@
 // local quota and claims the best fit, sets it up and starts its agent. Everything slow (claim wait, setup,
 // delivery) is tracked per issue, so one bad issue or one failing gh call only costs a log line.
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { backOff, claim, claimable, deadlineTime, LABELS, release } from '../claim/claim.ts';
 import { markedComments } from '../claim/trust.ts';
 import { currentClaim } from '../spec/markers.ts';
-import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig } from '../match/match.ts';
+import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig, type Short } from '../match/match.ts';
 import { code, fenced } from '../claim/text.ts';
 import { lint } from '../spec/lint.ts';
 import { usd } from '../usage/prices.ts';
 import type { Subscription } from '../usage/types.ts';
 import { setup } from '../workspace/setup.ts';
-import { allWorkspaces, ENDED, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
+import { allWorkspaces, ENDED, isEnded, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import {
   agentMs, cancelJob, jobSpent, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
-  PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, startAgent, startOrDeliver, stopAgent, type Workspace,
+  PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, sendTask, startAgent, startOrDeliver, stopAgent, vanished, type Workspace,
 } from './jobs.ts';
 import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
+import { tidy } from './tidy.ts';
 import { matchPrompt, MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS, waitingFor } from './prompts.ts';
-import { configPath } from '../config.ts';
+import { configPath, parseConfig, type Config } from '../config.ts';
+import { configFile as subscriptionsFile } from '../agents/index.ts';
 
 export interface ServerOptions {
   /** Wait for `air run` instead of starting agents. */
   manual?: boolean;
+}
+
+/** `run`'s options: see `run`. */
+export interface RunOptions {
+  once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number; oncePollTries?: number; onceRetryMs?: number;
 }
 
 const HELD_PHASES = ['claiming', 'claimed', 'setting-up', 'ready'];
@@ -98,6 +106,47 @@ function addUsage(s: Subscription, usd: number, config: MatchConfig): Subscripti
 
 const bodyHash = (body: string) => createHash('sha256').update(body).digest('hex').slice(0, 16);
 
+/** A request a poll left unclaimed only because its subscriptions' budgets are short (`NoChoice.short`). */
+export interface BudgetWait { issue: number; effort: string; short: Short[] }
+
+/** Each subscription short of budget for `waits`, with the first request it turns down. */
+function shortSubscriptions(waits: BudgetWait[]): { issue: number; s: Short }[] {
+  const seen = new Map<string, { issue: number; s: Short }>();
+  for (const w of waits) for (const s of w.short) if (!seen.has(s.subscription)) seen.set(s.subscription, { issue: w.issue, s });
+  return [...seen.values()];
+}
+
+/**
+ * Which subscriptions `budgetNote` names for `waits`, and the key it says to change for each: a new episode
+ * starts when this changes.
+ */
+export function budgetKeys(waits: BudgetWait[]): string {
+  return shortSubscriptions(waits).map(({ s }) => `${s.subscription}: ${s.fitsAt === undefined ? 'reserve' : s.manual ? 'budget.usd' : 'window_usd'}`).join(', ');
+}
+
+/**
+ * What `air serve` logs when the requests it could take all wait on budget: the first one, what each
+ * subscription short of budget lacks for the first request it turns down, and the config keys and files that
+ * change that. `config` and `subscriptions` are the paths of config.toml and subscriptions.json.
+ */
+export function budgetNote(waits: BudgetWait[], config: Config, files: { config: string; subscriptions: string }): string {
+  const [first] = waits;
+  if (!first) return '';
+  const more = waits.length > 1 ? ` and ${waits.length - 1} more` : '';
+  const head = `budget: #${first.issue} (effort ${first.effort}, ${usd(first.short[0]!.cost)})${more} can't be taken only because of budget or reserve, so this server takes no work.`;
+  const subs = shortSubscriptions(waits).map(({ issue, s }) => {
+    const key = `subscriptions.${s.subscription}`;
+    const reserve = `${key}.reserve (now ${config.subscriptions[s.subscription]?.reserve})`;
+    const state = `${s.subscription}: ${usd(s.left)} of its ${usd(s.size)} window left, ${usd(s.reserve)} of that kept as reserve, and #${issue} costs ${usd(s.cost)}.`;
+    if (s.fitsAt === undefined) return `${state} The window is used past its reserve: lower ${reserve} in ${files.config}, or wait for the window to reset.`;
+    const fits = `${usd(Math.ceil(s.fitsAt * 100) / 100)} or more takes #${issue}`;
+    return s.manual
+      ? `${state} Raise its budget.usd in ${files.subscriptions} (${fits}; read at start, so restart air serve), or lower ${reserve} in ${files.config}.`
+      : `${state} Raise ${key}.window_usd (now ${s.size}: what the whole window is worth at API prices; ${fits}) or lower ${reserve} in ${files.config}.`;
+  });
+  return [head, ...subs, 'air serve rereads config.toml every tick.'].join(' ');
+}
+
 export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   const repo = ctx.gh.repo;
   /** Claims, setups, starts and deliveries in progress, by issue. */
@@ -126,8 +175,50 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   /** Running job -> the line shown in the tmux status bar while it waits on the volunteer. */
   const notices = new Map<number, string>();
   let notice: string | undefined;
+  /** The status-bar notice while every request this server could take waits on budget (`budgetNote`). */
+  let budget: string | undefined;
+  /** `budgetKeys` of the budget notice last logged, while that state lasts. */
+  let budgetShort: string | undefined;
 
   const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+  /** config.toml's text as last applied (at startup: as the config in use was read), and the problem last logged. */
+  let configText: string | undefined;
+  try {
+    if (ctx.configFile !== undefined) configText = readFileSync(ctx.configFile, 'utf8');
+  } catch {
+    // the first tick reads it again, and says why it can't
+  }
+  let configProblem: string | undefined;
+
+  /**
+   * Rereads config.toml every tick, so an edit (window_usd, say) takes effect without a restart. A file that
+   * can't be read or doesn't parse leaves the last good config in place, and is logged once until it changes.
+   * workspace_root keeps its startup value: it changes with a restart.
+   */
+  function reloadConfig(): void {
+    const file = ctx.configFile;
+    if (file === undefined) return;
+    let text: string, next: Config;
+    try {
+      text = readFileSync(file, 'utf8');
+      if (text === configText) {
+        configProblem = undefined;
+        return;
+      }
+      next = parseConfig(text);
+    } catch (e) {
+      const problem = `${file}: ${err(e)}`;
+      if (problem !== configProblem) ctx.log(`config: ${problem}; keeping the config in use`);
+      configProblem = problem;
+      return;
+    }
+    configText = text;
+    configProblem = undefined;
+    if (next.workspace_root !== ctx.config.workspace_root) ctx.log(`config: workspace_root changes to ${next.workspace_root} when air serve restarts`);
+    ctx.config = { ...next, workspace_root: ctx.config.workspace_root };
+    ctx.log(`config: reloaded ${file}`);
+  }
 
   function track(n: number, what: string, p: Promise<unknown>): void {
     const t = p.then(() => {}, (e) => ctx.log(e instanceof ClaimLost ? `#${n}: ${what} skipped: ${err(e)}` : `#${n}: ${what} failed: ${err(e)}`)).finally(() => {
@@ -324,6 +415,11 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       return track(n, 'quota stop', stopAgent(ctx, dir, 'quota', out.resetsAt).then(() => {}));
     }
     await watchPrompt(dir, n, job, pane.windowId);
+    // A fresh start whose agent was not ready for its task in time (a prompt was in the way, say) gets it now;
+    // not while the start (an `air start` in another shell, say) may still be waiting to send it itself.
+    if (job.taskPending && now.getTime() - Date.parse(job.startedAt ?? '') > ctx.agentReadyMs) {
+      track(n, 'task', sendTask(ctx, dir, 0).then(() => {}));
+    }
   }
 
   /**
@@ -374,11 +470,33 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     saveJob(ctx, dir, { waiting: { ...waiting, notified: true }, waitingComments: posted + 1 });
   }
 
-  /** Puts the waiting jobs' notices in the tmux status bar, or clears it; only when that changes. */
+  /**
+   * No job keeps its window once air is through with it, whoever ended it (`air release` in another shell,
+   * say). Driven by the tagged panes (the tick's `jobs`): a pane is closed when the workspace that recorded it
+   * has ended, or when no workspace records it and none holds its issue (its workspace is gone). A pane no
+   * workspace records yet while its issue is held is a start in progress, and stays. A job left `running` in
+   * an ended workspace is cancelled.
+   */
+  async function closeEnded(jobs: Awaited<ReturnType<ServeContext['tmux']['listJobs']>>): Promise<void> {
+    if (!jobs.length) return;
+    const all = allWorkspaces(ctx.root, repo);
+    for (const pane of jobs) {
+      if (inflight.has(pane.issue)) continue;
+      const w = all.find((x) => x.state.issue === pane.issue && x.state.job?.paneNonce === pane.nonce);
+      if (w ? !isEnded(w.state) : all.some((x) => x.state.issue === pane.issue && !isEnded(x.state))) continue;
+      if (!(await ctx.tmux.stopJob(pane.issue, { graceMs: ctx.stopGraceMs }))) continue;
+      const job = w?.state.job;
+      ctx.log(`#${pane.issue}: closed window ${pane.windowId}: ${w ? `its job is over (${w.state.phase}/${job!.status})` : 'no workspace on this machine holds its job'}`);
+      if (w && !ENDED.includes(job!.status)) saveJob(ctx, w.dir, { status: 'cancelled', runMs: agentMs(job!, ctx.now()), startedAt: undefined });
+    }
+  }
+
+  /** Puts the budget notice and the waiting jobs' notices in the tmux status bar, or clears it; only when that changes. */
   async function showNotices(running: Set<number>): Promise<void> {
     for (const n of [...screens.keys()]) if (!running.has(n)) screens.delete(n);
     for (const n of [...notices.keys()]) if (!running.has(n)) notices.delete(n);
-    const text = notices.size ? [...notices.values()].join(' | ') : undefined;
+    const all = [...(budget ? [budget] : []), ...notices.values()];
+    const text = all.length ? all.join(' | ') : undefined;
     if (text === notice) return;
     await ctx.tmux.setNotice(text);
     notice = text;
@@ -414,12 +532,16 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
   async function poll(usage: Subscription[], mine: Workspace[]): Promise<number | undefined> {
     let active = mine.filter((w) => !ENDED.includes(w.state.job?.status ?? 'ready')).length;
     for (const n of inflight.keys()) if (!mine.some((w) => w.state.issue === n)) active++;
-    if (!canTakeMore(active, ctx.config.max_jobs)) return undefined;
+    if (!canTakeMore(active, ctx.config.max_jobs)) {
+      noteBudget([]);
+      return undefined;
+    }
     const ours = new Set(mine.map((w) => w.state.issue));
     const config = matchConfig(ctx.config);
     let free = committedUsage(usage, mine, config, (w) => jobSpent(ctx, w.dir, w.state.job!)?.usd ?? 0);
     const issues = await ctx.api.openRequests();
-    let candidates = 0;
+    let candidates = 0, took = 0;
+    const waits: BudgetWait[] = [];
     for (const issue of issues) {
       const n = issue.number;
       if (ours.has(n) || inflight.has(n)) continue;
@@ -448,6 +570,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
         const why = choice.reasons.join('; ') || 'no subscriptions';
         if (noFit.get(n) !== why) ctx.log(`#${n}: no fit: ${why}`);
         noFit.set(n, why);
+        if (choice.short.length) waits.push({ issue: n, effort: request.effort, short: choice.short });
         continue;
       }
       noFit.delete(n);
@@ -483,9 +606,28 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       ctx.log(`#${n}: claimed (nonce ${r.state.nonce}) for ${choice.subscription.name}/${choice.model}`);
       track(n, 'setup', prepare(r.dir));
       free = free.map((s) => (s.name === choice.subscription.name ? addUsage(s, choice.cost, config) : s));
-      if (!canTakeMore(++active, ctx.config.max_jobs)) return candidates;
+      took++;
+      if (!canTakeMore(++active, ctx.config.max_jobs)) break;
     }
+    noteBudget(took ? [] : waits);
     return candidates;
+  }
+
+  /**
+   * Logs `budgetNote` when the requests this server could take start to wait only on budget (at startup, or
+   * whenever that begins again, or when the subscriptions short of budget, or what to change for one, change),
+   * and keeps a notice in the tmux status bar while they do. Not every tick.
+   */
+  function noteBudget(waits: BudgetWait[]): void {
+    if (!waits.length) {
+      budget = budgetShort = undefined;
+      return;
+    }
+    const file = ctx.configFile ?? configPath();
+    const keys = budgetKeys(waits);
+    if (keys !== budgetShort) ctx.log(budgetNote(waits, ctx.config, { config: file, subscriptions: subscriptionsFile() }));
+    budgetShort = keys;
+    budget = `air takes no work: requests wait on budget; raise window_usd in ${file} (see the serve log)`;
   }
 
   /**
@@ -495,6 +637,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
    */
   async function tick(o: { poll?: boolean } = {}): Promise<number | typeof POLL_FAILED | undefined> {
     try {
+      reloadConfig();
       let usage: Subscription[] = [];
       try {
         usage = await ctx.usage();
@@ -507,11 +650,27 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       adopting = false;
       const mine = held();
       for (const ws of mine) {
-        if (inflight.has(ws.state.issue)) continue;
+        // (A delivery in flight when the list was read may have removed its workspace since.)
+        if (inflight.has(ws.state.issue) || !existsSync(ws.dir)) continue;
         try {
           await watch(ws, jobs, usage, first);
         } catch (e) {
-          ctx.log(`#${ws.state.issue}: ${err(e)}`);
+          if (!vanished(e, ws.dir)) ctx.log(`#${ws.state.issue}: ${err(e)}`); // (gone: another process delivered it)
+        }
+      }
+      try {
+        await closeEnded(jobs);
+      } catch (e) {
+        ctx.log(`tmux: ${err(e)}`);
+      }
+      let polled: number | typeof POLL_FAILED | undefined;
+      if (o.poll === false || readServerState(ctx.stateDir).paused) noteBudget([]);
+      else {
+        try {
+          polled = await poll(usage, held());
+        } catch (e) {
+          ctx.log(`poll failed: ${err(e)}`);
+          polled = POLL_FAILED;
         }
       }
       try {
@@ -519,13 +678,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       } catch (e) {
         ctx.log(`tmux status: ${err(e)}`);
       }
-      if (o.poll === false || readServerState(ctx.stateDir).paused) return undefined;
-      try {
-        return await poll(usage, held());
-      } catch (e) {
-        ctx.log(`poll failed: ${err(e)}`);
-        return POLL_FAILED;
-      }
+      return polled;
     } catch (e) {
       ctx.log(`tick failed: ${err(e)}`);
       return undefined;
@@ -534,9 +687,10 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
 
   let sweeping: Promise<void> | undefined;
   /**
-   * Starts the daily sweep in the background when the last one started a day or more ago (or never). The
-   * start time is saved first, so a failing sweep waits a day too; failures are only logged. Returns the
-   * running sweep, or undefined when none was due.
+   * Starts the daily sweep in the background when the last one started a day or more ago (or never): first
+   * the local cleanup pass (`tidy`: ended workspaces past their keep, stale locks, temp files, launcher
+   * dirs), then `air sweep` of the release assets. The start time is saved first, so a failing sweep waits a
+   * day too; failures are only logged. Returns the running sweep, or undefined when none was due.
    */
   function sweepIfDue(): Promise<void> | undefined {
     if (sweeping) return undefined;
@@ -549,8 +703,22 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
       ctx.log(`sweep: can't record the run, skipping it: ${err(e)}`);
       return undefined;
     }
-    ctx.log('sweep: deleting expired context and artifact assets');
-    const p = sweep({ repo, trust: ctx.trust, now, log: (line) => ctx.log(`sweep: ${line}`), ...(ctx.releases ? { releases: ctx.releases } : {}) })
+    const cleanup = async () => {
+      let panes;
+      try {
+        panes = await ctx.tmux.panes();
+      } catch (e) {
+        ctx.log(`cleanup: tmux: ${err(e)}; launcher dirs are left for the next pass`);
+      }
+      const l = tidy({ root: ctx.root, repo, stateDir: ctx.stateDir, now, panes, log: (line) => ctx.log(`cleanup: ${line}`) });
+      ctx.log(`cleanup: removed ${l.removed}${l.failed ? `, failed ${l.failed}` : ''}, kept ${l.kept} ended workspace(s) for debugging`);
+    };
+    const p = cleanup()
+      .catch((e) => ctx.log(`cleanup failed: ${err(e)}`))
+      .then(() => {
+        ctx.log('sweep: deleting expired context and artifact assets');
+        return sweep({ repo, trust: ctx.trust, now, log: (line) => ctx.log(`sweep: ${line}`), ...(ctx.releases ? { releases: ctx.releases } : {}) });
+      })
       .then((r) => ctx.log(`sweep: deleted ${r.deleted.length}, kept ${r.kept.length}${r.failed.length ? `, failed ${r.failed.length}` : ''}`))
       .catch((e) => ctx.log(`sweep failed: ${err(e)}`))
       .finally(() => { sweeping = undefined; });
@@ -574,13 +742,27 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
    * Runs ticks until `signal` aborts. With `once`, runs one full tick, then only watches (every `watchMs`)
    * until no job needs it any more. A `once` poll that finds no candidates polls again every `oncePollMs`
    * for up to `onceWaitMs` (list lag, ONCE_WAIT_MS). A `once` poll that fails is tried `oncePollTries` times in
-   * all, `onceRetryMs` apart and doubling; then the run fails.
+   * all, `onceRetryMs` apart and doubling; then the run fails. Its tmux status-bar notice goes with it.
    */
-  async function run(o: {
-    once?: boolean; signal?: AbortSignal; tickMs?: number; watchMs?: number; onceWaitMs?: number; oncePollMs?: number; oncePollTries?: number; onceRetryMs?: number;
-  } = {}): Promise<void> {
-    const tickMs = o.tickMs ?? ctx.config.tick_seconds * 1000;
-    ctx.log(`air serve on ${ctx.host}: ${repo}, ${opts.manual ? 'manual' : 'auto'} start, max ${ctx.config.max_jobs} job(s), tick ${tickMs / 1000} s`);
+  async function run(o: RunOptions = {}): Promise<void> {
+    try {
+      await serve(o);
+    } finally {
+      budget = budgetShort = undefined;
+      notices.clear();
+      try {
+        if (notice !== undefined) await ctx.tmux.setNotice(undefined);
+        notice = undefined;
+      } catch (e) {
+        ctx.log(`tmux status: ${err(e)}`);
+      }
+    }
+  }
+
+  async function serve(o: RunOptions): Promise<void> {
+    // (A function: config.toml may change tick_seconds while the server runs.)
+    const tickMs = () => o.tickMs ?? ctx.config.tick_seconds * 1000;
+    ctx.log(`air serve on ${ctx.host}: ${repo}, ${opts.manual ? 'manual' : 'auto'} start, max ${ctx.config.max_jobs} job(s), tick ${tickMs() / 1000} s`);
     // Every air label exists from the start, `air:cancel` included, so a requester can always add one.
     try {
       const created = await ctx.gh.ensureLabels(LABELS);
@@ -631,7 +813,7 @@ export function createServer(ctx: ServeContext, opts: ServerOptions = {}) {
     // Housekeeping only for a long-running server: a `--once` run never sweeps.
     sweepIfDue();
     while (!o.signal?.aborted) {
-      await sleep(tickMs, undefined, { signal: o.signal }).catch(() => {});
+      await sleep(tickMs(), undefined, { signal: o.signal }).catch(() => {});
       if (o.signal?.aborted) break;
       await tick();
       sweepIfDue();

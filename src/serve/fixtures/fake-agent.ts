@@ -1,6 +1,7 @@
-// Stands in for claude/codex in tests and smoke runs. It reads AIR_TASK.md for a line `FAKE: <mode> [arg]`,
-// does what the mode says, creates AIR_DONE and then idles like an interactive agent until interrupted.
-// Every start appends its argv to agent-argv.log in the workspace.
+// Stands in for claude/codex in tests and smoke runs. It finds a line `FAKE: <mode> [arg]` in its task (a fresh
+// start's first message, pasted in; a resume's AIR_TASK.md), does what the mode says, creates AIR_DONE and
+// then idles like an interactive agent until interrupted. Every start appends its argv to agent-argv.log in
+// the workspace, and a fresh start its first message to agent-message.log. FAKE_PROMPT_FIRST: see `firstMessage`.
 //   comment TEXT   write TEXT to out/REPORT.md      big N     write an N-character report
 //   pr [PATH...]   commit a change in repo/PATH (default: every repo under repo/)
 //   nopr           commit nothing                   prbig N   commit as `pr`, and write an N-character report
@@ -26,6 +27,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const ws = process.env.AIR_WORKSPACE ?? process.cwd();
 const argv = process.argv.slice(2);
@@ -43,7 +45,43 @@ if (process.env.FAKE_TRANSCRIPT && process.env.CLAUDE_CONFIG_DIR && session && !
   appendFileSync(join(project, session, 'subagents', 'agent-a.jsonl'), call(`${id}_sub`, 'claude-haiku-4-5', { input_tokens: 5, output_tokens: 5 }));
 }
 
-const task = readFileSync(join(ws, 'AIR_TASK.md'), 'utf8');
+/**
+ * A fresh start's task comes as its first message, as air sends it: draw an empty input box the way Claude Code
+ * does, with bracketed paste on, and take one paste and the Enter after it. Each message is appended to
+ * agent-message.log. A resume reads AIR_TASK.md, as told on its argv.
+ */
+async function firstMessage(): Promise<string> {
+  // FAKE_PROMPT_FIRST=NAME: show fixtures/panes/NAME.txt (a dialog) until the file `ready` exists.
+  const first = process.env.FAKE_PROMPT_FIRST;
+  if (first) {
+    process.stdout.write(readFileSync(new URL(`panes/${first}.txt`, import.meta.url), 'utf8'));
+    while (!existsSync(join(ws, 'ready'))) await sleep(50);
+    process.stdout.write('\x1b[2J\x1b[H');
+  }
+  const rule = '─'.repeat(60);
+  process.stdout.write(`\x1b[?2004h${rule}\n❯ \n${rule}\n  ⏵⏵ auto mode on (shift+tab to cycle)\n`);
+  process.stdin.setRawMode(true);
+  let got = '';
+  const text = await new Promise<string>((resolve) => {
+    const onData = (d: Buffer) => {
+      got += d.toString('utf8');
+      if (got.includes('\x03')) process.exit(130); // C-c while it waits
+      const start = got.indexOf('\x1b[200~'), end = got.indexOf('\x1b[201~');
+      if (start < 0 || end < start || !got.slice(end + 6).includes('\r')) return;
+      process.stdin.off('data', onData);
+      resolve(got.slice(start + 6, end).replace(/\r/g, '\n'));
+    };
+    process.stdin.on('data', onData);
+  });
+  process.stdin.setRawMode(false); // C-c is SIGINT again
+  process.stdin.pause();
+  process.stdout.write('\x1b[?2004l\x1b[2J\x1b[H');
+  appendFileSync(join(ws, 'agent-message.log'), `${JSON.stringify(text)}\n`);
+  return text;
+}
+
+const resumed = argv.includes('--resume') || argv[0] === 'resume';
+const task = resumed ? readFileSync(join(ws, 'AIR_TASK.md'), 'utf8') : await firstMessage();
 const [, mode = 'comment', arg = ''] = /^FAKE: (\S+) ?(.*)$/m.exec(task) ?? [];
 const out = join(ws, 'out');
 const report = (s: string) => writeFileSync(join(out, 'REPORT.md'), s);

@@ -606,3 +606,132 @@ Claude Code:
   by `air skill install`), not `main`, which may have moved past the binary.
 - The first line of `## Task` stays in the body although it is also the issue title. Dropping it would leave
   a one-line `## Task` empty, which spec §4 forbids, and would lose the rest of a summary cut to fit the title.
+
+## 2026-11-22: cleaning up after jobs
+
+- A delivered job's workspace is deleted by `finishJob` right after delivery, while it still holds the
+  delivery lock and after closing the job's window. A process waiting on that lock then finds the workspace
+  gone. `pidLock` never creates a lock's directory, so it can't bring the workspace back, and readers take a
+  vanished workspace (ENOENT) as delivered elsewhere.
+- Workspaces of jobs that ended any other way are kept 7 days (`KEEP_MS`) for debugging. The 7 days count
+  from their last state change, or the state file's mtime when that is unreadable. They are removed by a
+  cleanup pass (`serve/tidy.ts`) inside the daily sweep `air serve` already ran, before the asset sweep: one
+  mechanism with one clock, not a second timer. The pass touches only its own requests repo, since another
+  server may serve another repo from the same workspace_root. It never removes a workspace whose job still
+  has a process: a live delivery lock, or a tmux pane, which is the case when tmux can't be asked.
+- Every workspace deletion goes through `removeWorkspace`. It resolves the path first (trailing slashes,
+  `..`), requires `<workspace_root>/<owner>__<name>/<issue>-<nonce>`, renames the workspace to a unique trash
+  name in the same directory, and checks that entry (a real directory, real path inside root) before the rm.
+  Swapping a directory for a symlink between check and rm therefore can't redirect the rm. A trash entry a
+  crash leaves is removed by the next pass.
+- Window closing is driven by air's tagged job panes, checked every tick. A pane goes when the workspace
+  that recorded it has ended, or when no workspace records it and none holds its issue. A pane of a held
+  issue that no workspace records yet is a start in progress (`air run` saves the nonce right after) and
+  stays.
+- Lock files hold `<pid> <host>`. `alive` (src/pid.ts, the only one) counts EPERM as alive. A pid is only
+  judged on the host that wrote it. A lock from another host is stale only past `FOREIGN_LOCK_MS` (15 min).
+  `air serve` refreshes its serve lock every minute for that reason, and deliveries are shorter. The 30 s
+  grace stays for locks being written. The usage locks follow the same host rule.
+- `closeIfIdle` never kills the tmux server and closes only windows air tagged (`@air_own`). Unless a job
+  window or another `serve` window is there, it closes air's `log` windows and sets `exit-empty`, so the
+  session ends with its last window. A window of the user's keeps it. `air serve` skips the call when
+  another server took the serve lock meanwhile.
+- Launcher dirs count as air's only when they are directories (not symlinks) owned by this user, since
+  tmpdir may be a shared /tmp.
+- `air status` without ISSUE lists every repo's workspaces and this machine's leftovers. It is read-only: it
+  judges the serve lock without taking it.
+- CI installs tmux on macOS, so the tmux, serve and trust end-to-end suites run there too.
+
+## 2026-11-22: module boundaries, enforced by a test before any code moves (refactor P0)
+
+The architecture review set a target layout of eight domains (`lib`, `gh`, `request`, `agents`, `setup`,
+`server`, `cli`, `e2e`) with one-way dependency rules (docs/architecture.md). P0 moves no production code: it
+adds `src/boundaries.test.ts`, which maps today's files to their target domains and checks every import under
+`src/`, and `scripts/move.ts`, which later phases use to move files and rewrite imports. Today's 198 violations
+are an explicit allowlist that may only shrink: a new violation fails, and so does a listed one that is gone.
+Why: refactoring in phases is safe only if each phase can see what it fixed and cannot add new tangles.
+Besides the domain rules, the test forbids import cycles between files and between directories, which the
+review named (the `claim` ⇄ `workspace` cycle; every `cli/<cmd>.ts` importing `Invocation` from `main.ts`).
+"Import only `<domain>/index.ts`" holds for every cross-domain import, so most of the allowlist (137) is
+imports that later phases route through an index.
+A relative import names its file with the extension (`.ts`, or `.json`), as nodenext ESM resolution needs
+anyway. The boundary test and `scripts/move.ts` reject any other form rather than guess at resolution, so a
+specifier's target is its path.
+
+## 2026-11-22: `air doctor`
+
+- `air doctor` is back, as a report of the checks `air serve` runs at startup, from the same functions in
+  `src/serve/preflight.ts` (gh login, config, workspace_root, the agent preflight) and `checkTmux` in
+  `src/tmux/tmux.ts`. It adds what only an installation check needs: the platform, git, `air` on PATH, and
+  each login's usage read straight from its CLI (`readUncached`), so it never writes the usage cache.
+- It writes nothing, and has no `--fix`. Folder trust stays with `air serve`'s first-run prompt, the one
+  place air writes it; doctor's fix for missing trust names that prompt.
+- Install fixes come from `src/serve/hints.ts`, by system: Homebrew on macOS (brew.sh first when it is
+  missing), apt, dnf (Fedora's own gh package; RHEL gets gh's dnf4 repo), pacman, else the tool's install
+  page. gh, Claude Code and Codex use their projects' own commands. `air serve` prints the same fixes.
+- `air serve` now refuses to start when workspace_root can't be made (not a directory, or not writable),
+  instead of failing at the first claim.
+- An agent or login problem fails doctor only when no login is ready; with one ready it is a warning (`!`).
+
+## 2026-11-23: #30 and #31 under the P0 boundary test
+
+- `air doctor` (#30) and the cleanup work (#31) were written before the boundary test and added 19 violations.
+  They are fixed in the code; ALLOWED did not grow. The first domain indexes (`lib`, `gh`, `setup`, `server`,
+  `agents`) export only what their importers need today, and grow as later phases route imports through them.
+- `Io` lives in `lib/io.ts` and `Invocation` in `cli/args.ts`, not in `cli/main.ts`, so no command imports the
+  router that imports it. That removed every `cli` file cycle: 49 entries left ALLOWED.
+- `serve/hints.ts` is in the setup domain (install fixes for a volunteer's machine), and `resolveBinary` moved
+  there from `serve/preflight.ts`, which imports it, so hints no longer import preflight back.
+- `pid.ts` is in lib.
+
+## 2026-11-23: fixes from the second volunteer trial (v0.4.0, a Mac)
+
+- The default `window_usd` is 500, up from 20. At 20, an effort S request ($3) is 15% of a week, so a window
+  70% used with its 30% reserve took nothing, and every tick logged a no-fit nobody saw. A Max plan's weekly
+  window is worth hundreds of dollars to over a thousand at API prices; 500 is the low end of that, so a
+  volunteer on Max undercounts their window rather than overcounts it. A Pro or Plus plan is worth far less,
+  and first run says so. Too high a value only makes each effort a smaller share of the week than it really
+  is; the reserve still holds, since air rereads usage every tick.
+- First run explains what `window_usd` means, suggests 500 and takes it on Enter. Without a terminal it
+  writes 500.
+- `reserve` stays 0.3, and is now one default (`DEFAULT_RESERVE` in config.ts): config.toml without a
+  `reserve` used to read as 0, while the matcher's own default was 0.3. The reserve and what is left are both
+  shares of the window, both scaled by `window_usd`, so `window_usd` doesn't move where air stops (70% used);
+  it sets the share each effort is. The $152 reserve the trial logged at `window_usd = 1000` was 30% of $1000
+  tapered to about half, 12 hours before the reset: the taper is meant (quota about to reset goes to use).
+- When requests wait only on budget or reserve (a subscription would take one but for its dollars, and the
+  poll claims nothing), the server logs it once, when that starts (at startup too), naming the request, each
+  subscription's numbers, the exact keys (`subscriptions.NAME.window_usd`, `.reserve`, or a manual budget's
+  `budget.usd`), the file, and the smallest `window_usd` that would take it (none when the window is used
+  past its reserve: then only a lower reserve or the reset helps). The tmux status bar says so while it
+  lasts. Per-request no-fit lines are unchanged.
+- `air serve` rereads config.toml every tick and applies it when its text changes, except `workspace_root`
+  (the workspaces in use are under it), which is logged as changing on restart. A file that can't be read
+  or parsed keeps the config in use and is logged once until it changes. subscriptions.json is still read
+  at start.
+- A fresh agent gets its whole task as its first message: AIR_TASK.md's text, saying the file is there to
+  read again (after a compaction, say). Not on argv (length limits) nor stdin (the agent runs interactively
+  in tmux, for volunteers to attach): air waits for the agent's input box (patterns from the captured Claude
+  Code 2.1.311 and Codex 0.164.0 ready screens), loads the text into a tmux buffer from a private file,
+  pastes it as one bracketed paste (`paste-buffer -p`, so its newlines don't submit it early) and presses
+  Enter 200 ms later. Checked by hand on both CLIs with 40- and 60-line pastes and Enter 100 ms to 1 s
+  after. A dialog in the way (folder trust, say) holds the task back; each tick looks again. A session that
+  never got its task is started fresh, since there is nothing to resume. Resumes keep their short argv
+  instruction: their session already holds the task.
+- An effort S request ran on sonnet because effort never picks the model: a request's `model` (spec v0 §2,
+  "Minimum model tier. Default `medium`") does, and the trial's request did not ask for `small`. That is the
+  spec's design, so it stays. The small tier is reachable with `model: small`; the docs and the requester
+  skill now say when to use it.
+- Review follow-ups:
+  - The task is pasted only once the agent's ready screen is the same on two looks, on every path (a tick's
+    look included), so a box still drawing, before its TUI turns bracketed paste on, isn't pasted into.
+  - The pasted text loses ESC and the other control characters but newline and tab (`pasteable` in
+    tmux.ts, the one place): a request can't end the paste early or send C-c. AIR_TASK.md keeps the raw text.
+  - `[models]` and `[agents]` edits apply from the next agent launch, resumes included. That is meant: the
+    waiting-prompt fixes say to edit `[agents.*] args`, and a reload exists so that needs no restart. The
+    startup unattended check is not rerun; a restart does that.
+  - The budget notice is logged again when the subscriptions short of budget, or the key to change for one,
+    change; the status bar is cleared when `air serve` stops.
+  - `serve/server.ts` still imports `config.ts` directly, as it did before (an allowlisted entry). Through
+    `setup/index.ts` it would make three directory cycles, since that index re-exports `serve/preflight.ts`
+    and `serve/hints.ts`; it goes once those move to `src/setup/`.

@@ -21,6 +21,9 @@ On a terminal, `air serve` sets up whatever is missing, then serves:
 Later runs skip what is already done. If a server is already running, `air serve` attaches you to it. From
 a window of air's own session, it switches you to the `serve` window.
 
+It also stops if tmux is missing or older than 3.0, or if it can't create `workspace_root`. `air doctor`
+runs these same checks and changes nothing ([doctor.md](doctor.md)).
+
 Codex needs no trust step: air tells it to trust each job's directory when it starts it.
 
 An agent that fails its checks takes no new work. The other agent keeps working.
@@ -47,8 +50,13 @@ delete their comment. [spec/v0.md §9](../spec/v0.md#9-claiming) has the details
 
 air then sets up a fresh workspace under `workspace_root`: the context zip and any repos the request names.
 
-It starts the agent in a new tmux window. When the agent finishes, air delivers the result as a comment,
-a pull request or an artifact, as the request asks.
+It starts the agent in a new tmux window and, once the agent's input box is up, pastes the whole task in as
+its first message. The task stays in `AIR_TASK.md` in the workspace, for the agent to read again. When the
+agent finishes, air delivers the result as a comment, a pull request or an artifact, as the request asks.
+
+A request runs on the model tier its `model` names (`small`, `medium`, `large`; default `medium`), mapped by
+`[models.HARNESS]` in the config. Effort doesn't pick the tier: an S request without `model` runs on medium
+(Sonnet), and `model: small` runs it on Haiku.
 
 The labels are listed in [spec/v0.md](../spec/v0.md#8-labels). `air serve` creates any the repo lacks.
 
@@ -60,9 +68,24 @@ whatever your plan costs. A request's effort is such an estimate: XS $1, S $3, M
 air reads each subscription's quota as a percentage of its weekly window. `window_usd` in the config says
 what the whole window is worth, so 60% used of a $1000 window leaves $400.
 
-The first run asks for each subscription's per-window budget, defaulting to a conservative $20. Raise it
-from your first jobs: each final comment gives the job's cost and the window's usage before and after. A $12
-job that moved the window from 40% to 41.5% puts the whole window near $800.
+The first run asks for each subscription's `window_usd` and suggests $500 (Enter takes it). A Max plan's week
+is worth hundreds of dollars to over a thousand at API prices, so $500 is the low end of a Max plan; a Pro or
+Plus plan's week is worth far less. Check it from your first jobs: each final comment gives the job's cost and
+the window's usage before and after. A $12 job that moved the window from 40% to 41.5% puts the whole window
+near $800.
+
+`reserve` (default 0.3) is the share of each window kept for you: air takes no new work once the window is 70%
+used. In the last 24 hours before the window resets the reserve shrinks to 0, so quota that would otherwise
+go unused gets used. Both are shares of the window, so `window_usd` doesn't change where air stops; it
+changes how big a share of the week each effort is. At $20, an S request is 15% of the week; at $500 it is
+0.6%.
+
+When the only thing keeping air from a request is budget or reserve, the log says so once, when that starts
+(at startup too), with the exact key to change (`subscriptions.NAME.window_usd`, or `reserve`), the file, and
+the `window_usd` that would take the request. The tmux status bar says so while it lasts.
+
+`air serve` reads config.toml again every tick, so a change takes effect without a restart (`workspace_root`
+excepted). A file that doesn't parse is logged once, and the config in use stays.
 
 A job that costs more than twice its effort's dollars is stopped early, as partial.
 
@@ -89,6 +112,32 @@ air serve --manual   # claim and set up, but wait for `air run ISSUE` to start e
 ```
 
 `air claim ISSUE` and `air setup ISSUE` do the first two steps of a job by hand, for one chosen request.
+
+## Cleaning up
+
+air removes what a job leaves behind:
+
+- A job's tmux window closes when the job ends, however it ends. The server checks every job window on each
+  tick, and closes one whose job is over or whose workspace is gone. A job ended outside the server (say
+  `air release` in another shell) has its window closed this way on the next tick.
+- A delivered job's window is closed and its workspace deleted right after delivery. The workspace of a job
+  that failed, was cancelled, was released or lost its claim is kept 7 days for debugging, then deleted.
+- `air serve` runs a cleanup pass when it starts and then once a day, before its daily `air sweep`. It deletes
+  its own requests repo's workspaces past their 7 days, lock files whose process is dead, temp files of air
+  processes that died, and launcher dirs (`air-launch-*` in the temp dir) that no tmux window uses. It never
+  deletes a workspace while its job still has a process: a delivery in progress, or a tmux window.
+- When `air serve` stops with no job window left, it closes air's `log` window, and the air tmux session ends
+  with its last window (its own `serve` window, as it exits). air only ever closes windows it created: a
+  window of your own on air's socket keeps the session. So do jobs still running in tmux (stopped with `C-c`
+  while they ran), which the next `air serve` re-adopts.
+
+air only deletes inside `workspace_root`, its state dir and its own launcher dirs, never through a symlink.
+Lock files record the host with the pid, so a state dir shared between machines is safe: a lock another host
+wrote is never judged by its pid.
+
+`air status` without an issue shows what is on this machine: the jobs it holds, its tmux windows, the
+workspaces kept for debugging (and when each goes), and anything left behind. It ends with
+`clean: nothing left behind` when there is nothing. `--json` gives the same as one object.
 
 ## The agent's environment
 

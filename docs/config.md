@@ -4,6 +4,11 @@ air's settings live in `~/.config/air/config.toml` (or `$XDG_CONFIG_HOME/air/con
 `air serve` or `air skill install` writes it, with every value spelled out. Edit it by hand after that.
 Without a terminal to ask on, `air skill install` needs `--repo OWNER/NAME` to write it.
 
+A running `air serve` reads the file again every tick, so an edit takes effect without a restart, except
+`workspace_root`, which changes when it restarts. A file that doesn't parse is logged once, and the server
+keeps the config it had. `[models]` and `[agents]` edits apply from the next agent launch, a resume of a
+running job included; the startup check that each agent can run unattended runs again only on a restart.
+
 ## Top level
 
 - `repo`: the requests repo, `OWNER/NAME`. Any command's `--repo` overrides it.
@@ -17,13 +22,15 @@ One table per login air serves. A login with no table takes no work.
 
 - `harness`: `claude` or `codex`.
 - `window_usd`: the per-window budget: what air counts the login's whole weekly window as worth, in US
-  dollars at API prices. The first run asks for it (default 20; 20 without a terminal);
-  [serving.md](serving.md#budgets) shows how to calibrate it. Without it, the login takes no work.
-- `reserve` (first run writes 0.3): the share of each window kept for you.
+  dollars at API prices. The first run asks for it and suggests 500 (Enter takes it; 500 without a
+  terminal). [serving.md](serving.md#budgets) shows how to check it. Without it, the login takes no work.
+- `reserve` (default 0.3): the share of each window kept for you. air takes no new work past `1 - reserve` of
+  the window used, until the last 24 hours before it resets.
 
 ## `[models.HARNESS]`
 
-Maps a request's tier (`small`, `medium`, `large`) to a model. A request never runs below its tier.
+Maps a request's tier (`small`, `medium`, `large`) to a model. A request runs on the tier its `model` names,
+`medium` when it names none; its effort doesn't change the tier. A request never runs below its tier.
 
 ## `[agents.HARNESS]`
 

@@ -1,7 +1,7 @@
 // `air retry ISSUE [--effort L]`: offer a cancelled, failed or partial request again (spec/v0.md §12).
 import { EFFORTS, type Effort } from '../spec/frontmatter.ts';
 import { retry, RetryError } from '../requester/retry.ts';
-import type { Invocation } from './main.ts';
+import type { Invocation } from './args.ts';
 import { target, UsageError } from './requests.ts';
 
 export async function retryCommand(inv: Invocation): Promise<number> {

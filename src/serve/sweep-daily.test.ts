@@ -1,13 +1,15 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GhError } from '../gh/gh.ts';
 import { fakeReleases } from '../gh/releases-fake.ts';
+import { createWorkspace } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import { createServer, SWEEP_INTERVAL_MS } from './server.ts';
 import { readServerState, updateServerState } from './state.ts';
+import { KEEP_MS } from './tidy.ts';
 
 const dirs: string[] = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
@@ -16,7 +18,8 @@ const HOUR = 3600_000;
 
 function setup() {
   const stateDir = mkdtempSync(join(tmpdir(), 'air-serve-sweep-'));
-  dirs.push(stateDir);
+  const root = mkdtempSync(join(tmpdir(), 'air-serve-sweep-root-'));
+  dirs.push(stateDir, root);
   const rel = fakeReleases();
   const asset = rel.addAsset('air-context', 'old.zip');
   rel.issueList.push({
@@ -27,9 +30,9 @@ function setup() {
   const lines: string[] = [];
   // Only what the sweep uses: the rest of the context is never touched by sweepIfDue.
   const ctx = {
-    gh: { repo: 'o/requests' }, stateDir, releases: rel, trust: async () => true, now: () => now, log: (m: string) => lines.push(m),
+    gh: { repo: 'o/requests' }, root, tmux: { panes: async () => [] }, stateDir, releases: rel, trust: async () => true, now: () => now, log: (m: string) => lines.push(m),
   } as unknown as ServeContext;
-  return { ctx, rel, lines, stateDir, advance: (ms: number) => { now = new Date(now.getTime() + ms); }, now: () => now };
+  return { ctx, rel, lines, stateDir, root, advance: (ms: number) => { now = new Date(now.getTime() + ms); }, now: () => now };
 }
 
 test('serve sweeps at most once per 24 h and persists the last run in serve.json', async () => {
@@ -69,4 +72,20 @@ test('a failing sweep only logs, and waits a day before trying again', async () 
   const retry = server.sweepIfDue();
   assert.ok(retry);
   await retry;
+});
+
+test('the daily sweep starts with the local cleanup: an ended workspace past its keep is removed, a recent one kept', async () => {
+  const s = setup();
+  const make = (issue: number, ago: number) => {
+    const at = new Date(s.now().getTime() - ago).toISOString();
+    return createWorkspace(s.root, {
+      version: 1, repo: 'o/requests', issue, title: 't', author: 'a', url: 'u', host: 'box', nonce: 'aaaaaaaaaaaa', repos: [], phase: 'failed', createdAt: at, updatedAt: at,
+    }, 'body');
+  };
+  const old = make(1, KEEP_MS + HOUR), recent = make(2, HOUR);
+  await createServer(s.ctx).sweepIfDue();
+  assert.equal(existsSync(old), false);
+  assert.equal(existsSync(recent), true);
+  assert.ok(s.lines.includes('cleanup: removed 1, kept 1 ended workspace(s) for debugging'), s.lines.join('\n'));
+  assert.ok(s.lines.indexOf('sweep: deleted 1, kept 0') > s.lines.findIndex((l) => l.startsWith('cleanup: removed 1')), 'then the asset sweep');
 });

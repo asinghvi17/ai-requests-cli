@@ -56,10 +56,10 @@ function hermetic(harness: Harness, env: Record<string, string>): Agent {
   return { command: ['env', '-i', ...Object.entries(vars).map(([k, v]) => `${k}=${v}`), harness], args: DEFAULT_AGENTS[harness].args };
 }
 
-/** The argv `air serve` starts `harness` with in `dir`, minus the prompt, so nothing reaches a model. */
+/** The argv `air serve` starts `harness` with in `dir` (a fresh start: no prompt), so nothing reaches a model. */
 function argvFor(harness: Harness, agent: Agent, dir: string): string[] {
   const sessionId = harness === 'claude' ? randomUUID() : undefined;
-  return agentArgv({ harness, agent, model: harness === 'claude' ? 'sonnet' : 'gpt-5', sessionId, instruction: '', dir }).slice(0, -1);
+  return agentArgv({ harness, agent, model: harness === 'claude' ? 'sonnet' : 'gpt-5', sessionId, dir });
 }
 
 /** Starts `argv` in `dir` as a job; resolves to the prompt on its first settled screen, if any. */
