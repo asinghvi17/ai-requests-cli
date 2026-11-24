@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseMarkers, parseResult } from '../spec/markers.ts';
+import { parseMarkers, parseResult } from '../request/markers.ts';
 import type { Subscription } from '../usage/types.ts';
 import { extractZip } from '../lib/zip.ts';
 import { agentArgv, agentReady, codexTrust, findCodexSession, taskMessage } from './agent.ts';

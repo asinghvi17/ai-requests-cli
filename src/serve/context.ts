@@ -4,13 +4,12 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { configPath, type Config } from '../config.ts';
 import { defaultHost } from '../claim/claim.ts';
-import { createTrust, type Trust } from '../claim/trust.ts';
+import { createTrust, type Download, type Trust } from '../request/index.ts';
 import { createGh, releases, requestsRepo, type Releases, type RequestsRepo } from '../gh/index.ts';
 import type { MatchConfig } from '../match/match.ts';
 import { createTmux, type Tmux } from '../tmux/tmux.ts';
 import { configFile, loadConfig as loadSubscriptions, readAll, stateDir as usageStateDir } from '../usage/index.ts';
 import type { ManualConfig, Subscription, SubscriptionConfig } from '../usage/types.ts';
-import type { Download } from '../workspace/context.ts';
 import { serveGitHub, type ServeGitHub } from './github.ts';
 import { loginsOf } from './preflight.ts';
 

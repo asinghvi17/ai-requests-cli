@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createTrust } from '../claim/trust.ts';
+import { createTrust } from '../request/trust.ts';
 import { parseConfig } from '../config.ts';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Short } from '../match/match.ts';

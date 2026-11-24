@@ -14,7 +14,7 @@
 | Path | Contents |
 | --- | --- |
 | `src/cli/` | entry point (`main.ts`) and one module per command; `firstrun.ts` is the setup `air serve` and `air skill install` do on first run (gh login, config, folder trust) |
-| `src/spec/` | request front-matter parser and lint |
+| `src/request/` | the request as GitHub sees it: front-matter parser and lint, markers, labels, trust rule, context zips; `air submit` (file collection, secrets check), `air sweep`, the requester's side (`air status`, `wait`, `fetch`, `retry`, `cancel`), and `air skill install` under `skill/` (`bundle.ts`, generated); other domains import it through `index.ts` |
 | `src/usage/` | subscription usage readers (Claude, Codex) |
 | `src/match/` | effort matching against local quota |
 | `src/tmux/` | tmux control on the private `air` socket |
@@ -22,13 +22,9 @@
 | `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
 | `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery; `preflight.ts` holds the startup checks `air serve` runs and `air doctor` reports, `hints.ts` the install command for each OS |
-| `src/submit/` | `air submit`: file collection (`.gitignore`), secrets check |
-| `src/sweep/` | `air sweep`: expired release assets |
-| `src/skill/` | `air skill install`: the bundled Claude Code skill (`bundle.ts`, generated) and its installer |
-| `skills/ai-request/` | the Claude Code skill's source; `npm run skill:bundle` regenerates `src/skill/bundle.ts` after edits |
-| `src/requester/` | `air status`, `wait`, `fetch` and `retry`: a request's state and results, seen from the requester's side |
+| `skills/ai-request/` | the Claude Code skill's source; `npm run skill:bundle` regenerates `src/request/skill/bundle.ts` after edits |
 | `docs/architecture.md` | the target module layout and its import rules, enforced by `src/boundaries.test.ts` |
 | `docs/decisions.md` | decision log: append, newest last |
-| `src/lib/` | shared code with no air knowledge (docs/architecture.md): TOML-subset parser, version, pid and lock files, setup exec, zip reader and writers |
+| `src/lib/` | shared code with no air knowledge (docs/architecture.md): TOML-subset parser, version, pid and lock files, setup exec, git (resolve, clone, checkpoint), zip reader and writers |
 | `src/config.ts` | config loading |
 | `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed), `bundle-skill.ts`, `move.ts` (moves files and rewrites imports), `boundaries.ts` (the check behind `src/boundaries.test.ts`) |

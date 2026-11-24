@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { symlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { collectFiles, ignored, parseGitignore } from './collect.ts';
-import { cleanup, tree } from './fixture.ts';
+import { cleanup, tree } from './testing/submit.ts';
 
 after(cleanup);
 

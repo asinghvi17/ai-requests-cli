@@ -3,8 +3,7 @@ import { execFile } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { RepoEntry } from '../spec/frontmatter.ts';
-import { exec, SETUP_TIMEOUT_MS, type ExecResult } from '../lib/exec.ts';
+import { exec, SETUP_TIMEOUT_MS, type ExecResult } from './exec.ts';
 
 /** Resolving a repo at claim time (ls-remote, or a treeless clone for a commit). */
 export const RESOLVE_TIMEOUT_MS = 10 * 60_000;
@@ -113,12 +112,19 @@ export interface ResolveOptions {
   allowAnyUrl?: boolean;
 }
 
+/** What `resolveRepo` reads of a `repos` entry: its URL and exactly one of `ref` and `pr`. */
+interface RepoRef {
+  url: string;
+  ref?: string;
+  pr?: number;
+}
+
 /**
  * Resolves a `repos` entry to the full commit SHA it names now (spec/v0.md §5 Repos): a branch or tag to its
  * commit, a `pr` to `refs/pull/<pr>/head`, and any other `ref` to the commit it abbreviates or names, looked
  * up in a treeless bare clone. Resolves to the SHA, or to why the entry can't be resolved.
  */
-export async function resolveRepo(entry: RepoEntry, opts: ResolveOptions = {}): Promise<{ sha: string } | { error: string }> {
+export async function resolveRepo(entry: RepoRef, opts: ResolveOptions = {}): Promise<{ sha: string } | { error: string }> {
   try {
     if (!opts.allowAnyUrl) checkCloneUrl(entry.url);
     if (entry.ref !== undefined) checkRef(entry.ref);

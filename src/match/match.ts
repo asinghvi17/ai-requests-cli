@@ -2,7 +2,7 @@
 // Everything is in US dollars at API prices: an effort's cost (spec §2), a manual budget, and a subscription's
 // primary window, which config.toml's `window_usd` says the worth of.
 
-import { EFFORT_USD, EFFORTS, type Effort } from '../spec/frontmatter.ts';
+import { EFFORT_USD, EFFORTS, type Effort } from '../request/index.ts';
 import { usd } from '../usage/prices.ts';
 import type { Subscription, Window } from '../usage/types.ts';
 

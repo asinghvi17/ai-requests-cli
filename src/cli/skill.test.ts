@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { skillFiles } from '../skill/install.ts';
+import { skillFiles } from '../request/skill/install.ts';
 import { firstRunDeps } from './firstrun.ts';
 import { main } from './main.ts';
 import { skillDeps } from './skill.ts';

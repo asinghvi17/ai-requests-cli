@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { GhError } from '../gh/gh.ts';
-import { formatResult } from '../spec/markers.ts';
-import { claim, NONCE, requestIssue, result, SHA } from './fixture.ts';
+import { formatResult } from './markers.ts';
+import { claim, NONCE, requestIssue, result, SHA } from './testing/requester.ts';
 import { formatStatus, readStatus, SETTLE_MS, statusJson, waitForResult } from './status.ts';
 
 const PR = 'https://github.com/acme/service/pull/7';

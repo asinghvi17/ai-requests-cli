@@ -4,7 +4,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, type Config } from '../setup/index.ts';
-import { formatStatus, readStatus, statusJson } from '../requester/status.ts';
+import { formatStatus, readStatus, statusJson } from '../request/index.ts';
 import {
   activeWorkspace, defaultRunner, formatMachineStatus, leftovers, LOCK_FILE, machineStatus, serverPanes, staleLock, type ServerPane,
 } from '../server/index.ts';

@@ -5,12 +5,9 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { backOff, claim, claimable, deadlineTime, LABELS, release } from '../claim/claim.ts';
-import { markedComments } from '../claim/trust.ts';
-import { currentClaim } from '../spec/markers.ts';
+import { backOff, claim, claimable, deadlineTime, release } from '../claim/claim.ts';
+import { code, currentClaim, fenced, LABELS, lint, markedComments, sweep } from '../request/index.ts';
 import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig, type Short } from '../match/match.ts';
-import { code, fenced } from '../claim/text.ts';
-import { lint } from '../spec/lint.ts';
 import { usd } from '../usage/prices.ts';
 import type { Subscription } from '../usage/types.ts';
 import { setup } from '../workspace/setup.ts';
@@ -20,7 +17,6 @@ import {
   agentMs, cancelJob, jobSpent, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,
   PAUSE_LIMIT_MS, QUOTA_WAIT_MS, requestOf, saveJob, sendTask, startAgent, startOrDeliver, stopAgent, vanished, type Workspace,
 } from './jobs.ts';
-import { sweep } from '../sweep/sweep.ts';
 import { readServerState, updateServerState } from './state.ts';
 import { tidy } from './tidy.ts';
 import { matchPrompt, MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS, waitingFor } from './prompts.ts';

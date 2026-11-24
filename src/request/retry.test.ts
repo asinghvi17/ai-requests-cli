@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lint } from '../spec/lint.ts';
-import { claim, requestBody, requestIssue, result, SHA } from './fixture.ts';
+import { lint } from './lint.ts';
+import { claim, requestBody, requestIssue, result, SHA } from './testing/requester.ts';
 import { editFrontMatter, retry, RetryError } from './retry.ts';
 
 const OUT = { url: 'https://github.com/o/requests/releases/download/air-artifacts/air-1-aaaaaaaa-out.zip', sha256: 'b'.repeat(64), bytes: 100 };

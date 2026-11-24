@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { makeBareRepo, insteadOf, type BareRepo } from './git-fixture.ts';
-import type { RepoEntry } from '../spec/frontmatter.ts';
+import type { RepoEntry } from '../request/frontmatter.ts';
 import { checkoutCheckpoint, checkRef, cloneAt, GitError, gitFailure, resolveRepo, type ResolveOptions } from './git.ts';
 
 let dir: string;
@@ -52,7 +52,7 @@ test('an entry that names nothing, or a non-branch where a branch is needed, doe
   assert.match((await resolve({ ref: 'v1' }, { branch: true }) as { error: string }).error, /`v1` is not a branch of .*`deliver: pr`/);
   assert.deepEqual(await resolve({ ref: 'main' }, { branch: true }), { sha: repo.main });
   assert.match((await resolve({ ref: 'main', url: join(dir, 'missing.git') }) as { error: string }).error, /git ls-remote .* failed/);
-  assert.match((await resolveRepo({ url: 'ext::sh -c touch% /tmp/pwned', ref: 'main', path: 'r' }) as { error: string }).error, /refusing repo url/);
+  assert.match((await resolveRepo({ url: 'ext::sh -c touch% /tmp/pwned', ref: 'main' }) as { error: string }).error, /refusing repo url/);
   assert.match((await resolve({ ref: 'a..b' }) as { error: string }).error, /refusing ref/);
 });
 
@@ -68,7 +68,7 @@ test('https URLs go through git (rewritten here to the local repo)', async () =>
   const url = 'https://github.com/o/target.git';
   const r = await clone(repo.main, { url, allowAnyUrl: false, env: insteadOf(repo.bare, url) });
   assert.equal(r.head, repo.main);
-  assert.deepEqual(await resolveRepo({ url, ref: 'main', path: 'target' }, { env: insteadOf(repo.bare, url) }), { sha: repo.main });
+  assert.deepEqual(await resolveRepo({ url, ref: 'main' }, { env: insteadOf(repo.bare, url) }), { sha: repo.main });
 });
 
 test('a missing commit or repo is a GitError', async () => {
@@ -99,7 +99,7 @@ test('a checkpoint commit is fetched by SHA and checked out on its branch', asyn
 
 test('a repo that cannot be read is reported by git\'s fatal line, not the hint after it', async () => {
   const missing = join(mkdtempSync(join(tmpdir(), 'air-git-')), 'nope.git');
-  const r = await resolveRepo({ url: missing, ref: 'main', path: 'r' }, { allowAnyUrl: true });
+  const r = await resolveRepo({ url: missing, ref: 'main' }, { allowAnyUrl: true });
   assert.match((r as { error: string }).error, /failed: fatal: .*does not appear to be a git repository$/);
   assert.equal(gitFailure({ code: 128, stderr: "fatal: 'x' does not appear to be a git repository\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n" }), "fatal: 'x' does not appear to be a git repository");
   assert.equal(gitFailure({ code: 1, stderr: 'something odd\n' }), 'something odd');

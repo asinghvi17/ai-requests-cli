@@ -1,10 +1,10 @@
 // What a requester sees of a request (spec/v0.md §12): the state label, the holding claim and the latest
 // result, read with the requester's own gh credentials and trusting only counted markers and results.
 import { setTimeout as sleep } from 'node:timers/promises';
-import { CANCEL_LABEL, HELD_LABELS, STATE_LABELS } from '../claim/claim.ts';
-import { createTrust, markedComments, type Trust } from '../claim/trust.ts';
+import { CANCEL_LABEL, HELD_LABELS, STATE_LABELS } from './labels.ts';
+import { createTrust, markedComments, type Trust } from './trust.ts';
 import { GhError, type RequestsRepo } from '../gh/index.ts';
-import { countedMarkers, countedResults, currentClaim, type AirResult, type ResultStatus } from '../spec/markers.ts';
+import { countedMarkers, countedResults, currentClaim, type AirResult, type ResultStatus } from './markers.ts';
 
 export interface LatestResult {
   /** Id of the final comment that carries it. */

@@ -4,16 +4,13 @@
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createGh, type RequestsRepo } from '../gh/index.ts';
-import { CANCEL_LABEL, defaultHost, release } from '../claim/claim.ts';
-import { code, fenced, tail } from '../claim/text.ts';
-import { createTrust, markedComments, type Trust } from '../claim/trust.ts';
-import { lint } from '../spec/lint.ts';
-import type { Request } from '../spec/frontmatter.ts';
-import { currentClaim } from '../spec/markers.ts';
-import { fetchContext, releaseDownload, type Download } from './context.ts';
+import { defaultHost, release } from '../claim/claim.ts';
+import {
+  CANCEL_LABEL, code, createTrust, currentClaim, fenced, fetchContext, lint, markedComments, releaseDownload, tail,
+  type Download, type Request, type Trust,
+} from '../request/index.ts';
 import { childEnv } from './env.ts';
-import { exec, SETUP_TIMEOUT_MS, type ExecResult } from '../lib/index.ts';
-import { checkoutCheckpoint, cloneAt } from './git.ts';
+import { checkoutCheckpoint, cloneAt, exec, SETUP_TIMEOUT_MS, type ExecResult } from '../lib/index.ts';
 import { airEnv } from './launch.ts';
 import { activeWorkspace, LOG_FILE, REQUEST_FILE, updateState, type State } from './state.ts';
 import { TASK_FILE, taskPrompt } from './task.ts';

@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { closeSync, createReadStream, openSync, rmSync, statSync, writeSync } from 'node:fs';
 import { GhError, type Gh } from '../gh/index.ts';
-import type { Asset } from '../spec/frontmatter.ts';
+import type { Asset } from './frontmatter.ts';
 import { extractZip, extractionCap } from '../lib/index.ts';
 
 export class ContextError extends Error {}

@@ -1,6 +1,6 @@
 // AIR_TASK.md: the full prompt the agent reads (spec/v0.md §5). A header air writes, describing the
 // workspace and how the result comes back, then the request's sections exactly as the requester wrote them.
-import { parseFrontMatter, type RepoEntry, type Request } from '../spec/frontmatter.ts';
+import { parseFrontMatter, type RepoEntry, type Request } from '../request/frontmatter.ts';
 import type { State } from './state.ts';
 
 /** The agent creates this file in the workspace root when it is done; `air serve` then delivers. */

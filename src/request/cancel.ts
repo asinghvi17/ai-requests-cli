@@ -1,8 +1,8 @@
 // `air cancel` (spec/v0.md §12): the one way to cancel a request. It adds `air:cancel`, the label the server
 // holding the request acts on at its next tick (stop the agent, comment, release), and that keeps every
 // other server from claiming it until `air retry`.
-import { CANCEL_LABEL, LABELS, REQUEST_LABEL } from '../claim/claim.ts';
-import { WRITE_ROLES } from '../claim/trust.ts';
+import { CANCEL_LABEL, LABELS, REQUEST_LABEL } from './labels.ts';
+import { WRITE_ROLES } from './trust.ts';
 import { GhError, type RequestsRepo } from '../gh/index.ts';
 
 export class CancelError extends Error {}

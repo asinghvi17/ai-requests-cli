@@ -7,14 +7,12 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { HELD_LABELS, postResult, release } from '../claim/claim.ts';
+import { postResult, release } from '../claim/claim.ts';
 import { DEFAULT_AGENTS } from '../config.ts';
-import { code, fenced, tail } from '../claim/text.ts';
-import { markedComments } from '../claim/trust.ts';
+import {
+  code, currentClaim, fenced, HELD_LABELS, lint, markedComments, tail, type Request, type ResultUsage,
+} from '../request/index.ts';
 import { choose, EFFORT_USD, primaryWindow, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
-import type { Request } from '../spec/frontmatter.ts';
-import { lint } from '../spec/lint.ts';
-import { currentClaim, type ResultUsage } from '../spec/markers.ts';
 import { ledgerFile } from '../usage/index.ts';
 import { usd } from '../usage/prices.ts';
 import { spend as spendUsd } from '../usage/manual.ts';

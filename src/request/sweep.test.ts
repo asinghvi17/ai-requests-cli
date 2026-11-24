@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fakeReleases, type FakeReleases } from '../gh/testing/releases-fake.ts';
 import type { IssueSummary } from '../gh/releases.ts';
-import { formatResult, type AirResult } from '../spec/markers.ts';
+import { formatResult, type AirResult } from './markers.ts';
 import { normalizeUrl, resultReferences, sweep } from './sweep.ts';
 
 const NOW = new Date('2026-11-07T12:00:00Z');

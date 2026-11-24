@@ -1,5 +1,5 @@
 // `air cancel ISSUE`: cancel a request by adding `air:cancel` (spec/v0.md §12).
-import { cancel, CancelError } from '../requester/cancel.ts';
+import { cancel, CancelError } from '../request/index.ts';
 import type { Invocation } from './args.ts';
 import { target } from './requests.ts';
 

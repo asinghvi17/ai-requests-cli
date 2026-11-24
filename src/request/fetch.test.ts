@@ -5,12 +5,12 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Asset } from '../spec/frontmatter.ts';
-import { ContextError, type Download } from '../workspace/context.ts';
-import { insteadOf, insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
+import type { Asset } from './frontmatter.ts';
+import { ContextError, type Download } from './context.ts';
+import { insteadOf, insteadOfAll, makeBareRepo, type BareRepo } from '../lib/git-fixture.ts';
 import { buildZip } from '../lib/zip-fixture.ts';
 import { fetchResult, FetchError, parsePullUrl, type FetchOptions } from './fetch.ts';
-import { requestBody, requestIssue, result } from './fixture.ts';
+import { requestBody, requestIssue, result } from './testing/requester.ts';
 
 const URL_BASE = 'https://github.com/o/requests/releases/download/air-artifacts';
 const SERVICE = 'https://github.com/acme/service.git';

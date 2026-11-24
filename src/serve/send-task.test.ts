@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claim } from '../claim/claim.ts';
-import { createTrust } from '../claim/trust.ts';
+import { createTrust } from '../request/trust.ts';
 import { DEFAULT_AGENTS, type Config } from '../config.ts';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Tmux } from '../tmux/tmux.ts';

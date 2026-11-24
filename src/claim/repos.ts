@@ -2,10 +2,9 @@
 // pull request is on the requests repo's host, its author may write to it and this server's account can push
 // to it; then every entry is resolved to the commit it names now.
 import type { RequestsRepo } from '../gh/index.ts';
-import type { RepoEntry, Request } from '../spec/frontmatter.ts';
-import { githubRepo, resolveRepo, type ResolveOptions } from '../workspace/git.ts';
+import { code, type RepoEntry, type Request } from '../request/index.ts';
+import { githubRepo, resolveRepo, type ResolveOptions } from '../lib/index.ts';
 import type { ResolvedRepo } from '../workspace/state.ts';
-import { code } from './text.ts';
 
 const WRITE = ['write', 'maintain', 'admin'];
 

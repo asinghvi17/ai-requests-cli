@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { formatMarker, parseMarkers } from '../spec/markers.ts';
+import { formatMarker, parseMarkers } from './markers.ts';
 import { code, fenced, tail } from './text.ts';
 
 const marker = formatMarker({ kind: 'claim', version: 0, host: 'evil', nonce: 'eeeeeeeeeeee' });

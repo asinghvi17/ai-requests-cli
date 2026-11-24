@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { BUNDLE, renderBundle } from '../../scripts/bundle-skill.ts';
-import { lint } from '../spec/lint.ts';
+import { BUNDLE, renderBundle } from '../../../scripts/bundle-skill.ts';
+import { lint } from '../lint.ts';
 import { SKILL_FILES } from './bundle.ts';
-import { TAG } from '../lib/version.ts';
+import { TAG } from '../../lib/version.ts';
 import { defaultSkillDir, installSkill, InstallError, skillFiles } from './install.ts';
 
 const dirs: string[] = [];

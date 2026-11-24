@@ -1,13 +1,13 @@
 // `air retry` (spec/v0.md §12): the one way to offer a request again after a cancel, a failure or a partial
 // result. It edits the body first (`resume` from a partial result, `effort` from --effort), then removes
 // every `air:*` label, so no server can claim the old body.
-import { WRITE_ROLES, createTrust, type Trust } from '../claim/trust.ts';
-import { REQUEST_LABEL } from '../claim/claim.ts';
+import { WRITE_ROLES, createTrust, type Trust } from './trust.ts';
+import { REQUEST_LABEL } from './labels.ts';
 import { GhError, type RequestsRepo } from '../gh/index.ts';
 import { labelDenied } from './cancel.ts';
-import { splitLines, type Effort, type Resume } from '../spec/frontmatter.ts';
-import { lint } from '../spec/lint.ts';
-import { formatResume } from '../spec/markers.ts';
+import { splitLines, type Effort, type Resume } from './frontmatter.ts';
+import { lint } from './lint.ts';
+import { formatResume } from './markers.ts';
 import { readStatus } from './status.ts';
 
 export class RetryError extends Error {}

@@ -4,17 +4,15 @@
 // Steps already done (pushed branches, opened PRs, uploaded asset) are recorded, so a retry skips them.
 import { existsSync, lstatSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { code } from '../claim/text.ts';
+import {
+  code, formatResult, sha256File, type AirResult, type Asset, type RepoEntry, type Request, type Resume, type ResultUsage,
+} from '../request/index.ts';
 import { delivers } from '../claim/repos.ts';
-import type { Asset, RepoEntry, Request, Resume } from '../spec/frontmatter.ts';
-import { formatResult, type AirResult, type ResultUsage } from '../spec/markers.ts';
-import { sha256File } from '../workspace/context.ts';
-import { gitFailure, githubRepo, gitOut } from '../workspace/git.ts';
 import { PROGRESS_FILE } from '../workspace/task.ts';
 import { readState, updateState, type JobRecord, type RepoDelivery, type State, type UploadedAsset } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
-import { ARTIFACTS_TAG } from './github.ts';
-import { zipDir } from '../lib/index.ts';
+import { ARTIFACTS_TAG } from '../gh/index.ts';
+import { gitFailure, githubRepo, gitOut, zipDir } from '../lib/index.ts';
 
 /** GitHub's limit on a comment body. */
 export const COMMENT_LIMIT = 65_536;

@@ -5,10 +5,10 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { GhError } from '../gh/gh.ts';
 import { fakeReleases } from '../gh/testing/releases-fake.ts';
-import { lint } from '../spec/lint.ts';
+import { lint } from './lint.ts';
 import { extractZip } from '../lib/zip.ts';
 import { SubmitError, submit } from './submit.ts';
-import { FAKE, cleanup, tmp, tree } from './fixture.ts';
+import { FAKE, cleanup, tmp, tree } from './testing/submit.ts';
 
 after(cleanup);
 

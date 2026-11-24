@@ -5,15 +5,14 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { tail } from '../claim/text.ts';
-import type { Trust } from '../claim/trust.ts';
+import { tail } from './text.ts';
+import type { Trust } from './trust.ts';
 import { createGh, type RequestsRepo } from '../gh/index.ts';
-import type { Asset } from '../spec/frontmatter.ts';
-import { lint } from '../spec/lint.ts';
-import { textAboveResult } from '../spec/markers.ts';
-import { fetchContext, releaseDownload, type Download } from '../workspace/context.ts';
-import { exec } from '../lib/index.ts';
-import { checkRef, cloneAt } from '../workspace/git.ts';
+import type { Asset } from './frontmatter.ts';
+import { lint } from './lint.ts';
+import { textAboveResult } from './markers.ts';
+import { fetchContext, releaseDownload, type Download } from './context.ts';
+import { checkRef, cloneAt, exec } from '../lib/index.ts';
 import { readStatus, type LatestResult } from './status.ts';
 
 export class FetchError extends Error {}

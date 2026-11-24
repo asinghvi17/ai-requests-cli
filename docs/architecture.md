@@ -8,8 +8,7 @@ Phase P1 moved the shared code into `src/lib/`: `toml.ts`, `version.ts`, `pid.ts
 `workspace/`), `zipwrite.ts` (was `submit/`) and `zipout.ts` (was `serve/`). Other domains import them through
 `lib/index.ts`. Two files the plan put in `lib` stay where they are:
 
-- `workspace/git.ts` imports `RepoEntry` from `spec/frontmatter.ts` (request), so it is still `lib` in the
-  `DOMAIN` table and its imports stay on `ALLOWED` until that dependency is cut.
+- `workspace/git.ts` imported `RepoEntry` from `spec/frontmatter.ts` (request). P3 cut that and moved it.
 - `usage/run.ts` imports nothing, but it is about the agents' usage CLIs: the environment allowlist names
   their logins (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CLAUDE_CODE_OAUTH_TOKEN`) and `windowOfMinutes` names
   Codex's quota windows. It is in `agents`, with the rest of `usage/`. Its generic part (`run`, `killGroup`,
@@ -23,6 +22,25 @@ already; its in-memory fakes moved to `gh/testing/`: `fake.ts`, `releases-fake.t
   `openRequests` lists issues by `REQUEST_LABEL`, which it imports from `claim/claim.ts` (server). It stays in
   `server` and imports the client through `gh/index.ts`. It can move to `gh` once the label is passed in
   rather than imported. Its `ARTIFACTS_TAG` duplicates the one in `gh/releases.ts`.
+
+Phase P3 moved the request domain into `src/request/`, flat, in one step (the plan had no P3a/P3b split that
+said otherwise): `frontmatter.ts`, `lint.ts`, `markers.ts` (were in `spec/`), `text.ts` and `trust.ts` (were
+in `claim/`), `context.ts` (was `workspace/context.ts`; the plan's "assets"), `cancel.ts`, `fetch.ts`,
+`retry.ts`, `status.ts` (were in `requester/`), `submit.ts`, `collect.ts`, `secrets.ts` (were in `submit/`),
+`sweep.ts` (was `sweep/`), and `skill/` (was `src/skill/`; it imports only `lib`, so it can be a directory
+without a directory cycle). The two `fixture.ts` test helpers are `request/testing/requester.ts` and
+`request/testing/submit.ts`. Other domains import the request domain through `request/index.ts`. Beyond moves:
+
+- `labels.ts` is new: the label constants (`REQUEST_LABEL`, `CANCEL_LABEL`, `STATE_LABELS`, `HELD_LABELS`,
+  `LABELS`), cut unchanged from `claim/claim.ts`, so `cancel.ts`, `retry.ts` and `status.ts` no longer import
+  the server. `serve/github.ts` now takes `REQUEST_LABEL` from `request/index.ts`, and `serve/deliver.ts`
+  takes `ARTIFACTS_TAG` from `gh/index.ts`: `serve/github.ts`'s copy is gone.
+- `workspace/git.ts` moved to `lib/git.ts`, with its test and `git-fixture.ts`: `resolveRepo` takes a local
+  `{ url, ref?, pr? }` type instead of `RepoEntry`, which `RepoEntry` satisfies. Otherwise `request/fetch.ts`
+  → `workspace/git.ts` → `request/frontmatter.ts` would have been a directory cycle.
+- Not done: the plan's `vocab.ts` (the front-matter vocabulary `agents` may import) would be a split of
+  `frontmatter.ts`, so `workspace/task.ts` → `request/frontmatter.ts` stays on `ALLOWED`. "template" names
+  no file today (`blankTemplateHeader` is in `submit.ts`).
 
 ## Layout
 

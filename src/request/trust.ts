@@ -2,7 +2,7 @@
 // write, maintain or admin on the requests repo. `OWNER` is trusted outright; `MEMBER` and `COLLABORATOR`
 // are confirmed with the permission API; anything else is untrusted.
 import type { IssueComment, RequestsRepo } from '../gh/index.ts';
-import { associationTrust, type AuthoredComment } from '../spec/markers.ts';
+import { associationTrust, type AuthoredComment } from './markers.ts';
 
 export const WRITE_ROLES = ['admin', 'maintain', 'write'] as const;
 

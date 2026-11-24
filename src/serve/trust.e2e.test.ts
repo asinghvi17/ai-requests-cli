@@ -16,7 +16,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DEFAULT_AGENTS, type Agent } from '../config.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
-import { makeBareRepo } from '../workspace/git-fixture.ts';
+import { makeBareRepo } from '../lib/git-fixture.ts';
 import { agentArgv, type Harness } from './agent.ts';
 import { matchPrompt } from './prompts.ts';
 import { writeClaudeTrust } from './trust.ts';

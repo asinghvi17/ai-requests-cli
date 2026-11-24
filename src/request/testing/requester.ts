@@ -1,6 +1,6 @@
 // Requests with claims and results on a fake GitHub, for the requester command tests.
-import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
-import { formatMarker, formatResult, type AirResult } from '../spec/markers.ts';
+import { fakeGitHub, type FakeGitHub } from '../../gh/testing/fake.ts';
+import { formatMarker, formatResult, type AirResult } from '../markers.ts';
 
 export const NONCE = 'aaaaaaaa';
 export const SHA = '0e3c5f4b9a1d2c7e8f6a5b4c3d2e1f0a9b8c7d6e';

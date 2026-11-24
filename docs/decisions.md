@@ -751,3 +751,17 @@ specifier's target is its path.
   `serve/fake-gh.ts`. Under `testing/` they are test code without a `TEST_HELPERS` entry. No behaviour changed.
 - Other domains import the client through `gh/index.ts`, and 29 entries left ALLOWED (134 to 105).
 - `serve/github.ts` stays in `server`: it imports `REQUEST_LABEL` from `claim/claim.ts`, which gh may not.
+
+## 2026-11-24: the request domain in `src/request/` (refactor P3)
+
+- `spec/`, `requester/`, `submit/`, `sweep/`, `skill/`, `claim/text.ts`, `claim/trust.ts` and
+  `workspace/context.ts` moved into `src/request/` with `scripts/move.ts`, flat except `skill/`. All of P3 in
+  one step: the plan had no P3a/P3b split. No behaviour changed. Other domains import it through
+  `request/index.ts`, and 56 entries left ALLOWED (105 to 49).
+- The label constants moved from `claim/claim.ts` to `request/labels.ts`, so the requester's commands no
+  longer import the server, and `serve/github.ts` imports `REQUEST_LABEL` through `request/index.ts`.
+  `ARTIFACTS_TAG` is now only in `gh/releases.ts`.
+- `workspace/git.ts` moved to `lib/git.ts`: `resolveRepo` takes `{ url, ref?, pr? }` rather than
+  `RepoEntry`, so lib no longer imports request.
+- `request/vocab.ts` is not split out of `frontmatter.ts` yet; `workspace/task.ts` (agents) still imports
+  `frontmatter.ts`, an ALLOWED entry.

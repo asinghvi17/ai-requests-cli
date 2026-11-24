@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
 import { GhError } from '../gh/gh.ts';
-import { countedResults, currentClaim, formatMarker, parseMarkers, parseResult } from '../spec/markers.ts';
+import { countedResults, currentClaim, formatMarker, parseMarkers, parseResult } from '../request/markers.ts';
 import { findWorkspaces, readState } from '../workspace/state.ts';
 import { claim, defaultHost, deadlineTime, newNonce, release, type ClaimOptions } from './claim.ts';
-import { createTrust, markedComments } from './trust.ts';
+import { createTrust, markedComments } from '../request/trust.ts';
 
 const roots: string[] = [];
 after(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });

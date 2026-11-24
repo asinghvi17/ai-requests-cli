@@ -1,7 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { allowed, findSecrets } from './secrets.ts';
-import { FAKE, cleanup, tree } from './fixture.ts';
+import { FAKE, cleanup, tree } from './testing/submit.ts';
 
 after(cleanup);
 

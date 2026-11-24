@@ -1,5 +1,8 @@
 // The lib domain (docs/architecture.md): what other domains import from it.
 export { exec, SETUP_TIMEOUT_MS, type ExecResult } from './exec.ts';
+export {
+  checkoutCheckpoint, checkRef, cloneAt, gitFailure, githubRepo, gitOut, resolveRepo, type ResolveOptions,
+} from './git.ts';
 export type { Io } from './io.ts';
 export { withLock, writeAtomic } from './lock.ts';
 export { alive, thisHost, writerGone } from './pid.ts';

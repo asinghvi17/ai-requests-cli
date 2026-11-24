@@ -5,31 +5,15 @@ import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { GhError, type Issue, type IssueComment, type LabelSpec, type RequestsRepo } from '../gh/index.ts';
-import { lint } from '../spec/lint.ts';
-import { SPEC_VERSION, type Deliver, type Request } from '../spec/frontmatter.ts';
-import { countedMarkers, countedResults, currentClaim, formatMarker, formatResult, type AirResult, type AuthoredComment, type Marker } from '../spec/markers.ts';
+import { GhError, type Issue, type IssueComment, type RequestsRepo } from '../gh/index.ts';
+import {
+  CANCEL_LABEL, code, countedMarkers, countedResults, createTrust, currentClaim, fenced, formatMarker, formatResult, HELD_LABELS,
+  lint, markedComments, REQUEST_LABEL, SPEC_VERSION, STATE_LABELS,
+  type AirResult, type AuthoredComment, type Deliver, type Marker, type Request, type Trust,
+} from '../request/index.ts';
 import { createWorkspace, ENDED_PHASES, findWorkspaces, REQUEST_FILE, updateState, type State } from '../workspace/state.ts';
 import { checkRepos, type RepoCheckOptions } from './repos.ts';
-import { createTrust, markedComments, type Trust } from './trust.ts';
-import { code, fenced } from './text.ts';
 
-export const REQUEST_LABEL = 'ai-request';
-export const CANCEL_LABEL = 'air:cancel';
-export const STATE_LABELS = ['air:claimed', 'air:running', 'air:paused', 'air:done', 'air:partial', 'air:failed'] as const;
-/** Every label air reads or writes, as `ensureLabels` creates them, so each exists on a fresh requests repo. */
-export const LABELS: readonly LabelSpec[] = [
-  { name: REQUEST_LABEL, color: '1d76db', description: 'An AI request for air (spec/v0.md)' },
-  { name: 'air:claimed', color: 'fbca04', description: 'air: a server claimed it and is setting it up' },
-  { name: 'air:running', color: '0e8a16', description: "air: a server's agent is working on it" },
-  { name: 'air:paused', color: 'c5def5', description: "air: the server stopped its agent for now" },
-  { name: 'air:done', color: '5319e7', description: 'air: delivered' },
-  { name: 'air:partial', color: 'd4c5f9', description: 'air: stopped early; the result is a checkpoint (air retry continues it)' },
-  { name: 'air:failed', color: 'b60205', description: 'air: failed; see the last comment (air retry offers it again)' },
-  { name: CANCEL_LABEL, color: 'e99695', description: 'air: the requester cancelled it (air cancel)' },
-];
-/** State labels a holder removes when it gives an issue up. */
-export const HELD_LABELS = ['air:claimed', 'air:running', 'air:paused'] as const;
 /** The spec's minimum wait between posting a claim and re-reading comments. */
 export const CLAIM_WAIT_MS = 10_000;
 
