@@ -46,6 +46,15 @@ jobs:
           cat "$RUNNER_TEMP/pty-peak.log" | head -200
           echo "ptys at end: $(ls /dev/ttys* 2>/dev/null | wc -l)"
           echo "orphans: $(ps -axo ppid=,tty=,command= | awk '$1 == 1 && $2 != "??"' | wc -l)"
+          bash scripts/diag/stress.sh cat 300 kill
+          bash scripts/diag/stress.sh 'sleep 2147483647' 300 kill
+          pkill -f 'sleep 2147483647' || true; pkill -f 'sleep 999' || true; sleep 2
+          bash scripts/diag/stress.sh cat 200 keep
+          pkill -f 'sleep 999' || true; sleep 2
+          bash scripts/diag/stress.sh 'sleep 2147483647' 200 keep
+          pkill -f 'sleep 2147483647' || true; pkill -f 'sleep 999' || true; sleep 2
+          for k in 1 2 3; do bash scripts/diag/stress.sh 'sleep 2147483647' 150 kill & done; wait
+          pkill -f 'sleep 2147483647' || true; pkill -f 'sleep 999' || true; sleep 2
           tmux -L probe new-session -d -s p 'sleep 1000'
           i=0; while out=$(tmux -L probe new-window -d -t p: 'sleep 1000' 2>&1); do i=$((i+1)); [ $i -ge 700 ] && break; done
           echo "probe: $i more windows, $(ls /dev/ttys* | wc -l) ptys; then: $out"
