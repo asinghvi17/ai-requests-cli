@@ -30,8 +30,21 @@ jobs:
       # The tmux suites (tmux integration, serve and trust end to end) skip without tmux: run them on macOS too.
       - if: runner.os == 'macOS'
         run: brew install tmux
+      # DIAGNOSTIC (temporary): sample pty usage on macOS during the tests.
+      - if: runner.os == 'macOS'
+        run: |
+          sysctl kern.tty.ptmx_max || true
+          echo "ptys at start: $(ls /dev/ttys* 2>/dev/null | wc -l)"
+          ps -axo tty= | sort | uniq -c | sort -rn | head -20
+          nohup sh -c 'max=0; while :; do n=$(ls /dev/ttys* 2>/dev/null | wc -l | tr -d " "); echo "$(date +%T) $n" >> "$RUNNER_TEMP/pty.log"; if [ "$n" -gt "$max" ]; then max=$n; { echo "== $(date +%T) $n ptys"; ps -axo pid,ppid,tty,stat,etime,command | grep -v " ?? " ; } > "$RUNNER_TEMP/pty-peak.log"; fi; sleep 0.5; done' > /dev/null 2>&1 &
       - run: npm ci && npm test
       - run: npm run test:bun
+      - if: always() && runner.os == 'macOS'
+        run: |
+          sort -k2 -n "$RUNNER_TEMP/pty.log" | tail -5
+          awk '{print $2}' "$RUNNER_TEMP/pty.log" | uniq -c | head -100
+          cat "$RUNNER_TEMP/pty-peak.log" | head -200
+          echo "ptys at end: $(ls /dev/ttys* 2>/dev/null | wc -l)"
 
   build:
     uses: ./.github/workflows/build.yml
