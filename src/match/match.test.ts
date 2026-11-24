@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from '../config.ts';
-import type { Subscription } from '../usage/types.ts';
+import type { Subscription } from '../agents/usage/types.ts';
 import { effectiveHarness, canTakeMore, choose, largestEffort, reserveFor, windowSize, type MatchConfig, type Request } from './match.ts';
 
 const NOW = new Date('2026-01-10T00:00:00Z');

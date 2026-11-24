@@ -6,14 +6,14 @@
 // version; its launch args carry an unattended mode (Claude Code `--permission-mode auto`, Codex
 // `--ask-for-approval never`, or either one's bypass); Claude Code finished first-run onboarding and trusts `workspace_root`
 // through a folder it inherits from. Codex trust needs no check: each launch trusts its job dir with a config
-// override (`codexTrust` in agent.ts). Agent state is read from the agents' own files (`.claude.json`,
+// override (`codexTrust` in agents/harness.ts). Agent state is read from the agents' own files (`.claude.json`,
 // `settings.json`), reading only the keys named here; credential files are never opened, and nothing read is
 // printed.
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { AGENT_HARNESSES, DEFAULT_AGENTS, loadConfig, type Agent, type Config } from '../config.ts';
-import type { SubscriptionConfig } from '../usage/types.ts';
+import { AGENT_HARNESSES, DEFAULT_AGENTS, loadConfig, type Config } from '../config.ts';
+import type { Agent, SubscriptionConfig } from '../agents/index.ts';
 import { hostOs, installHint, resolveBinary, type Os } from './hints.ts';
 
 export type Harness = (typeof AGENT_HARNESSES)[number];

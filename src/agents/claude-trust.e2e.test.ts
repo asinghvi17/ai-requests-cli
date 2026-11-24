@@ -14,12 +14,12 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { DEFAULT_AGENTS, type Agent } from '../config.ts';
+import { DEFAULT_AGENTS } from '../config.ts';
 import { createTmux, socketPath } from '../tmux/tmux.ts';
 import { makeBareRepo } from '../lib/git-fixture.ts';
-import { agentArgv, type Harness } from './agent.ts';
+import { agentArgv, type Agent, type Harness } from './harness.ts';
 import { matchPrompt } from './prompts.ts';
-import { writeClaudeTrust } from './trust.ts';
+import { writeClaudeTrust } from './claude-trust.ts';
 
 const has = (cmd: string, arg: string) => spawnSync(cmd, [arg], { stdio: 'ignore' }).status === 0;
 const hasTmux = has('tmux', '-V');

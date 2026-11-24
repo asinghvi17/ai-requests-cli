@@ -13,17 +13,13 @@ import {
   code, currentClaim, fenced, HELD_LABELS, lint, markedComments, tail, type Request, type ResultUsage,
 } from '../request/index.ts';
 import { choose, EFFORT_USD, primaryWindow, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
-import { ledgerFile } from '../usage/index.ts';
-import { usd } from '../usage/prices.ts';
-import { spend as spendUsd } from '../usage/manual.ts';
-import { claudeSpent, codexSpent, type Spent } from '../usage/spent.ts';
-import type { Subscription } from '../usage/types.ts';
-import { airEnv } from '../workspace/launch.ts';
+import {
+  agentArgv, agentReady, airEnv, claudeSpent, codexSpent, DONE_FILE, exitResumeInstruction, findCodexSession, ledgerFile,
+  RESUME_INSTRUCTION, spend as spendUsd, TASK_FILE, taskMessage, usd, type Harness, type Spent, type Subscription,
+} from '../agents/index.ts';
 import { signalName, signalOf } from '../tmux/tmux.ts';
-import { DONE_FILE, TASK_FILE } from '../workspace/task.ts';
 import { removeWorkspace } from '../workspace/teardown.ts';
 import { ENDED, readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
-import { agentArgv, agentReady, exitResumeInstruction, findCodexSession, type Harness, RESUME_INSTRUCTION, taskMessage } from './agent.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import { checkpoint, deliver } from './deliver.ts';
 import { pidLock } from './state.ts';
@@ -35,8 +31,6 @@ export const PAUSE_LIMIT_MS = 48 * 3600_000;
  * further away stops the job early, and so does a quota pause that hasn't ended this long after it began.
  */
 export const QUOTA_WAIT_MS = 24 * 3600_000;
-
-export { DONE_FILE };
 
 export type Workspace = { dir: string; state: State };
 

@@ -42,6 +42,25 @@ without a directory cycle). The two `fixture.ts` test helpers are `request/testi
   `frontmatter.ts`, so `workspace/task.ts` → `request/frontmatter.ts` stays on `ALLOWED`. "template" names
   no file today (`blankTemplateHeader` is in `submit.ts`).
 
+Phase P4 moved the agents domain into `src/agents/`: `harness.ts` (was `serve/agent.ts`: command lines, the
+ready screen, the task message, Codex sessions), `prompts.ts` (was `serve/prompts.ts`), `claude-trust.ts` (was
+`serve/trust.ts`, with its tests), `launch.ts` (was `workspace/launch.ts`), `usage/` (was `src/usage/`, whole:
+the usage readers, `run.ts`, prices and spend, with its fixtures; it imports only `lib`, so it can be a
+directory without a directory cycle) and `fixtures/` (was `serve/fixtures/`: the captured panes and
+`fake-agent.ts`). Other domains import it through `agents/index.ts`. Beyond moves:
+
+- The `Agent` type (`[agents.<harness>]`: command and args) moved from `config.ts` to `harness.ts`, which used
+  it; `config.ts` (setup, which may import agents) takes it from `agents/index.ts`.
+- `DONE_FILE`, `TASK_FILE` and `PROGRESS_FILE` moved from `workspace/task.ts` to `harness.ts`, so `harness.ts`
+  no longer imports the server.
+- `workspace/task.ts` (`taskPrompt`, the plan's "instructions") stays in `server`: it takes the job's `State`
+  from `workspace/state.ts` and parses the request with `parseFrontMatter`, which is more than the request
+  vocabulary `agents` may import. It imports the request domain through `request/index.ts`, which now exports
+  `parseFrontMatter`. It can move once it takes a local type for what it reads of `State`, and `vocab.ts`
+  exists.
+- The models and tiers (`TIERS`, `DEFAULT_MODELS`, `AGENT_HARNESSES`, `DEFAULT_AGENTS`) stay in `config.ts`, and
+  the agent preflight ("probe") in `serve/preflight.ts`: the plan puts both files in `setup`.
+
 ## Layout
 
 | Domain | Contents |

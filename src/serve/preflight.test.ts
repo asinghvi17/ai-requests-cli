@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseConfig, type Config } from '../config.ts';
-import { configFile as subscriptionsFile, loadConfig as loadSubscriptions } from '../usage/index.ts';
+import { configFile as subscriptionsFile, loadConfig as loadSubscriptions } from '../agents/usage/index.ts';
 import { serveContext } from './context.ts';
 import { canonicalPath, defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, unattendedMode, type Login, type PreflightDeps } from './preflight.ts';
 

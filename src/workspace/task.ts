@@ -1,14 +1,8 @@
 // AIR_TASK.md: the full prompt the agent reads (spec/v0.md §5). A header air writes, describing the
 // workspace and how the result comes back, then the request's sections exactly as the requester wrote them.
-import { parseFrontMatter, type RepoEntry, type Request } from '../request/frontmatter.ts';
+import { DONE_FILE, PROGRESS_FILE } from '../agents/index.ts';
+import { parseFrontMatter, type RepoEntry, type Request } from '../request/index.ts';
 import type { State } from './state.ts';
-
-/** The agent creates this file in the workspace root when it is done; `air serve` then delivers. */
-export const DONE_FILE = 'AIR_DONE';
-/** The full task (`taskPrompt`), written by setup; the agent gets it as its first message and re-reads it here. */
-export const TASK_FILE = 'AIR_TASK.md';
-/** The agent's running notes in `out/`: what is done, what is next, decisions made (spec §5). */
-export const PROGRESS_FILE = 'PROGRESS.md';
 
 /** The request body after its front matter. */
 export function requestText(body: string): string {

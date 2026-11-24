@@ -8,8 +8,10 @@ import { createTrust, type Download, type Trust } from '../request/index.ts';
 import { createGh, releases, requestsRepo, type Releases, type RequestsRepo } from '../gh/index.ts';
 import type { MatchConfig } from '../match/match.ts';
 import { createTmux, type Tmux } from '../tmux/tmux.ts';
-import { configFile, loadConfig as loadSubscriptions, readAll, stateDir as usageStateDir } from '../usage/index.ts';
-import type { ManualConfig, Subscription, SubscriptionConfig } from '../usage/types.ts';
+import {
+  configFile, loadConfig as loadSubscriptions, readAll, stateDir as usageStateDir,
+  type ManualConfig, type Subscription, type SubscriptionConfig,
+} from '../agents/index.ts';
 import { serveGitHub, type ServeGitHub } from './github.ts';
 import { loginsOf } from './preflight.ts';
 

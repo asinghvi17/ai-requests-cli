@@ -2,10 +2,10 @@
 // (`tmux capture-pane -p`) and matches its bottom against the prompts below. A prompt counts once it has
 // stayed there for SETTLE_MS, so output that merely mentions one scrolls on and never does. A screen that
 // has not changed for STUCK_MS counts as a possible prompt too. The patterns are the CLIs' own prompt text: each
-// entry says where it came from. "captured" ones are in src/serve/fixtures/panes/, taken from the CLI
+// entry says where it came from. "captured" ones are in src/agents/fixtures/panes/, taken from the CLI
 // running in tmux with a fresh config dir; "binary" ones are strings in the CLI's executable whose screen
 // could not be produced without a working login.
-import type { Harness } from './agent.ts';
+import type { Harness } from './harness.ts';
 
 export interface PromptPattern {
   harness: Harness;

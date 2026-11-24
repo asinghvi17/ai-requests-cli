@@ -12,7 +12,7 @@ import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
 import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent, vanished } from '../serve/jobs.ts';
 import { acquireServeLock, readServerState, serving, updateServerState, type PidLock } from '../serve/state.ts';
-import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../usage/index.ts';
+import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../agents/index.ts';
 import { clientEnv, jobEnv } from '../tmux/env.ts';
 import { attachTo, socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';

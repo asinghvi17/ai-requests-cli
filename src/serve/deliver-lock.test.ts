@@ -12,7 +12,7 @@ import { createTrust } from '../request/trust.ts';
 import type { Config } from '../config.ts';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Tmux } from '../tmux/tmux.ts';
-import { DONE_FILE } from '../workspace/task.ts';
+import { DONE_FILE } from '../agents/harness.ts';
 import { updateState } from '../workspace/state.ts';
 import type { ServeContext } from './context.ts';
 import type { Release, ServeGitHub } from './github.ts';

@@ -4,7 +4,7 @@
 // as unknown until `air usage reset-ledger` writes a fresh one: lost spend must never look like an unused budget.
 import { readdirSync, readFileSync, renameSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { withLock, writeAtomic } from '../lib/index.ts';
+import { withLock, writeAtomic } from '../../lib/index.ts';
 import type { ManualConfig, Subscription } from './types.ts';
 
 /** `spent`: US dollars at API prices. */

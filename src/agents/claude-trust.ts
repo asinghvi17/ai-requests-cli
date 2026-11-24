@@ -5,7 +5,7 @@
 // file is replaced atomically: written beside its real path (a symlinked `.claude.json` stays a symlink) with
 // the same mode, then renamed over it. A running Claude Code rewrites the file often, so it is read again just
 // before the rename, and a change since the merge means merging again. Codex needs no such write: each launch
-// trusts its job dir (agent.ts).
+// trusts its job dir (harness.ts).
 import { closeSync, fchmodSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 

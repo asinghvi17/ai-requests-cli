@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import type { Agent } from './agents/index.ts';
 import { parseToml, type TomlTable, type TomlValue } from './lib/index.ts';
 
 export const TIERS = ['small', 'medium', 'large'] as const;
@@ -15,14 +16,6 @@ export type Subscription = {
    *  meter compares with efforts in dollars. Not used for a manual subscription, whose budget is in dollars. */
   window_usd?: number;
   reserve: number; // fraction of the quota window kept for the owner, 0 <= reserve < 1
-};
-
-/** `[agents.<harness>]`: how `air serve` starts that harness's agent. A missing key takes its DEFAULT_AGENTS value. */
-export type Agent = {
-  /** argv prefix for the agent, e.g. `["claude"]`. */
-  command: string[];
-  /** Arguments after air's own: the mode that lets the agent run unattended. */
-  args: string[];
 };
 
 export type Config = {

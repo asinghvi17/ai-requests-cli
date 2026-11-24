@@ -4,7 +4,7 @@
 import { ArgError, parseArgs, type FlagSpecs, type Invocation } from './args.ts';
 import { type Io, VERSION } from '../lib/index.ts';
 import { GhError } from '../gh/index.ts';
-import { usageCommand } from '../usage/index.ts';
+import { usageCommand } from '../agents/index.ts';
 import { loadConfig } from '../config.ts';
 import { claimCommand } from './claim.ts';
 import { doctorCommand } from './doctor.ts';

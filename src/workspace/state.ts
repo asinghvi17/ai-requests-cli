@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkRepo } from '../gh/index.ts';
-import type { Subscription } from '../usage/types.ts';
+import type { Subscription } from '../agents/index.ts';
 
 export const STATE_FILE = 'state.json';
 export const LOG_FILE = 'setup.log';

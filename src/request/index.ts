@@ -4,7 +4,7 @@ export { DEFAULT_EXCLUDES } from './collect.ts';
 export { fetchContext, releaseDownload, sha256File, type Download } from './context.ts';
 export { fetchResult, FetchError, type FetchOptions } from './fetch.ts';
 export {
-  DELIVERIES, EFFORT_USD, EFFORTS, HARNESSES, MODEL_TIERS, parseDuration, SPEC_VERSION,
+  DELIVERIES, EFFORT_USD, EFFORTS, HARNESSES, MODEL_TIERS, parseDuration, parseFrontMatter, SPEC_VERSION,
   type Asset, type Deliver, type Effort, type RepoEntry, type Request, type Resume,
 } from './frontmatter.ts';
 export { CANCEL_LABEL, HELD_LABELS, LABELS, REQUEST_LABEL, STATE_LABELS } from './labels.ts';

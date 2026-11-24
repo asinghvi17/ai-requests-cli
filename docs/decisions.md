@@ -765,3 +765,14 @@ specifier's target is its path.
   `RepoEntry`, so lib no longer imports request.
 - `request/vocab.ts` is not split out of `frontmatter.ts` yet; `workspace/task.ts` (agents) still imports
   `frontmatter.ts`, an ALLOWED entry.
+
+## 2026-11-24: the agents domain in `src/agents/` (refactor P4)
+
+- `usage/`, `serve/agent.ts` (now `harness.ts`), `serve/prompts.ts`, `serve/trust.ts` (now `claude-trust.ts`),
+  `workspace/launch.ts` and `serve/fixtures/` moved into `src/agents/` with `scripts/move.ts`; `usage/` stays a
+  directory. No behaviour changed. Other domains import it through `agents/index.ts`, and 27 entries left
+  ALLOWED (49 to 22).
+- The `Agent` type moved from `config.ts` to `harness.ts`, and the workspace file names (`DONE_FILE`,
+  `TASK_FILE`, `PROGRESS_FILE`) from `workspace/task.ts`, so `harness.ts` imports neither setup nor server.
+- `workspace/task.ts` stays in `server`: it reads the job's `State` and parses the request's front matter.
+  Its two ALLOWED entries went with it.

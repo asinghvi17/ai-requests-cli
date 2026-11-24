@@ -64,7 +64,7 @@ For a login whose usage air can't read, give it a manual budget in dollars. Use 
 "Charged $X to manual budget `claude`."
 
 air prices the tokens in the agent's own records: Claude Code's session transcripts, or Codex's rollout
-files. The prices are one table in [`src/usage/prices.ts`](../src/usage/prices.ts).
+files. The prices are one table in [`src/agents/usage/prices.ts`](../src/agents/usage/prices.ts).
 
 A model missing from that table is not charged; `air serve` logs a warning. Spend made outside air (your own
 use of the login) goes in with `air usage spend NAME USD`.

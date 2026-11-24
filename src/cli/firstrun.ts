@@ -10,8 +10,7 @@ import { createInterface } from 'node:readline/promises';
 import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS, DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from '../config.ts';
 import { hostOs, installHint, resolveBinary, type Os } from '../serve/hints.ts';
 import { configState, ghState, type AgentCheck, type GhState } from '../serve/preflight.ts';
-import { writeClaudeTrust } from '../serve/trust.ts';
-import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, readAll } from '../usage/index.ts';
+import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, readAll, writeClaudeTrust } from '../agents/index.ts';
 import type { Io } from '../lib/index.ts';
 import { CommandError } from './requests.ts';
 

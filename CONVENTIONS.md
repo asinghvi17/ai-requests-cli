@@ -15,7 +15,7 @@
 | --- | --- |
 | `src/cli/` | entry point (`main.ts`) and one module per command; `firstrun.ts` is the setup `air serve` and `air skill install` do on first run (gh login, config, folder trust) |
 | `src/request/` | the request as GitHub sees it: front-matter parser and lint, markers, labels, trust rule, context zips; `air submit` (file collection, secrets check), `air sweep`, the requester's side (`air status`, `wait`, `fetch`, `retry`, `cancel`), and `air skill install` under `skill/` (`bundle.ts`, generated); other domains import it through `index.ts` |
-| `src/usage/` | subscription usage readers (Claude, Codex) |
+| `src/agents/` | the coding agents: command lines and the task handoff (`harness.ts`), the launch environment, waiting-prompt detection (`prompts.ts`) with captured screens under `fixtures/panes/`, Claude Code folder trust (`claude-trust.ts`), and the subscription usage readers and prices under `usage/`; other domains import it through `index.ts` |
 | `src/match/` | effort matching against local quota |
 | `src/tmux/` | tmux control on the private `air` socket |
 | `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`), release assets and repo-wide listings (`releases.ts`), in-memory fakes for tests under `testing/`; other domains import it through `index.ts` |

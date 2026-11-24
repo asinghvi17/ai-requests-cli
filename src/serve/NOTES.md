@@ -24,8 +24,8 @@
 - Every final comment (done, failed, partial, released) ends with an `air-result` block; `usage` is in it once
   the agent started (`usageReport`). Release comments get theirs from `release()` in src/claim.
 - Spend: when a job ends (`usageReport`, and `loseJob`), `settleSpend` prices what the agent spent from its own
-  records (`jobSpent` → `src/usage/spent.ts`: Claude Code transcripts of `job.sessions`, Codex rollouts whose
-  `cwd` is the workspace; priced by `src/usage/prices.ts`), once (`job.spend`). The footer gives the cost
+  records (`jobSpent` → `src/agents/usage/spent.ts`: Claude Code transcripts of `job.sessions`, Codex rollouts whose
+  `cwd` is the workspace; priced by `src/agents/usage/prices.ts`), once (`job.spend`). The footer gives the cost
   against the effort's dollars, and a manual budget is charged it on its ledger. A model without a price is
   logged as a warning and its calls count nothing; an agent that left no record isn't charged, and the footer
   says so. `committedUsage` holds back each running job's effort dollars (less what it spent so far) from a

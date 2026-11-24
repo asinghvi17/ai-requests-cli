@@ -8,8 +8,6 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { backOff, claim, claimable, deadlineTime, release } from '../claim/claim.ts';
 import { code, currentClaim, fenced, LABELS, lint, markedComments, sweep } from '../request/index.ts';
 import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig, type Short } from '../match/match.ts';
-import { usd } from '../usage/prices.ts';
-import type { Subscription } from '../usage/types.ts';
 import { setup } from '../workspace/setup.ts';
 import { allWorkspaces, ENDED, isEnded, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
@@ -19,9 +17,10 @@ import {
 } from './jobs.ts';
 import { readServerState, updateServerState } from './state.ts';
 import { tidy } from './tidy.ts';
-import { matchPrompt, MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS, waitingFor } from './prompts.ts';
 import { configPath, parseConfig, type Config } from '../config.ts';
-import { configFile as subscriptionsFile } from '../agents/index.ts';
+import {
+  configFile as subscriptionsFile, matchPrompt, MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS, usd, waitingFor, type Subscription,
+} from '../agents/index.ts';
 
 export interface ServerOptions {
   /** Wait for `air run` instead of starting agents. */

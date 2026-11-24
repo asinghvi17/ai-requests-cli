@@ -14,11 +14,24 @@
 import { closeSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Agent } from '../config.ts';
-import { codexRollouts } from '../usage/spent.ts';
-import { TASK_FILE } from '../workspace/task.ts';
+import { codexRollouts } from './usage/spent.ts';
 
 export type Harness = 'claude' | 'codex';
+
+/** `[agents.<harness>]`: how `air serve` starts that harness's agent. A missing key takes its DEFAULT_AGENTS value. */
+export type Agent = {
+  /** argv prefix for the agent, e.g. `["claude"]`. */
+  command: string[];
+  /** Arguments after air's own: the mode that lets the agent run unattended. */
+  args: string[];
+};
+
+/** The agent creates this file in the workspace root when it is done; `air serve` then delivers. */
+export const DONE_FILE = 'AIR_DONE';
+/** The full task (`taskPrompt`), written by setup; the agent gets it as its first message and re-reads it here. */
+export const TASK_FILE = 'AIR_TASK.md';
+/** The agent's running notes in `out/`: what is done, what is next, decisions made (spec §5). */
+export const PROGRESS_FILE = 'PROGRESS.md';
 
 /**
  * A fresh start's first message: `task` (the text of AIR_TASK.md), saying where it is kept for re-reading.

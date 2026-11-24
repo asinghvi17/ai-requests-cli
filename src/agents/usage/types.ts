@@ -50,6 +50,6 @@ export interface ManualConfig {
   codexHome?: string;
   /** weekly: `day` 0-6 (Sunday 0); monthly: `day` 1-28. `hour` 0-23, default 0. Local time unless `utc`. */
   reset: { every: 'weekly' | 'monthly'; day: number; hour?: number; utc?: boolean };
-  /** US dollars at API prices (src/usage/prices.ts) per period; spend is recorded in the same dollars. */
+  /** US dollars at API prices (src/agents/usage/prices.ts) per period; spend is recorded in the same dollars. */
   budget: { usd: number };
 }

@@ -4,9 +4,9 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, sy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseMarkers, parseResult } from '../request/markers.ts';
-import type { Subscription } from '../usage/types.ts';
+import type { Subscription } from '../agents/usage/types.ts';
 import { extractZip } from '../lib/zip.ts';
-import { agentArgv, agentReady, codexTrust, findCodexSession, taskMessage } from './agent.ts';
+import { agentArgv, agentReady, codexTrust, findCodexSession, taskMessage } from '../agents/harness.ts';
 import { COMMENT_LIMIT, defuseMarkers, openFence, reportComment, TRUNCATED_LINE } from './deliver.ts';
 import { costLine, exitDetail } from './jobs.ts';
 import { committedUsage, exhausted } from './server.ts';
@@ -50,7 +50,7 @@ test('the first message is the whole task, naming AIR_TASK.md for re-reading; a 
 });
 
 test("agentReady: the captured idle screens of Claude Code and Codex are ready; dialogs and the other's screen are not", () => {
-  const pane = (name: string) => readFileSync(join(import.meta.dirname, 'fixtures', 'panes', `${name}.txt`), 'utf8');
+  const pane = (name: string) => readFileSync(join(import.meta.dirname, '..', 'agents', 'fixtures', 'panes',`${name}.txt`), 'utf8');
   for (const name of ['claude-ready', 'claude-auto-working', 'claude-output-mentions-prompt']) assert.equal(agentReady('claude', pane(name)), true, name);
   assert.equal(agentReady('codex', pane('codex-ready')), true);
   for (const name of ['claude-onboarding', 'claude-trust', 'claude-bypass', 'claude-permission']) assert.equal(agentReady('claude', pane(name)), false, name);

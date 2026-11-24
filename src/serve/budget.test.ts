@@ -10,7 +10,7 @@ import { parseConfig } from '../config.ts';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Short } from '../match/match.ts';
 import type { Tmux } from '../tmux/tmux.ts';
-import type { Subscription } from '../usage/types.ts';
+import type { Subscription } from '../agents/usage/types.ts';
 import type { ServeContext } from './context.ts';
 import type { ListedIssue, ServeGitHub } from './github.ts';
 import { budgetKeys, budgetNote, createServer } from './server.ts';

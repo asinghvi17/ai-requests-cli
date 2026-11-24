@@ -5,8 +5,8 @@ import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../config.ts';
-import { defaultPreflightDeps, formatPreflight, preflight, refusals } from './preflight.ts';
-import { writeClaudeTrust } from './trust.ts';
+import { defaultPreflightDeps, formatPreflight, preflight, refusals } from '../serve/preflight.ts';
+import { writeClaudeTrust } from './claude-trust.ts';
 
 const dirs: string[] = [];
 after(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });

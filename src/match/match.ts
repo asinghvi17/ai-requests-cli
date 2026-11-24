@@ -3,8 +3,7 @@
 // primary window, which config.toml's `window_usd` says the worth of.
 
 import { EFFORT_USD, EFFORTS, type Effort } from '../request/index.ts';
-import { usd } from '../usage/prices.ts';
-import type { Subscription, Window } from '../usage/types.ts';
+import { usd, type Subscription, type Window } from '../agents/index.ts';
 
 export { EFFORT_USD, EFFORTS, type Effort };
 export type Tier = 'small' | 'medium' | 'large';
