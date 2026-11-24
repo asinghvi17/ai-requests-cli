@@ -1,26 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { airDir } from './dirs.ts';
-import { configPath, parseConfig } from '../setup/config.ts';
-import type * as FirstRun from '../setup/firstrun.ts';
-import { configFile as subscriptionsFile, stateDir } from '../agents/usage/index.ts';
-import { serveContext } from '../server/context.ts';
-import type * as Doctor from '../cli/doctor.ts';
-import type * as Jobs from '../cli/jobs.ts';
-import type * as Status from '../cli/status.ts';
 
-/**
- * A fresh instance of the module at `path`, whose deps object no other test has stubbed: `bun test` runs every
- * file in one process, and tests elsewhere replace `jobDeps.stateDir` and `firstRunDeps.configPath`.
- */
-const fresh = <T>(path: string): Promise<T> => import(`${new URL(path, import.meta.url).href}?fresh`);
-const { firstRunDeps } = await fresh<typeof FirstRun>('../setup/firstrun.ts');
-const { doctorDeps } = await fresh<typeof Doctor>('../cli/doctor.ts');
-const { jobDeps } = await fresh<typeof Jobs>('../cli/jobs.ts');
-const { statusDeps } = await fresh<typeof Status>('../cli/status.ts');
+const CALLERS = new URL('./fixtures/dirs-callers.ts', import.meta.url).pathname;
 
 const HOME = '/home/u';
 
@@ -45,47 +31,39 @@ test('AIR_CONFIG_DIR and AIR_STATE_DIR are not read', () => {
   assert.equal(airDir('state', { AIR_STATE_DIR: '/a' }, HOME), '/home/u/.local/state/air');
 });
 
-/** Runs `f` with process.env's XDG and AIR_ dir variables set to `vars` (undefined: unset). */
-function withEnv(vars: Record<string, string | undefined>, f: () => void) {
-  const keys = ['XDG_CONFIG_HOME', 'XDG_STATE_HOME', 'AIR_CONFIG_DIR', 'AIR_STATE_DIR'];
-  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
-  const set = (v: Record<string, string | undefined>) => {
-    for (const k of keys) {
-      if (v[k] === undefined) delete process.env[k];
-      else process.env[k] = v[k];
-    }
-  };
-  set(vars);
-  try { f(); } finally { set(saved); }
-}
-
 test('every caller finds config.toml, subscriptions.json and the state dir where airDir says, XDG set or not', () => {
+  // In a fresh process (fixtures/dirs-callers.ts), with HOME and cwd under tmp: serveContext creates the state dir.
   const tmp = mkdtempSync(join(tmpdir(), 'air-dirs-'));
-  const values = (name: string) => [undefined, '', `relative/${name}`, join(tmp, name)];
-  const expected = (v: string | undefined, fallback: string) => join(v && isAbsolute(v) ? v : join(homedir(), fallback), 'air');
+  const home = join(tmp, 'home'), xdgConfig = join(tmp, 'config'), xdgState = join(tmp, 'state');
+  const homeConfig = join(home, '.config', 'air'), homeState = join(home, '.local', 'state', 'air');
+  const cases: [string | undefined, string | undefined, string, string][] = [
+    [undefined, undefined, homeConfig, homeState],
+    ['', '', homeConfig, homeState],
+    ['relative/config', 'relative/state', homeConfig, homeState],
+    [xdgConfig, xdgState, join(xdgConfig, 'air'), join(xdgState, 'air')],
+    [xdgConfig, undefined, join(xdgConfig, 'air'), homeState],
+    [undefined, xdgState, homeConfig, join(xdgState, 'air')],
+  ];
   try {
-    for (const config of values('config')) {
-      for (const state of values('state')) {
-        withEnv({ XDG_CONFIG_HOME: config, XDG_STATE_HOME: state, AIR_CONFIG_DIR: join(tmp, 'ignored-config'), AIR_STATE_DIR: join(tmp, 'ignored-state') }, () => {
-          const what = JSON.stringify({ config, state });
-          const configDir = expected(config, '.config'), stateDirPath = expected(state, join('.local', 'state'));
-          assert.equal(airDir('config'), configDir, what);
-          assert.equal(airDir('state'), stateDirPath, what);
-          const paths = [configPath(), firstRunDeps.configPath(), doctorDeps.configPath()];
-          const states = [stateDir(), jobDeps.stateDir(), statusDeps.stateDir()];
-          // serveContext creates the state dir, so it runs only when that is under tmp.
-          if (state && isAbsolute(state)) {
-            const ctx = serveContext(parseConfig(''), 'o/requests');
-            paths.push(ctx.configFile!);
-            states.push(ctx.stateDir);
-          }
-          for (const path of paths) assert.equal(path, join(configDir, 'config.toml'), what);
-          assert.equal(dirname(subscriptionsFile()), configDir, what);
-          for (const dir of states) assert.equal(dir, stateDirPath, what);
-        });
-      }
+    for (const [config, state, configDir, stateDir] of cases) {
+      const env: Record<string, string | undefined> = {
+        ...process.env, HOME: home, AIR_CONFIG_DIR: join(tmp, 'ignored-config'), AIR_STATE_DIR: join(tmp, 'ignored-state'),
+        XDG_CONFIG_HOME: config, XDG_STATE_HOME: state,
+      };
+      for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];
+      const r = spawnSync(process.execPath, [CALLERS], { cwd: tmp, env, encoding: 'utf8' });
+      const what = JSON.stringify({ config, state });
+      assert.equal(r.status, 0, `${what}: ${r.stderr}`);
+      const found = JSON.parse(r.stdout);
+      assert.deepEqual(found, {
+        config: configDir,
+        state: stateDir,
+        configToml: Object.fromEntries(['configPath', 'firstRunDeps', 'doctorDeps', 'serveContext'].map((k) => [k, join(configDir, 'config.toml')])),
+        subscriptionsJson: { configFile: join(configDir, 'subscriptions.json') },
+        stateDir: Object.fromEntries(['stateDir', 'jobDeps', 'statusDeps', 'serveContext'].map((k) => [k, stateDir])),
+      }, what);
     }
-    assert.ok(!existsSync(join(tmp, 'ignored-config')) && !existsSync(join(tmp, 'ignored-state')));
+    for (const unused of ['ignored-config', 'ignored-state', 'relative']) assert.ok(!existsSync(join(tmp, unused)), unused);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
