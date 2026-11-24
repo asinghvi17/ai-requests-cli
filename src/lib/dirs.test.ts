@@ -5,12 +5,22 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { airDir } from './dirs.ts';
 import { configPath, parseConfig } from '../setup/config.ts';
-import { firstRunDeps } from '../setup/firstrun.ts';
+import type * as FirstRun from '../setup/firstrun.ts';
 import { configFile as subscriptionsFile, stateDir } from '../agents/usage/index.ts';
 import { serveContext } from '../server/context.ts';
-import { doctorDeps } from '../cli/doctor.ts';
-import { jobDeps } from '../cli/jobs.ts';
-import { statusDeps } from '../cli/status.ts';
+import type * as Doctor from '../cli/doctor.ts';
+import type * as Jobs from '../cli/jobs.ts';
+import type * as Status from '../cli/status.ts';
+
+/**
+ * A fresh instance of the module at `path`, whose deps object no other test has stubbed: `bun test` runs every
+ * file in one process, and tests elsewhere replace `jobDeps.stateDir` and `firstRunDeps.configPath`.
+ */
+const fresh = <T>(path: string): Promise<T> => import(`${new URL(path, import.meta.url).href}?fresh`);
+const { firstRunDeps } = await fresh<typeof FirstRun>('../setup/firstrun.ts');
+const { doctorDeps } = await fresh<typeof Doctor>('../cli/doctor.ts');
+const { jobDeps } = await fresh<typeof Jobs>('../cli/jobs.ts');
+const { statusDeps } = await fresh<typeof Status>('../cli/status.ts');
 
 const HOME = '/home/u';
 
