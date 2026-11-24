@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig } from '../config.ts';
-import { defaultPreflightDeps, formatPreflight, preflight, refusals } from '../serve/preflight.ts';
+import { parseConfig } from '../setup/config.ts';
+import { defaultPreflightDeps, formatPreflight, preflight, refusals } from '../setup/preflight.ts';
 import { writeClaudeTrust } from './claude-trust.ts';
 
 const dirs: string[] = [];

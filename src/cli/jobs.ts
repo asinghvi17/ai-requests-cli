@@ -4,9 +4,10 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { CommandError } from '../lib/index.ts';
 import {
-  configPath, defaultPreflightDeps, formatPreflight, installHint, loadConfig, loginsOf, preflight, refusals, workspaceRootProblem,
-  type AgentCheck, type Config, type Problem,
+  configPath, defaultPreflightDeps, ensureConfig, ensureGh, firstRunDeps, fixTrust, formatPreflight, installHint, loadConfig, loginsOf,
+  preflight, refusals, workspaceRootProblem, type AgentCheck, type Config, type Problem,
 } from '../setup/index.ts';
 import { createServer } from '../serve/server.ts';
 import { serveContext, type ServeContext } from '../serve/context.ts';
@@ -16,9 +17,8 @@ import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, state
 import { clientEnv, jobEnv } from '../tmux/env.ts';
 import { attachTo, socketPath } from '../tmux/tmux.ts';
 import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
-import { ensureConfig, ensureGh, firstRunDeps, fixTrust } from './firstrun.ts';
 import type { Invocation } from './args.ts';
-import { CommandError, UsageError } from './requests.ts';
+import { UsageError } from './requests.ts';
 
 /** Injectable for tests. */
 export const jobDeps = {

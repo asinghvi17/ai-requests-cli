@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { claim } from '../claim/claim.ts';
 import { thisHost } from '../lib/pid.ts';
 import { createTrust } from '../request/trust.ts';
-import type { Config } from '../config.ts';
+import type { Config } from '../setup/config.ts';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Tmux } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../agents/harness.ts';

@@ -17,7 +17,7 @@ import {
 } from './jobs.ts';
 import { readServerState, updateServerState } from './state.ts';
 import { tidy } from './tidy.ts';
-import { configPath, parseConfig, type Config } from '../config.ts';
+import { configPath, parseConfig, type Config } from '../setup/index.ts';
 import {
   configFile as subscriptionsFile, matchPrompt, MAX_WAITING_COMMENTS, SETTLE_MS, STUCK_MS, usd, waitingFor, type Subscription,
 } from '../agents/index.ts';

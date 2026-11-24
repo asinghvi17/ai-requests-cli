@@ -7,12 +7,11 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS, DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from '../config.ts';
-import { hostOs, installHint, resolveBinary, type Os } from '../serve/hints.ts';
-import { configState, ghState, type AgentCheck, type GhState } from '../serve/preflight.ts';
+import { ConfigError, configPath, configTemplate, DEFAULT_AGENTS, DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from './config.ts';
+import { hostOs, installHint, resolveBinary, type Os } from './hints.ts';
+import { configState, ghState, type AgentCheck, type GhState } from './preflight.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, readAll, writeClaudeTrust } from '../agents/index.ts';
-import type { Io } from '../lib/index.ts';
-import { CommandError } from './requests.ts';
+import { CommandError, type Io } from '../lib/index.ts';
 
 /** A claude or codex login, and whether air found a subscription on it it can serve. */
 export type Detected = { name: string; harness: 'claude' | 'codex'; found: boolean; why?: string };

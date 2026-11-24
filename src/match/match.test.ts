@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from '../config.ts';
+import { DEFAULT_RESERVE, DEFAULT_WINDOW_USD } from '../setup/config.ts';
 import type { Subscription } from '../agents/usage/types.ts';
 import { effectiveHarness, canTakeMore, choose, largestEffort, reserveFor, windowSize, type MatchConfig, type Request } from './match.ts';
 

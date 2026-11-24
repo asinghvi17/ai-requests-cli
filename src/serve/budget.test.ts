@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createTrust } from '../request/trust.ts';
-import { parseConfig } from '../config.ts';
+import { parseConfig } from '../setup/config.ts';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Short } from '../match/match.ts';
 import type { Tmux } from '../tmux/tmux.ts';

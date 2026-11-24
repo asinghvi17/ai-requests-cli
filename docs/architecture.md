@@ -61,6 +61,24 @@ directory without a directory cycle) and `fixtures/` (was `serve/fixtures/`: the
 - The models and tiers (`TIERS`, `DEFAULT_MODELS`, `AGENT_HARNESSES`, `DEFAULT_AGENTS`) stay in `config.ts`, and
   the agent preflight ("probe") in `serve/preflight.ts`: the plan puts both files in `setup`.
 
+Phase P5 moved the setup domain into `src/setup/`, flat: `config.ts` (was `src/config.ts`, with the models and
+tiers), `preflight.ts` (was `serve/preflight.ts`: the startup checks `air serve` runs and `air doctor` reports,
+the agent probe included), `hints.ts` (was `serve/hints.ts`) and `firstrun.ts` (was `cli/firstrun.ts`: the gh
+login, writing the config and folder trust on first run; the plan's "gh-login" and "onboarding"). Other domains
+import it through `setup/index.ts`. Beyond moves:
+
+- `CommandError` (a command that can't do what was asked: the router prints the message and exits 1) moved from
+  `cli/requests.ts` to `lib/io.ts`, beside `Io`, unchanged. `firstrun.ts` throws it, and setup may not import
+  `cli`. `UsageError` stays in `cli/requests.ts`: only `cli` throws it.
+- `cli/doctor.ts` stays in `cli`: it is the `air doctor` command, and it reads tmux through `server/index.ts`.
+  Its checks are the setup domain's (`preflight.ts`, `hints.ts`), through `setup/index.ts`.
+- Skill install was already in `request/skill/` (P3); `cli/skill.ts` is its command.
+- The models and tiers stay in `setup/config.ts` and the probe in `setup/preflight.ts`, not in `agents` as the
+  plan's "probe" suggests: they are one file each with the config and the other checks.
+- Not fixed: `configPath` (`setup/config.ts`) and `configFile` (`agents/usage/index.ts`) find air's config
+  directory differently. `configFile` honours `AIR_CONFIG_DIR` and takes `XDG_CONFIG_HOME` as it is;
+  `configPath` ignores `AIR_CONFIG_DIR` and a relative `XDG_CONFIG_HOME`. Neither imports the other.
+
 ## Layout
 
 | Domain | Contents |

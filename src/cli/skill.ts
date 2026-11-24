@@ -2,10 +2,11 @@
 // files AI requests, and on first run write the config that names the requests repo (asked for on a terminal;
 // off one, --repo is needed).
 import { resolve } from 'node:path';
+import { CommandError } from '../lib/index.ts';
 import { defaultSkillDir, installSkill, InstallError, SKILL_NAME } from '../request/index.ts';
-import { ensureConfig, firstRunDeps } from './firstrun.ts';
+import { ensureConfig, firstRunDeps } from '../setup/index.ts';
 import type { Invocation } from './args.ts';
-import { CommandError, UsageError } from './requests.ts';
+import { UsageError } from './requests.ts';
 
 /** Injectable for tests. */
 export const skillDeps = {

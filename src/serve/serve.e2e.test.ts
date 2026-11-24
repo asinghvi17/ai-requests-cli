@@ -13,7 +13,7 @@ import { createTrust, markedComments } from '../request/trust.ts';
 import { main } from '../cli/main.ts';
 import { jobDeps } from '../cli/jobs.ts';
 import { deps as requestDeps } from '../cli/requests.ts';
-import type { Config } from '../config.ts';
+import type { Config } from '../setup/config.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
 import { createGh, GhError } from '../gh/gh.ts';
 import { releaseDownload } from '../request/context.ts';

@@ -776,3 +776,14 @@ specifier's target is its path.
   `TASK_FILE`, `PROGRESS_FILE`) from `workspace/task.ts`, so `harness.ts` imports neither setup nor server.
 - `workspace/task.ts` stays in `server`: it reads the job's `State` and parses the request's front matter.
   Its two ALLOWED entries went with it.
+
+## 2026-11-24: the setup domain in `src/setup/` (refactor P5)
+
+- `config.ts`, `serve/preflight.ts`, `serve/hints.ts` and `cli/firstrun.ts` moved into `src/setup/` with
+  `scripts/move.ts`, flat. No behaviour changed. Other domains import it through `setup/index.ts`, and 9
+  entries left ALLOWED (22 to 13).
+- `CommandError` moved from `cli/requests.ts` to `lib/io.ts`, so `firstrun.ts` (which throws it) no longer
+  imports `cli`. It is the same class, so the router's handling is unchanged.
+- `cli/doctor.ts` stays in `cli`: it is a command, and it reads tmux through the server.
+- `configPath` (`setup/config.ts`) and `configFile` (`agents/usage/index.ts`) still find the config directory
+  differently (`AIR_CONFIG_DIR`, relative `XDG_CONFIG_HOME`). A known bug, left for its own change.

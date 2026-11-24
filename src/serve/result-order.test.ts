@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claim, release } from '../claim/claim.ts';
 import { createTrust } from '../request/trust.ts';
-import type { Config } from '../config.ts';
+import type { Config } from '../setup/config.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
 import { GhError } from '../gh/gh.ts';
 import type { Tmux } from '../tmux/tmux.ts';

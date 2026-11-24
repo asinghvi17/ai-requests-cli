@@ -12,7 +12,7 @@
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { AGENT_HARNESSES, DEFAULT_AGENTS, loadConfig, type Config } from '../config.ts';
+import { AGENT_HARNESSES, DEFAULT_AGENTS, loadConfig, type Config } from './config.ts';
 import type { Agent, SubscriptionConfig } from '../agents/index.ts';
 import { hostOs, installHint, resolveBinary, type Os } from './hints.ts';
 

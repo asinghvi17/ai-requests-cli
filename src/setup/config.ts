@@ -3,8 +3,8 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import type { Agent } from './agents/index.ts';
-import { parseToml, type TomlTable, type TomlValue } from './lib/index.ts';
+import type { Agent } from '../agents/index.ts';
+import { parseToml, type TomlTable, type TomlValue } from '../lib/index.ts';
 
 export const TIERS = ['small', 'medium', 'large'] as const;
 export type Tier = (typeof TIERS)[number];

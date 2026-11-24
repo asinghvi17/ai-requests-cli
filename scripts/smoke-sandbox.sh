@@ -51,7 +51,7 @@
 #  and unassigns asinghvi17 (src/claim/claim.ts `giveUp`). Still no push, PR or asset.
 #
 # LOCAL ISOLATION. air has env overrides, so the real air config is not touched (HOME is not changed):
-#   XDG_CONFIG_HOME -> <tmp>/xdg   config.toml lives at $XDG_CONFIG_HOME/air/config.toml (src/config.ts)
+#   XDG_CONFIG_HOME -> <tmp>/xdg   config.toml lives at $XDG_CONFIG_HOME/air/config.toml (src/setup/config.ts)
 #   AIR_CONFIG_DIR  -> <tmp>/xdg/air   subscriptions.json (src/agents/usage/index.ts `configFile`)
 #   AIR_STATE_DIR   -> <tmp>/state     serve.log, serve.lock, manual ledger (src/agents/usage/index.ts `stateDir`)
 #   TMUX_TMPDIR     -> <tmp>/tmux      air's private tmux socket (`tmux -L air`), so it never shares a tmux
@@ -145,7 +145,7 @@ echo "fake-agent: done"
 EOF
 chmod +x "$WORK/bin/fake-agent.sh"
 
-# Keys per src/config.ts. [subscriptions.smoke] must share its name with the manual entry in subscriptions.json.
+# Keys per src/setup/config.ts. [subscriptions.smoke] must share its name with the manual entry in subscriptions.json.
 cat > "$XDG_CONFIG_HOME/air/config.toml" <<EOF
 repo = "$REPO"
 workspace_root = "$WORK/workspaces"
@@ -169,7 +169,7 @@ EOF
 
 say "config check (config.toml parses; air usage reads the manual subscription)"
 node --input-type=module -e '
-  const { loadConfig, configPath } = await import(process.argv[1] + "/src/config.ts");
+  const { loadConfig, configPath } = await import(process.argv[1] + "/src/setup/config.ts");
   const c = loadConfig(configPath());
   if (c.repo !== process.argv[2] || !c.agents.claude || !c.subscriptions.smoke) { console.error("config did not parse as intended"); process.exit(1); }
   console.log(configPath(), "->", JSON.stringify({ repo: c.repo, root: c.workspace_root, subs: c.subscriptions, agents: c.agents }));

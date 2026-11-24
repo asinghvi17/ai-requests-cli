@@ -1,4 +1,4 @@
-// `air doctor`: runs the startup checks `air serve` runs (src/serve/preflight.ts) and reports each one, with the
+// `air doctor`: runs the startup checks `air serve` runs (src/setup/preflight.ts) and reports each one, with the
 // command that fixes it on this system, without serving. It writes nothing: the usage it reads skips air's cache,
 // and folder trust stays with `air serve`'s first-run prompt, which asks before writing it. Exit 0 when every
 // required check passes. `!` marks a problem that does not stop air: an agent that is broken while another

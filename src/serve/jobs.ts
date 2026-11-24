@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { postResult, release } from '../claim/claim.ts';
-import { DEFAULT_AGENTS } from '../config.ts';
+import { DEFAULT_AGENTS } from '../setup/index.ts';
 import {
   code, currentClaim, fenced, HELD_LABELS, lint, markedComments, tail, type Request, type ResultUsage,
 } from '../request/index.ts';

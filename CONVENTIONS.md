@@ -13,7 +13,8 @@
 
 | Path | Contents |
 | --- | --- |
-| `src/cli/` | entry point (`main.ts`) and one module per command; `firstrun.ts` is the setup `air serve` and `air skill install` do on first run (gh login, config, folder trust) |
+| `src/cli/` | entry point (`main.ts`) and one module per command |
+| `src/setup/` | a volunteer's machine: config loading with the models and tiers (`config.ts`), the startup checks `air serve` runs and `air doctor` reports (`preflight.ts`), the install command for each OS (`hints.ts`), and the setup `air serve` and `air skill install` do on first run (`firstrun.ts`: gh login, config, folder trust); other domains import it through `index.ts` |
 | `src/request/` | the request as GitHub sees it: front-matter parser and lint, markers, labels, trust rule, context zips; `air submit` (file collection, secrets check), `air sweep`, the requester's side (`air status`, `wait`, `fetch`, `retry`, `cancel`), and `air skill install` under `skill/` (`bundle.ts`, generated); other domains import it through `index.ts` |
 | `src/agents/` | the coding agents: command lines and the task handoff (`harness.ts`), the launch environment, waiting-prompt detection (`prompts.ts`) with captured screens under `fixtures/panes/`, Claude Code folder trust (`claude-trust.ts`), and the subscription usage readers and prices under `usage/`; other domains import it through `index.ts` |
 | `src/match/` | effort matching against local quota |
@@ -21,10 +22,9 @@
 | `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`), release assets and repo-wide listings (`releases.ts`), in-memory fakes for tests under `testing/`; other domains import it through `index.ts` |
 | `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
-| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery; `preflight.ts` holds the startup checks `air serve` runs and `air doctor` reports, `hints.ts` the install command for each OS |
+| `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery |
 | `skills/ai-request/` | the Claude Code skill's source; `npm run skill:bundle` regenerates `src/request/skill/bundle.ts` after edits |
 | `docs/architecture.md` | the target module layout and its import rules, enforced by `src/boundaries.test.ts` |
 | `docs/decisions.md` | decision log: append, newest last |
-| `src/lib/` | shared code with no air knowledge (docs/architecture.md): TOML-subset parser, version, pid and lock files, setup exec, git (resolve, clone, checkpoint), zip reader and writers |
-| `src/config.ts` | config loading |
+| `src/lib/` | shared code with no air knowledge (docs/architecture.md): TOML-subset parser, version, a command's output and `CommandError`, pid and lock files, setup exec, git (resolve, clone, checkpoint), zip reader and writers |
 | `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed), `bundle-skill.ts`, `move.ts` (moves files and rewrites imports), `boundaries.ts` (the check behind `src/boundaries.test.ts`) |

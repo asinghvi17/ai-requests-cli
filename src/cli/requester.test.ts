@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseConfig } from '../config.ts';
+import { parseConfig } from '../setup/config.ts';
 import type { FakeGitHub } from '../gh/testing/fake.ts';
 import { lint } from '../request/lint.ts';
 import { formatResult, type AirResult } from '../request/markers.ts';

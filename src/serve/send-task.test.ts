@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claim } from '../claim/claim.ts';
 import { createTrust } from '../request/trust.ts';
-import { DEFAULT_AGENTS, type Config } from '../config.ts';
+import { DEFAULT_AGENTS, type Config } from '../setup/config.ts';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Tmux } from '../tmux/tmux.ts';
 import { readState, REQUEST_FILE, updateState, type JobRecord } from '../workspace/state.ts';

@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectOs, installHint, type Os, type Tool } from '../serve/hints.ts';
-import type { AgentCheck } from '../serve/preflight.ts';
+import { detectOs, installHint, type Os, type Tool } from '../setup/hints.ts';
+import type { AgentCheck } from '../setup/preflight.ts';
 import { doctor, doctorDeps, formatDoctor } from './doctor.ts';
 import { main } from './main.ts';
 
