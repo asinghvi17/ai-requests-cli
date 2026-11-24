@@ -817,3 +817,18 @@ specifier's target is its path.
   checks the serve lock with `liveLock`, the same test it spelled out (`existsSync` and not `staleLock`).
 - `server/index.ts` no longer exports what only those cuts used (`createServer`, `acquireServeLock`,
   `clientEnv`, `jobEnv`, `allWorkspaces`, `ENDED`, `staleLock`, `PidLock`).
+
+## 2026-11-24: one config dir and one state dir (`lib/dirs.ts`, 0.4.3)
+
+- `airDir('config' | 'state')` in `src/lib/dirs.ts` is the one place that finds air's directories:
+  `$XDG_CONFIG_HOME/air` (else `~/.config/air`) and `$XDG_STATE_HOME/air` (else `~/.local/state/air`).
+  `configPath` (config.toml), `configFile` (subscriptions.json) and `stateDir` are built on it, and every
+  caller goes through those three.
+- An empty or relative XDG value is ignored, as the XDG Base Directory spec says and `configPath` already did.
+  `configFile` and `stateDir` had used a relative value as it was, so where air ran from changed where they
+  looked.
+- `AIR_CONFIG_DIR` and `AIR_STATE_DIR` are gone. They were undocumented, `AIR_CONFIG_DIR` never moved
+  config.toml, and the XDG variables already move both directories. Tests and `scripts/smoke-sandbox.sh` set
+  `XDG_CONFIG_HOME` and `XDG_STATE_HOME` instead.
+- No migration code: files air read or wrote at the old places are moved by hand (docs/config.md, "Files in the
+  wrong place").

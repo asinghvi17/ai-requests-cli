@@ -22,5 +22,5 @@
 | `skills/ai-request/` | the Claude Code skill's source; `npm run skill:bundle` regenerates `src/request/skill/bundle.ts` after edits |
 | `docs/architecture.md` | the target module layout and its import rules, enforced by `src/boundaries.test.ts` |
 | `docs/decisions.md` | decision log: append, newest last |
-| `src/lib/` | shared code with no air knowledge (docs/architecture.md): TOML-subset parser, version, a command's output and `CommandError`, pid and lock files, setup exec, git (resolve, clone, checkpoint), zip reader and writers |
+| `src/lib/` | shared code with no air knowledge (docs/architecture.md): TOML-subset parser, version, air's config and state dirs (`dirs.ts`), a command's output and `CommandError`, pid and lock files, setup exec, git (resolve, clone, checkpoint), zip reader and writers |
 | `scripts/` | dev tooling: `typecheck.ts`, `build.ts` (Bun single executables into `dist/`, not committed), `bundle-skill.ts`, `move.ts` (moves files and rewrites imports), `boundaries.ts` (the check behind `src/boundaries.test.ts`) |

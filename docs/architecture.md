@@ -8,7 +8,7 @@ to P7 (docs/decisions.md has an entry for each); every file is now in its domain
 
 | Domain | Contents |
 | --- | --- |
-| `src/lib/` | no air knowledge: the TOML subset (`toml.ts`), version, a command's output and `CommandError` (`io.ts`), pid and lock files, setup exec, git (resolve, clone, checkpoint), the zip reader and writers |
+| `src/lib/` | no air knowledge: the TOML subset (`toml.ts`), version, air's config and state dirs (`dirs.ts`, which like version names air but knows nothing else of it), a command's output and `CommandError` (`io.ts`), pid and lock files, setup exec, git (resolve, clone, checkpoint), the zip reader and writers |
 | `src/gh/` | the GitHub client (`gh api`): issues, comments and labels (`issues.ts`), release assets and repo-wide listings (`releases.ts`); in-memory fakes under `gh/testing/` |
 | `src/request/` | the request and its lifecycle as GitHub sees it: front matter (`frontmatter.ts`), lint, markers, labels, trust, the template (`template.ts`), context zips (`context.ts`, the plan's "assets"), sweep, submit with file collection and the secrets check, the requester's side (`status.ts`, `fetch.ts`, `retry.ts`, `cancel.ts`), and skill install under `skill/` |
 | `src/agents/` | the coding agents: command lines, ready screen and task handoff (`harness.ts`), launch environment (`launch.ts`), waiting prompts (`prompts.ts`), Claude Code folder trust (`claude-trust.ts`), and under `usage/` the subscription usage readers, prices and spend (the plan's "cost") |
@@ -47,9 +47,6 @@ What the phases left, each for its own change:
   can move to `gh` once `REQUEST_LABEL` is passed in rather than imported from `request`.
 - The generic part of `agents/usage/run.ts` (`run`, `killGroup`, `command`) can move to `lib` once split out.
 - The models and tiers are in `setup/config.ts` and the agent probe in `setup/preflight.ts`, not in `agents`.
-- `configPath` (`setup/config.ts`) and `configFile` (`agents/usage/index.ts`) find air's config directory
-  differently: `configFile` honours `AIR_CONFIG_DIR` and takes `XDG_CONFIG_HOME` as it is; `configPath` ignores
-  `AIR_CONFIG_DIR` and a relative `XDG_CONFIG_HOME`.
 - The `--repo` and ISSUE parsing is in four copies in `cli` (`requests.ts`'s `target`, `submit.ts`'s
   `repoName`, `jobs.ts`'s `repoFlag` and `issueArg`, and `skill.ts`).
 

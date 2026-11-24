@@ -220,15 +220,16 @@ test('loginsOf: claude and codex logins with their dirs, manual ones by their de
 });
 
 test('a manual login runs its agent, and is preflighted, with its own config dir', () => {
-  const dir = tmp();
+  const xdg = tmp(), dir = join(xdg, 'air');
+  mkdirSync(dir);
   writeFileSync(join(dir, 'subscriptions.json'), JSON.stringify([
     { name: 'work', harness: 'manual', configDir: '/elsewhere/claude', reset: { every: 'weekly', day: 0 }, budget: { usd: 100 } },
     { name: 'pool', harness: 'manual', codexHome: '/elsewhere/codex', reset: { every: 'weekly', day: 0 }, budget: { usd: 100 } },
   ]));
   const config = parseConfig('[subscriptions.work]\nharness = "claude"\n[subscriptions.pool]\nharness = "codex"\n', '/home/u');
-  const saved = { config: process.env.AIR_CONFIG_DIR, state: process.env.AIR_STATE_DIR };
-  process.env.AIR_CONFIG_DIR = dir;
-  process.env.AIR_STATE_DIR = join(dir, 'state');
+  const saved = { config: process.env.XDG_CONFIG_HOME, state: process.env.XDG_STATE_HOME };
+  process.env.XDG_CONFIG_HOME = xdg;
+  process.env.XDG_STATE_HOME = join(xdg, 'state');
   try {
     const ctx = serveContext(config, 'o/requests');
     assert.deepEqual(ctx.agentEnv('work'), { CLAUDE_CONFIG_DIR: '/elsewhere/claude' });
@@ -242,7 +243,7 @@ test('a manual login runs its agent, and is preflighted, with its own config dir
     const [claudeCheck] = preflight(m.config, logins, m.deps);
     assert.match(claudeCheck!.logins.work![0]!.what, /^Claude Code has not been set up with this config: \/elsewhere\/claude\/\.claude\.json does not exist/);
   } finally {
-    for (const [k, v] of [['AIR_CONFIG_DIR', saved.config], ['AIR_STATE_DIR', saved.state]] as const) {
+    for (const [k, v] of [['XDG_CONFIG_HOME', saved.config], ['XDG_STATE_HOME', saved.state]] as const) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }

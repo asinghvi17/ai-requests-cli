@@ -51,9 +51,8 @@
 #  and unassigns asinghvi17 (src/server/claim.ts `giveUp`). Still no push, PR or asset.
 #
 # LOCAL ISOLATION. air has env overrides, so the real air config is not touched (HOME is not changed):
-#   XDG_CONFIG_HOME -> <tmp>/xdg   config.toml lives at $XDG_CONFIG_HOME/air/config.toml (src/setup/config.ts)
-#   AIR_CONFIG_DIR  -> <tmp>/xdg/air   subscriptions.json (src/agents/usage/index.ts `configFile`)
-#   AIR_STATE_DIR   -> <tmp>/state     serve.log, serve.lock, manual ledger (src/agents/usage/index.ts `stateDir`)
+#   XDG_CONFIG_HOME -> <tmp>/xdg       config.toml and subscriptions.json, in <tmp>/xdg/air (src/lib/dirs.ts)
+#   XDG_STATE_HOME  -> <tmp>/state     serve.log, serve.lock, manual ledger, in <tmp>/state/air (src/lib/dirs.ts)
 #   TMUX_TMPDIR     -> <tmp>/tmux      air's private tmux socket (`tmux -L air`), so it never shares a tmux
 #                                      server or session with a real `air serve` (src/server/tmux/env.ts `clientEnv`)
 #   workspace_root  -> <tmp>/workspaces (config.toml)
@@ -112,10 +111,11 @@ fi
 
 # ---------------------------------------------------------------------------------------------- local setup
 WORK=$(mktemp -d "$TMP_BASE/air-smoke.XXXXXX")
-mkdir -p "$WORK/xdg/air" "$WORK/state" "$WORK/tmux" "$WORK/workspaces" "$WORK/bin"
+mkdir -p "$WORK/xdg/air" "$WORK/state/air" "$WORK/tmux" "$WORK/workspaces" "$WORK/bin"
 export XDG_CONFIG_HOME=$WORK/xdg
-export AIR_CONFIG_DIR=$WORK/xdg/air
-export AIR_STATE_DIR=$WORK/state
+export XDG_STATE_HOME=$WORK/state
+CONFIG_DIR=$XDG_CONFIG_HOME/air
+STATE_DIR=$XDG_STATE_HOME/air
 export TMUX_TMPDIR=$WORK/tmux
 # Credentials for air's `git clone` of the sandbox (env only; the user's git config is untouched).
 export GIT_CONFIG_COUNT=2
@@ -163,7 +163,7 @@ EOF
 
 # A MANUAL subscription (src/agents/usage/manual.ts): no 'claude -p /usage' call. 100 percent budget, nothing spent: an XS
 # request costs 1 point.
-cat > "$AIR_CONFIG_DIR/subscriptions.json" <<'EOF'
+cat > "$CONFIG_DIR/subscriptions.json" <<'EOF'
 [{"name": "smoke", "harness": "manual", "reset": {"every": "weekly", "day": 0}, "budget": {"percent": 100}}]
 EOF
 
@@ -259,8 +259,8 @@ gh issue view "$N" --repo "$REPO" --json state,labels,assignees --jq '"state: \(
 echo
 gh issue view "$N" --repo "$REPO" --comments
 
-say "serve log ($AIR_STATE_DIR/serve.log)"
-cat "$AIR_STATE_DIR/serve.log" 2>/dev/null || true
+say "serve log ($STATE_DIR/serve.log)"
+cat "$STATE_DIR/serve.log" 2>/dev/null || true
 
 LABELS=$(gh issue view "$N" --repo "$REPO" --json labels --jq '[.labels[].name] | join(" ")')
 if [ "$RC" -eq 0 ] && [[ " $LABELS " == *" air:done "* ]]; then

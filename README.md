@@ -76,6 +76,8 @@ Detach with `C-b d` and it keeps serving. Run `air serve` again to come back. `C
 - [docs/doctor.md](docs/doctor.md): what `air doctor` checks.
 - [docs/requesting.md](docs/requesting.md): filing by hand, cancel and retry, context files, results.
 - [docs/serving.md](docs/serving.md): how claiming works, budgets, prompts, job commands, cleaning up.
-- [docs/config.md](docs/config.md): every config setting.
+- [docs/config.md](docs/config.md): every config setting, and where air keeps its files. If you set
+  `AIR_CONFIG_DIR`, `AIR_STATE_DIR` or a relative `XDG_CONFIG_HOME`/`XDG_STATE_HOME` before 0.4.3, air may
+  have read or written files elsewhere: [move them by hand](docs/config.md#files-in-the-wrong-place-before-043).
 - [spec/v0.md](spec/v0.md): the request format. [docs/decisions.md](docs/decisions.md): why things are the
   way they are. [CONVENTIONS.md](CONVENTIONS.md): the code layout.

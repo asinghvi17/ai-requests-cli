@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
+import { airDir } from '../../lib/index.ts';
 import { cachedRead, effectiveWindows } from './cache.ts';
 import { readClaude } from './claude.ts';
 import { readCodex } from './codex.ts';
@@ -19,9 +20,9 @@ export { readManual, recordSpend, loadLedger, saveLedger, spend, resetLedger, ty
 export { cachedRead, effectiveWindows, headroomPct, unknownWindows, REUSE_MS, STALE_MS } from './cache.ts';
 export { cliEnv, CLI_ENV_ALLOW } from './run.ts';
 
-const env = process.env;
-export const stateDir = () => env.AIR_STATE_DIR || join(env.XDG_STATE_HOME || join(homedir(), '.local', 'state'), 'air');
-export const configFile = () => join(env.AIR_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'air'), 'subscriptions.json');
+type Env = Record<string, string | undefined>;
+export const stateDir = (env: Env = process.env, home = homedir()) => airDir('state', env, home);
+export const configFile = (env: Env = process.env, home = homedir()) => join(airDir('config', env, home), 'subscriptions.json');
 export const ledgerFile = (dir: string) => join(dir, 'manual-ledger.json');
 
 export const DEFAULT_SUBSCRIPTIONS: SubscriptionConfig[] = [{ name: 'claude', harness: 'claude' }, { name: 'codex', harness: 'codex' }];

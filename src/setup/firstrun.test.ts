@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configTemplate, DEFAULT_WINDOW_USD, loadConfig, parseConfig } from './config.ts';
+import { configPath, configTemplate, DEFAULT_WINDOW_USD,loadConfig, parseConfig } from './config.ts';
 import type { ServeContext } from '../server/context.ts';
 import type { AgentCheck } from './preflight.ts';
 import { acquireServeLock } from '../server/state.ts';
@@ -214,7 +214,7 @@ test('serve stops when tmux is unusable or workspace_root can not be made, with 
   jobDeps.workspaceRoot = saved.jobs.workspaceRoot;
   assert.deepEqual(await call('serve'), {
     code: 1, out: '',
-    err: `air: ${file}, where air would create workspace_root ${file}/air, is not a directory.\n  fix: set workspace_root in ${join(process.env.XDG_CONFIG_HOME ?? join(process.env.HOME!, '.config'), 'air', 'config.toml')} to a folder you can write\n`,
+    err: `air: ${file}, where air would create workspace_root ${file}/air, is not a directory.\n  fix: set workspace_root in ${configPath()} to a folder you can write\n`,
   });
   const context = jobDeps.context;
   jobDeps.context = (config, repo, echo) => {
@@ -286,10 +286,11 @@ test('detecting subscriptions finds agents through firstRunDeps.home(), as `~/` 
   mkdirSync(join(home, 'bin'));
   // Installed, but its usage can't be read: found on PATH, so not "not installed".
   writeFileSync(join(home, 'bin', 'claude'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
-  const config = tmp();
-  writeFileSync(join(config, 'subscriptions.json'), JSON.stringify([{ name: 'claude', harness: 'claude' }, { name: 'codex', harness: 'codex' }]));
-  const env = { PATH: process.env.PATH, AIR_CONFIG_DIR: process.env.AIR_CONFIG_DIR, AIR_STATE_DIR: process.env.AIR_STATE_DIR };
-  Object.assign(process.env, { PATH: '~/bin', AIR_CONFIG_DIR: config, AIR_STATE_DIR: tmp() });
+  const xdg = tmp();
+  mkdirSync(join(xdg, 'air'));
+  writeFileSync(join(xdg, 'air', 'subscriptions.json'), JSON.stringify([{ name: 'claude', harness: 'claude' }, { name: 'codex', harness: 'codex' }]));
+  const env = { PATH: process.env.PATH, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
+  Object.assign(process.env, { PATH: '~/bin', XDG_CONFIG_HOME: xdg, XDG_STATE_HOME: tmp() });
   firstRunDeps.home = () => home;
   try {
     const [claude, codex] = await saved.first.detect();

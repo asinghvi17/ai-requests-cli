@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import type { Agent } from '../agents/index.ts';
-import { parseToml, type TomlTable, type TomlValue } from '../lib/index.ts';
+import { airDir, parseToml, type TomlTable, type TomlValue } from '../lib/index.ts';
 
 export const TIERS = ['small', 'medium', 'large'] as const;
 export type Tier = (typeof TIERS)[number];
@@ -62,8 +62,7 @@ export class ConfigError extends Error {}
 type Env = Record<string, string | undefined>;
 
 export function configPath(env: Env = process.env, home = homedir()): string {
-  const xdg = env.XDG_CONFIG_HOME;
-  return join(xdg && isAbsolute(xdg) ? xdg : join(home, '.config'), 'air', 'config.toml');
+  return join(airDir('config', env, home), 'config.toml');
 }
 
 function expandHome(p: string, home: string): string {
