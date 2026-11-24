@@ -79,6 +79,26 @@ import it through `setup/index.ts`. Beyond moves:
   directory differently. `configFile` honours `AIR_CONFIG_DIR` and takes `XDG_CONFIG_HOME` as it is;
   `configPath` ignores `AIR_CONFIG_DIR` and a relative `XDG_CONFIG_HOME`. Neither imports the other.
 
+Phase P6 tidied `src/cli/` down to parsing arguments, dispatching and formatting output. No file moved whole, so
+`scripts/move.ts` had nothing to do; two pieces of logic were cut out of commands unchanged:
+
+- `promptRequest` (with `Ask` and its helpers `choose`, `lines` and `q`), which fills in the issue template
+  from prompts, moved from `cli/submit.ts` to `request/template.ts` (the plan's "template"). `air submit` still
+  opens the terminal prompter and calls it. `blankTemplateHeader` stays in `request/submit.ts`.
+- The doctor checks (`doctor`, `agentLines`, `rcFile`, `PLATFORMS`, and the `Line` and `Mark` types) moved from
+  `cli/doctor.ts` to `setup/doctor.ts`. `doctor` takes its deps as an argument, typed `DoctorDeps`, instead of
+  defaulting to `cli`'s `doctorDeps`: that object reads tmux through `server/index.ts`, which setup may not
+  import, so it stays in `cli/doctor.ts` with `formatDoctor` and the command.
+- Every `cli` import of the server goes through `server/index.ts`, which now exports what the commands call
+  (`claim`, `release`, `setup`, the serve context, jobs, server and lock, tmux and workspace state functions).
+  The server code itself is where it was, for P7.
+
+Left for P7, as server logic still in `cli`: `serveCommand`'s lifecycle in `cli/jobs.ts` (the serve lock and
+its refresh, signals, closing the tmux session, the `HOLD` window wrapper), `debugCommand`'s tmux diagnostics,
+and the serve-lock check in `cli/status.ts` (`existsSync` and `staleLock` on `LOCK_FILE`, not `serving`).
+The `--repo` and ISSUE parsing is argument parsing, so it stays in `cli`, in four copies (`requests.ts`'s
+`target`, `submit.ts`'s `repoName`, `jobs.ts`'s `repoFlag` and `issueArg`, and `skill.ts`).
+
 ## Layout
 
 | Domain | Contents |

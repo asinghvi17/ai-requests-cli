@@ -13,9 +13,9 @@
 
 | Path | Contents |
 | --- | --- |
-| `src/cli/` | entry point (`main.ts`) and one module per command |
-| `src/setup/` | a volunteer's machine: config loading with the models and tiers (`config.ts`), the startup checks `air serve` runs and `air doctor` reports (`preflight.ts`), the install command for each OS (`hints.ts`), and the setup `air serve` and `air skill install` do on first run (`firstrun.ts`: gh login, config, folder trust); other domains import it through `index.ts` |
-| `src/request/` | the request as GitHub sees it: front-matter parser and lint, markers, labels, trust rule, context zips; `air submit` (file collection, secrets check), `air sweep`, the requester's side (`air status`, `wait`, `fetch`, `retry`, `cancel`), and `air skill install` under `skill/` (`bundle.ts`, generated); other domains import it through `index.ts` |
+| `src/cli/` | entry point (`main.ts`) and one module per command: argument parsing, dispatch and output; the logic is in the domains, through their `index.ts` |
+| `src/setup/` | a volunteer's machine: config loading with the models and tiers (`config.ts`), the startup checks `air serve` runs and `air doctor` reports (`preflight.ts`, gathered for doctor in `doctor.ts`), the install command for each OS (`hints.ts`), and the setup `air serve` and `air skill install` do on first run (`firstrun.ts`: gh login, config, folder trust); other domains import it through `index.ts` |
+| `src/request/` | the request as GitHub sees it: front-matter parser and lint, markers, labels, trust rule, context zips; `air submit` (file collection, secrets check, the template filled in from prompts in `template.ts`), `air sweep`, the requester's side (`air status`, `wait`, `fetch`, `retry`, `cancel`), and `air skill install` under `skill/` (`bundle.ts`, generated); other domains import it through `index.ts` |
 | `src/agents/` | the coding agents: command lines and the task handoff (`harness.ts`), the launch environment, waiting-prompt detection (`prompts.ts`) with captured screens under `fixtures/panes/`, Claude Code folder trust (`claude-trust.ts`), and the subscription usage readers and prices under `usage/`; other domains import it through `index.ts` |
 | `src/match/` | effort matching against local quota |
 | `src/tmux/` | tmux control on the private `air` socket |

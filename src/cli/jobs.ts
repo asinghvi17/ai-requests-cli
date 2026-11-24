@@ -9,14 +9,12 @@ import {
   configPath, defaultPreflightDeps, ensureConfig, ensureGh, firstRunDeps, fixTrust, formatPreflight, installHint, loadConfig, loginsOf,
   preflight, refusals, workspaceRootProblem, type AgentCheck, type Config, type Problem,
 } from '../setup/index.ts';
-import { createServer } from '../serve/server.ts';
-import { serveContext, type ServeContext } from '../serve/context.ts';
-import { claimHolds, ensureJob, jobOf, startOrDeliver, stopAgent, vanished } from '../serve/jobs.ts';
-import { acquireServeLock, readServerState, serving, updateServerState, type PidLock } from '../serve/state.ts';
+import {
+  acquireServeLock, activeWorkspace, allWorkspaces, attachTo, claimHolds, clientEnv, createServer, ENDED, ensureJob, jobEnv, jobOf,
+  readServerState, readState, serveContext, serving, socketPath, startOrDeliver, stopAgent, updateServerState, vanished, type PidLock,
+  type ServeContext,
+} from '../server/index.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions, stateDir as usageStateDir } from '../agents/index.ts';
-import { clientEnv, jobEnv } from '../tmux/env.ts';
-import { attachTo, socketPath } from '../tmux/tmux.ts';
-import { activeWorkspace, allWorkspaces, ENDED, readState } from '../workspace/state.ts';
 import type { Invocation } from './args.ts';
 import { UsageError } from './requests.ts';
 

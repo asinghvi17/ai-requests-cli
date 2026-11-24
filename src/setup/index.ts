@@ -1,5 +1,6 @@
 // The setup domain (docs/architecture.md): what other domains import from it.
 export { configPath, DEFAULT_AGENTS, loadConfig, parseConfig, type Config } from './config.ts';
+export { doctor, type Line, type Mark } from './doctor.ts';
 export { ensureConfig, ensureGh, firstRunDeps, fixTrust } from './firstrun.ts';
 export { hostOs, installHint, LOGIN_HINT, OS_NAMES, type Os } from './hints.ts';
 export {

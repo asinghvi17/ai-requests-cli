@@ -19,16 +19,6 @@ const TEST_HELPERS = ['lib/git-fixture.ts', 'lib/zip-fixture.ts'];
 const ALLOWED = new Set<string>([
   'claim/claim.ts -> workspace/state.ts: directory cycle',
   'claim/repos.ts -> workspace/state.ts: directory cycle',
-  'cli/claim.ts -> claim/claim.ts: not via server/index.ts',
-  'cli/jobs.ts -> serve/context.ts: not via server/index.ts',
-  'cli/jobs.ts -> serve/jobs.ts: not via server/index.ts',
-  'cli/jobs.ts -> serve/server.ts: not via server/index.ts',
-  'cli/jobs.ts -> serve/state.ts: not via server/index.ts',
-  'cli/jobs.ts -> tmux/env.ts: not via server/index.ts',
-  'cli/jobs.ts -> tmux/tmux.ts: not via server/index.ts',
-  'cli/jobs.ts -> workspace/state.ts: not via server/index.ts',
-  'cli/release.ts -> claim/claim.ts: not via server/index.ts',
-  'cli/setup.ts -> workspace/setup.ts: not via server/index.ts',
   'workspace/setup.ts -> claim/claim.ts: directory cycle',
 ]);
 

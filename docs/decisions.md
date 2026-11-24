@@ -787,3 +787,15 @@ specifier's target is its path.
 - `cli/doctor.ts` stays in `cli`: it is a command, and it reads tmux through the server.
 - `configPath` (`setup/config.ts`) and `configFile` (`agents/usage/index.ts`) still find the config directory
   differently (`AIR_CONFIG_DIR`, relative `XDG_CONFIG_HOME`). A known bug, left for its own change.
+
+## 2026-11-24: `src/cli/` as a thin router (refactor P6)
+
+- `cli/` parses arguments, dispatches and formats output. Two pieces of logic were cut out unchanged:
+  `promptRequest` (filling in the issue template from prompts) from `cli/submit.ts` to `request/template.ts`,
+  and the doctor checks (`doctor` and `agentLines`) from `cli/doctor.ts` to `setup/doctor.ts`. `doctor` now
+  takes its deps as an argument: the default deps read tmux through the server, which setup may not import,
+  so they stay in `cli/doctor.ts`.
+- Every `cli` import of the server goes through `server/index.ts`. No server code moved. 10 entries left
+  ALLOWED (13 to 3); the 3 left are the `claim` ⇄ `workspace` directory cycle, for P7.
+- Server logic still in `cli/jobs.ts` (`air serve`'s lock, signals and tmux session; `air debug panes`) and
+  `cli/status.ts` (the serve-lock check) waits for P7.

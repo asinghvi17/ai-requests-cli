@@ -18,5 +18,6 @@ export { defaultSkillDir, InstallError, installSkill, SKILL_NAME } from './skill
 export { formatStatus, readStatus, statusJson, WAIT_EXIT, waitForResult, type WaitOptions } from './status.ts';
 export { blankTemplateHeader, submit, SubmitError } from './submit.ts';
 export { sweep } from './sweep.ts';
+export { promptRequest, type Ask } from './template.ts';
 export { code, fenced, tail } from './text.ts';
 export { createTrust, markedComments, type Trust } from './trust.ts';
