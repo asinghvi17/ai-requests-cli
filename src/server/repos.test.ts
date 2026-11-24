@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fakeGitHub } from '../gh/testing/fake.ts';
 import { parseMarkers } from '../request/markers.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../lib/git-fixture.ts';
-import { readState } from '../workspace/state.ts';
+import { readState } from './workspace-state.ts';
 import { claim, type ClaimOptions } from './claim.ts';
 
 const SERVICE = 'https://github.com/o/service.git';

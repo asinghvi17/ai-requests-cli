@@ -1,5 +1,5 @@
 // Workspace teardown: the one way air deletes a workspace (a delivered job's at once, the others after the
-// days serve/tidy.ts keeps them), guarded so that nothing outside workspace_root is ever removed. The caller
+// days tidy.ts keeps them), guarded so that nothing outside workspace_root is ever removed. The caller
 // stops the job's processes first (its tmux pane): rm never races an agent writing into the workspace.
 import { randomBytes } from 'node:crypto';
 import { lstatSync, readdirSync, realpathSync, renameSync, rmSync } from 'node:fs';

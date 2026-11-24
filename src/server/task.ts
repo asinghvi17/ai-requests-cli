@@ -2,7 +2,7 @@
 // workspace and how the result comes back, then the request's sections exactly as the requester wrote them.
 import { DONE_FILE, PROGRESS_FILE } from '../agents/index.ts';
 import { parseFrontMatter, type RepoEntry, type Request } from '../request/index.ts';
-import type { State } from './state.ts';
+import type { State } from './workspace-state.ts';
 
 /** The request body after its front matter. */
 export function requestText(body: string): string {

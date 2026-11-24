@@ -10,7 +10,7 @@ import { parseConfig } from '../setup/config.ts';
 import type { FakeGitHub } from '../gh/testing/fake.ts';
 import { lint } from '../request/lint.ts';
 import { formatResult, type AirResult } from '../request/markers.ts';
-import { createWorkspace } from '../workspace/state.ts';
+import { createWorkspace } from '../server/workspace-state.ts';
 import { buildZip } from '../lib/zip-fixture.ts';
 import { insteadOf, makeBareRepo } from '../lib/git-fixture.ts';
 import { yamlScalar } from '../request/frontmatter.ts';

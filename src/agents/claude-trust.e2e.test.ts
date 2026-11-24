@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DEFAULT_AGENTS } from '../setup/config.ts';
-import { createTmux, socketPath } from '../tmux/tmux.ts';
+import { createTmux, socketPath } from '../server/tmux/tmux.ts';
 import { makeBareRepo } from '../lib/git-fixture.ts';
 import { agentArgv, type Agent, type Harness } from './harness.ts';
 import { matchPrompt } from './prompts.ts';

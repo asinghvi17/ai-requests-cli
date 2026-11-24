@@ -1,8 +1,8 @@
 // The module boundaries of docs/architecture.md, checked on every relative import under src/ by
-// scripts/boundaries.ts. A file under src/<domain>/ is in that domain; DOMAIN places the files not yet moved
-// there, and shrinks as later phases move them (scripts/move.ts). ALLOWED holds today's violations: a new one
-// fails, and so does an entry that no longer occurs, so the list only shrinks. Tests, test helpers and e2e/
-// may import anything.
+// scripts/boundaries.ts. A file under src/<domain>/ is in that domain; DOMAIN placed the files not yet moved
+// there, and is empty since every file is in its domain (P7). ALLOWED held the violations still to fix: a new
+// one fails, and so does an entry that no longer occurs, so the list only shrank, and it is empty now (P7).
+// Tests, test helpers and e2e/ may import anything.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { check } from '../scripts/boundaries.ts';
@@ -11,16 +11,10 @@ const MAY: Record<string, string[]> = {
   lib: [], gh: ['lib'], request: ['lib', 'gh'], agents: ['lib', 'request'], setup: ['lib', 'agents'],
   server: ['lib', 'gh', 'request', 'agents', 'setup'], cli: ['lib', 'gh', 'request', 'agents', 'setup', 'server'],
 };
-const DOMAIN: Record<string, string> = {
-  'claim/': 'server', 'match/': 'server', 'serve/': 'server', 'tmux/': 'server', 'workspace/': 'server',
-};
+const DOMAIN: Record<string, string> = {};
 const TEST_HELPERS = ['lib/git-fixture.ts', 'lib/zip-fixture.ts'];
 /** Today's violations, `from -> to: rule`. Only ever remove entries. */
-const ALLOWED = new Set<string>([
-  'claim/claim.ts -> workspace/state.ts: directory cycle',
-  'claim/repos.ts -> workspace/state.ts: directory cycle',
-  'workspace/setup.ts -> claim/claim.ts: directory cycle',
-]);
+const ALLOWED = new Set<string>([]);
 
 const report = check(import.meta.dirname, { may: MAY, domain: DOMAIN, testHelpers: TEST_HELPERS });
 

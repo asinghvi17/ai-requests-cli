@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseConfig, type Config } from './config.ts';
 import { configFile as subscriptionsFile, loadConfig as loadSubscriptions } from '../agents/usage/index.ts';
-import { serveContext } from '../serve/context.ts';
+import { serveContext } from '../server/context.ts';
 import { canonicalPath, defaultPreflightDeps, formatPreflight, loginsOf, preflight, refusals, unattendedMode, type Login, type PreflightDeps } from './preflight.ts';
 
 const dirs: string[] = [];

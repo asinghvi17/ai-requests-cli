@@ -7,19 +7,19 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { postResult, release } from '../claim/claim.ts';
+import { postResult, release } from './claim.ts';
 import { DEFAULT_AGENTS } from '../setup/index.ts';
 import {
   code, currentClaim, fenced, HELD_LABELS, lint, markedComments, tail, type Request, type ResultUsage,
 } from '../request/index.ts';
-import { choose, EFFORT_USD, primaryWindow, type ActualRecord, type Choice, type Effort } from '../match/match.ts';
+import { choose, EFFORT_USD, primaryWindow, type ActualRecord, type Choice, type Effort } from './match.ts';
 import {
   agentArgv, agentReady, airEnv, claudeSpent, codexSpent, DONE_FILE, exitResumeInstruction, findCodexSession, ledgerFile,
   RESUME_INSTRUCTION, spend as spendUsd, TASK_FILE, taskMessage, usd, type Harness, type Spent, type Subscription,
 } from '../agents/index.ts';
-import { signalName, signalOf } from '../tmux/tmux.ts';
-import { removeWorkspace } from '../workspace/teardown.ts';
-import { ENDED, readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from '../workspace/state.ts';
+import { signalName, signalOf } from './tmux/tmux.ts';
+import { removeWorkspace } from './workspace-teardown.ts';
+import { ENDED, readState, REQUEST_FILE, updateState, type JobRecord, type PauseReason, type State } from './workspace-state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import { checkpoint, deliver } from './deliver.ts';
 import { pidLock } from './state.ts';

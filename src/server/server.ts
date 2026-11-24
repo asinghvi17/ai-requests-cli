@@ -5,11 +5,11 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { backOff, claim, claimable, deadlineTime, release } from '../claim/claim.ts';
+import { backOff, claim, claimable, deadlineTime, release } from './claim.ts';
 import { code, currentClaim, fenced, LABELS, lint, markedComments, sweep } from '../request/index.ts';
-import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig, type Short } from '../match/match.ts';
-import { setup } from '../workspace/setup.ts';
-import { allWorkspaces, ENDED, isEnded, readState, updateState, type JobRecord, type State } from '../workspace/state.ts';
+import { canTakeMore, choose, EFFORT_USD, primaryWindow, windowSize, type Effort, type MatchConfig, type Short } from './match.ts';
+import { setup } from './workspace-setup.ts';
+import { allWorkspaces, ENDED, isEnded, readState, updateState, type JobRecord, type State } from './workspace-state.ts';
 import { matchConfig, type ServeContext } from './context.ts';
 import {
   agentMs, cancelJob, jobSpent, claimHolds, ClaimLost, exitDetail, expirePause, failJob, finishJob, isDone, jobFromChoice, loseJob, moveLabel, paneTail, partialJob,

@@ -4,7 +4,7 @@
 import type { RequestsRepo } from '../gh/index.ts';
 import { code, type RepoEntry, type Request } from '../request/index.ts';
 import { githubRepo, resolveRepo, type ResolveOptions } from '../lib/index.ts';
-import type { ResolvedRepo } from '../workspace/state.ts';
+import type { ResolvedRepo } from './workspace-state.ts';
 
 const WRITE = ['write', 'maintain', 'admin'];
 

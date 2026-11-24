@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:f
 import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { checkRepo } from '../gh/index.ts';
+import { checkRepo } from '../../gh/index.ts';
 import { checkJob, clientEnv, jobEnv } from './env.ts';
 import { launcherPid, launcherStatus, removeLauncher, writeLauncher } from './launcher.ts';
 

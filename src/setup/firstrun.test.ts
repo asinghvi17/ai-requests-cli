@@ -6,9 +6,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configTemplate, DEFAULT_WINDOW_USD, loadConfig, parseConfig } from './config.ts';
-import type { ServeContext } from '../serve/context.ts';
+import type { ServeContext } from '../server/context.ts';
 import type { AgentCheck } from './preflight.ts';
-import { acquireServeLock } from '../serve/state.ts';
+import { acquireServeLock } from '../server/state.ts';
 import { BUDGET_HELP, firstRunDeps } from './firstrun.ts';
 import { jobDeps } from '../cli/jobs.ts';
 import { main } from '../cli/main.ts';

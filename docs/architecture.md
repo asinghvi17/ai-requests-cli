@@ -1,116 +1,25 @@
 # Architecture
 
-air is moving, in phases, to the layout below. `src/boundaries.test.ts` enforces the rules on every import
-under `src/`, and `scripts/move.ts` moves files. Phase P0 added both and moved nothing.
-
-Phase P1 moved the shared code into `src/lib/`: `toml.ts`, `version.ts`, `pid.ts`, `lock.ts` (was
-`usage/lock.ts`), `exec.ts` (was `workspace/exec.ts`), `zip.ts` and its test helper `zip-fixture.ts` (were in
-`workspace/`), `zipwrite.ts` (was `submit/`) and `zipout.ts` (was `serve/`). Other domains import them through
-`lib/index.ts`. Two files the plan put in `lib` stay where they are:
-
-- `workspace/git.ts` imported `RepoEntry` from `spec/frontmatter.ts` (request). P3 cut that and moved it.
-- `usage/run.ts` imports nothing, but it is about the agents' usage CLIs: the environment allowlist names
-  their logins (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `CLAUDE_CODE_OAUTH_TOKEN`) and `windowOfMinutes` names
-  Codex's quota windows. It is in `agents`, with the rest of `usage/`. Its generic part (`run`, `killGroup`,
-  `command`) can move to `lib` once it is split out.
-
-Phase P2 gathered the GitHub access in `src/gh/`. The client (`gh.ts`, `issues.ts`, `releases.ts`) was there
-already; its in-memory fakes moved to `gh/testing/`: `fake.ts`, `releases-fake.ts` and `fake-gh.ts` (was
-`serve/fake-gh.ts`). Other domains import the client through `gh/index.ts`. One file stays where it is:
-
-- `serve/github.ts` (`serveGitHub`: open requests, the artifacts release, pull requests) is `gh api` code, but
-  `openRequests` lists issues by `REQUEST_LABEL`, which it imports from `claim/claim.ts` (server). It stays in
-  `server` and imports the client through `gh/index.ts`. It can move to `gh` once the label is passed in
-  rather than imported. Its `ARTIFACTS_TAG` duplicates the one in `gh/releases.ts`.
-
-Phase P3 moved the request domain into `src/request/`, flat, in one step (the plan had no P3a/P3b split that
-said otherwise): `frontmatter.ts`, `lint.ts`, `markers.ts` (were in `spec/`), `text.ts` and `trust.ts` (were
-in `claim/`), `context.ts` (was `workspace/context.ts`; the plan's "assets"), `cancel.ts`, `fetch.ts`,
-`retry.ts`, `status.ts` (were in `requester/`), `submit.ts`, `collect.ts`, `secrets.ts` (were in `submit/`),
-`sweep.ts` (was `sweep/`), and `skill/` (was `src/skill/`; it imports only `lib`, so it can be a directory
-without a directory cycle). The two `fixture.ts` test helpers are `request/testing/requester.ts` and
-`request/testing/submit.ts`. Other domains import the request domain through `request/index.ts`. Beyond moves:
-
-- `labels.ts` is new: the label constants (`REQUEST_LABEL`, `CANCEL_LABEL`, `STATE_LABELS`, `HELD_LABELS`,
-  `LABELS`), cut unchanged from `claim/claim.ts`, so `cancel.ts`, `retry.ts` and `status.ts` no longer import
-  the server. `serve/github.ts` now takes `REQUEST_LABEL` from `request/index.ts`, and `serve/deliver.ts`
-  takes `ARTIFACTS_TAG` from `gh/index.ts`: `serve/github.ts`'s copy is gone.
-- `workspace/git.ts` moved to `lib/git.ts`, with its test and `git-fixture.ts`: `resolveRepo` takes a local
-  `{ url, ref?, pr? }` type instead of `RepoEntry`, which `RepoEntry` satisfies. Otherwise `request/fetch.ts`
-  → `workspace/git.ts` → `request/frontmatter.ts` would have been a directory cycle.
-- Not done: the plan's `vocab.ts` (the front-matter vocabulary `agents` may import) would be a split of
-  `frontmatter.ts`, so `workspace/task.ts` → `request/frontmatter.ts` stays on `ALLOWED`. "template" names
-  no file today (`blankTemplateHeader` is in `submit.ts`).
-
-Phase P4 moved the agents domain into `src/agents/`: `harness.ts` (was `serve/agent.ts`: command lines, the
-ready screen, the task message, Codex sessions), `prompts.ts` (was `serve/prompts.ts`), `claude-trust.ts` (was
-`serve/trust.ts`, with its tests), `launch.ts` (was `workspace/launch.ts`), `usage/` (was `src/usage/`, whole:
-the usage readers, `run.ts`, prices and spend, with its fixtures; it imports only `lib`, so it can be a
-directory without a directory cycle) and `fixtures/` (was `serve/fixtures/`: the captured panes and
-`fake-agent.ts`). Other domains import it through `agents/index.ts`. Beyond moves:
-
-- The `Agent` type (`[agents.<harness>]`: command and args) moved from `config.ts` to `harness.ts`, which used
-  it; `config.ts` (setup, which may import agents) takes it from `agents/index.ts`.
-- `DONE_FILE`, `TASK_FILE` and `PROGRESS_FILE` moved from `workspace/task.ts` to `harness.ts`, so `harness.ts`
-  no longer imports the server.
-- `workspace/task.ts` (`taskPrompt`, the plan's "instructions") stays in `server`: it takes the job's `State`
-  from `workspace/state.ts` and parses the request with `parseFrontMatter`, which is more than the request
-  vocabulary `agents` may import. It imports the request domain through `request/index.ts`, which now exports
-  `parseFrontMatter`. It can move once it takes a local type for what it reads of `State`, and `vocab.ts`
-  exists.
-- The models and tiers (`TIERS`, `DEFAULT_MODELS`, `AGENT_HARNESSES`, `DEFAULT_AGENTS`) stay in `config.ts`, and
-  the agent preflight ("probe") in `serve/preflight.ts`: the plan puts both files in `setup`.
-
-Phase P5 moved the setup domain into `src/setup/`, flat: `config.ts` (was `src/config.ts`, with the models and
-tiers), `preflight.ts` (was `serve/preflight.ts`: the startup checks `air serve` runs and `air doctor` reports,
-the agent probe included), `hints.ts` (was `serve/hints.ts`) and `firstrun.ts` (was `cli/firstrun.ts`: the gh
-login, writing the config and folder trust on first run; the plan's "gh-login" and "onboarding"). Other domains
-import it through `setup/index.ts`. Beyond moves:
-
-- `CommandError` (a command that can't do what was asked: the router prints the message and exits 1) moved from
-  `cli/requests.ts` to `lib/io.ts`, beside `Io`, unchanged. `firstrun.ts` throws it, and setup may not import
-  `cli`. `UsageError` stays in `cli/requests.ts`: only `cli` throws it.
-- `cli/doctor.ts` stays in `cli`: it is the `air doctor` command, and it reads tmux through `server/index.ts`.
-  Its checks are the setup domain's (`preflight.ts`, `hints.ts`), through `setup/index.ts`.
-- Skill install was already in `request/skill/` (P3); `cli/skill.ts` is its command.
-- The models and tiers stay in `setup/config.ts` and the probe in `setup/preflight.ts`, not in `agents` as the
-  plan's "probe" suggests: they are one file each with the config and the other checks.
-- Not fixed: `configPath` (`setup/config.ts`) and `configFile` (`agents/usage/index.ts`) find air's config
-  directory differently. `configFile` honours `AIR_CONFIG_DIR` and takes `XDG_CONFIG_HOME` as it is;
-  `configPath` ignores `AIR_CONFIG_DIR` and a relative `XDG_CONFIG_HOME`. Neither imports the other.
-
-Phase P6 tidied `src/cli/` down to parsing arguments, dispatching and formatting output. No file moved whole, so
-`scripts/move.ts` had nothing to do; two pieces of logic were cut out of commands unchanged:
-
-- `promptRequest` (with `Ask` and its helpers `choose`, `lines` and `q`), which fills in the issue template
-  from prompts, moved from `cli/submit.ts` to `request/template.ts` (the plan's "template"). `air submit` still
-  opens the terminal prompter and calls it. `blankTemplateHeader` stays in `request/submit.ts`.
-- The doctor checks (`doctor`, `agentLines`, `rcFile`, `PLATFORMS`, and the `Line` and `Mark` types) moved from
-  `cli/doctor.ts` to `setup/doctor.ts`. `doctor` takes its deps as an argument, typed `DoctorDeps`, instead of
-  defaulting to `cli`'s `doctorDeps`: that object reads tmux through `server/index.ts`, which setup may not
-  import, so it stays in `cli/doctor.ts` with `formatDoctor` and the command.
-- Every `cli` import of the server goes through `server/index.ts`, which now exports what the commands call
-  (`claim`, `release`, `setup`, the serve context, jobs, server and lock, tmux and workspace state functions).
-  The server code itself is where it was, for P7.
-
-Left for P7, as server logic still in `cli`: `serveCommand`'s lifecycle in `cli/jobs.ts` (the serve lock and
-its refresh, signals, closing the tmux session, the `HOLD` window wrapper), `debugCommand`'s tmux diagnostics,
-and the serve-lock check in `cli/status.ts` (`existsSync` and `staleLock` on `LOCK_FILE`, not `serving`).
-The `--repo` and ISSUE parsing is argument parsing, so it stays in `cli`, in four copies (`requests.ts`'s
-`target`, `submit.ts`'s `repoName`, `jobs.ts`'s `repoFlag` and `issueArg`, and `skill.ts`).
+air's code is in seven domains under `src/`, with import rules between them. `src/boundaries.test.ts` enforces
+the rules on every import under `src/`, and `scripts/move.ts` moves files. The layout was reached in phases P0
+to P7 (docs/decisions.md has an entry for each); every file is now in its domain and nothing breaks a rule.
 
 ## Layout
 
 | Domain | Contents |
 | --- | --- |
-| `src/lib/` | no air knowledge: toml, version, markdown, paths, fs/locks, exec, git, zip |
-| `src/gh/` | the GitHub client (`gh api`); in-memory fakes under `gh/testing/` |
-| `src/request/` | the request and its lifecycle as GitHub sees it: vocab, frontmatter, lint, markers, labels, trust, template, assets, sweep, submit, requester, skill |
-| `src/agents/` | the coding agents: harness, instructions, launch, prompts, probe, claude-trust, cost, usage |
-| `src/setup/` | a volunteer's machine: config, gh-login, onboarding, preflight |
-| `src/server/` | `air serve`: loop, context, state, match, start, debug, claim, jobs, workspace (per-job workspace prep), tmux |
-| `src/cli/` | a thin router, one file per command |
-| `src/e2e/` | end-to-end tests |
+| `src/lib/` | no air knowledge: the TOML subset (`toml.ts`), version, a command's output and `CommandError` (`io.ts`), pid and lock files, setup exec, git (resolve, clone, checkpoint), the zip reader and writers |
+| `src/gh/` | the GitHub client (`gh api`): issues, comments and labels (`issues.ts`), release assets and repo-wide listings (`releases.ts`); in-memory fakes under `gh/testing/` |
+| `src/request/` | the request and its lifecycle as GitHub sees it: front matter (`frontmatter.ts`), lint, markers, labels, trust, the template (`template.ts`), context zips (`context.ts`, the plan's "assets"), sweep, submit with file collection and the secrets check, the requester's side (`status.ts`, `fetch.ts`, `retry.ts`, `cancel.ts`), and skill install under `skill/` |
+| `src/agents/` | the coding agents: command lines, ready screen and task handoff (`harness.ts`), launch environment (`launch.ts`), waiting prompts (`prompts.ts`), Claude Code folder trust (`claude-trust.ts`), and under `usage/` the subscription usage readers, prices and spend (the plan's "cost") |
+| `src/setup/` | a volunteer's machine: config with the models and tiers (`config.ts`), the startup checks and agent probe (`preflight.ts`), install hints, the doctor checks (`doctor.ts`), first run (`firstrun.ts`: gh login, config, folder trust) |
+| `src/server/` | `air serve`, flat: the loop (`server.ts`) and its lifecycle (`run.ts`: tmux window, serve lock, signals, closing the session), the serve context (`context.ts`), the serve lock and state (`state.ts`), matching (`match.ts`), the claim race and release (`claim.ts`, `repos.ts`), per-job workspace prep (`workspace-setup.ts`, `workspace-state.ts`, `workspace-env.ts`, `workspace-teardown.ts`, and `task.ts`, the plan's "instructions"), the job lifecycle (`jobs.ts`), delivery (`deliver.ts`, `github.ts`), cleanup (`tidy.ts`), `air debug panes` (`debug.ts`), and tmux under `tmux/` |
+| `src/cli/` | a thin router, one file per command: argument parsing, dispatch and output |
+
+Other domains import a domain through its `index.ts`. Two directories sit inside a domain: `request/skill/` and
+`server/tmux/` import nothing from the rest of their domain, so they form no directory cycle. `agents/usage/`
+imports only `lib`. The end-to-end suites (`*.e2e.test.ts`) are next to the code they drive; there is no
+`src/e2e/`.
 
 ## Rules
 
@@ -127,20 +36,37 @@ The `--repo` and ISSUE parsing is argument parsing, so it stays in `cli`, in fou
 - A relative import names its file with the extension: `./x.ts`, `../package.json`. No extensionless, `.js` or
   directory imports, so an import's target is its path and nothing else.
 
+## Not done
+
+What the phases left, each for its own change:
+
+- `request/vocab.ts` (the front-matter vocabulary `agents` may import) is not split out of `frontmatter.ts`.
+  `agents` imports nothing from `request` today: `server/task.ts`, which parses the request for the agent's
+  task, is in `server`.
+- `server/github.ts` (`serveGitHub`: open requests, the artifacts release, pull requests) is `gh api` code. It
+  can move to `gh` once `REQUEST_LABEL` is passed in rather than imported from `request`.
+- The generic part of `agents/usage/run.ts` (`run`, `killGroup`, `command`) can move to `lib` once split out.
+- The models and tiers are in `setup/config.ts` and the agent probe in `setup/preflight.ts`, not in `agents`.
+- `configPath` (`setup/config.ts`) and `configFile` (`agents/usage/index.ts`) find air's config directory
+  differently: `configFile` honours `AIR_CONFIG_DIR` and takes `XDG_CONFIG_HOME` as it is; `configPath` ignores
+  `AIR_CONFIG_DIR` and a relative `XDG_CONFIG_HOME`.
+- The `--repo` and ISSUE parsing is in four copies in `cli` (`requests.ts`'s `target`, `submit.ts`'s
+  `repoName`, `jobs.ts`'s `repoFlag` and `issueArg`, and `skill.ts`).
+
 ## The boundary test
 
 `src/boundaries.test.ts` holds the tables and runs the check in `scripts/boundaries.ts`. A file under
-`src/<domain>/` is in that domain. The `DOMAIN` table places the files that have not moved yet. The test fails
-on a production file with no domain, on an import that breaks the import form or names no file, and on a table
-entry that matches nothing or says what a shorter entry or the file's directory already says, so the table
-shrinks as files move. `ALLOWED` lists the violations of P0's tree (198), as `from -> to: rule`. A violation
-not on the list fails the test, and so does a listed one that no longer occurs: the list only shrinks. Fix a
-violation by changing the code, never by adding to the list.
+`src/<domain>/` is in that domain; the `DOMAIN` table placed files that had not moved yet and is empty. The
+test fails on a production file with no domain, on an import that breaks the import form or names no file, and
+on a table entry that matches nothing or says what a shorter entry or the file's directory already says.
+`ALLOWED` listed the violations still to fix, as `from -> to: rule`: 198 in P0's tree, none since P7. A
+violation not on the list fails the test, and so does a listed one that no longer occurs: the list only
+shrinks. Fix a violation by changing the code, never by adding to the list.
 
 ## Moving files
 
 ```sh
-node scripts/move.ts src/workspace/git.ts src/lib/git.ts [FROM TO ...]
+node scripts/move.ts src/server/github.ts src/gh/github.ts [FROM TO ...]
 ```
 
 moves each file with its tests (`x.test.ts`, `x.*.test.ts` and `x-*.test.ts`, unless a longer source name such

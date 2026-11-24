@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GhError } from '../gh/gh.ts';
 import { fakeReleases } from '../gh/testing/releases-fake.ts';
-import { createWorkspace } from '../workspace/state.ts';
+import { createWorkspace } from './workspace-state.ts';
 import type { ServeContext } from './context.ts';
 import { createServer, SWEEP_INTERVAL_MS } from './server.ts';
 import { readServerState, updateServerState } from './state.ts';

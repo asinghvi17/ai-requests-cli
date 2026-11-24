@@ -1,12 +1,11 @@
 // `air status ISSUE [--json]`: a request's state label, holder and latest result (spec/v0.md §12). Read-only.
 // On the machine running the request it also shows whether the agent is waiting on the volunteer.
-// `air status` without ISSUE: this machine's jobs and what air left behind on it (serve/tidy.ts), or that it is clean.
-import { existsSync } from 'node:fs';
+// `air status` without ISSUE: this machine's jobs and what air left behind on it (server/tidy.ts), or that it is clean.
 import { join } from 'node:path';
 import { loadConfig, type Config } from '../setup/index.ts';
 import { formatStatus, readStatus, statusJson } from '../request/index.ts';
 import {
-  activeWorkspace, defaultRunner, formatMachineStatus, leftovers, LOCK_FILE, machineStatus, serverPanes, staleLock, type ServerPane,
+  activeWorkspace, defaultRunner, formatMachineStatus, leftovers, liveLock, LOCK_FILE, machineStatus, serverPanes, type ServerPane,
 } from '../server/index.ts';
 import { stateDir } from '../agents/index.ts';
 import type { Invocation } from './args.ts';
@@ -46,7 +45,7 @@ async function machineCommand(inv: Invocation): Promise<number> {
   } catch {
     // tmux missing or broken: reported as not asked
   }
-  const s = machineStatus(leftovers({ root, stateDir: dir, now: statusDeps.now(), panes }), { panes, serving: existsSync(join(dir, LOCK_FILE)) && !staleLock(join(dir, LOCK_FILE)), socket });
+  const s = machineStatus(leftovers({ root, stateDir: dir, now: statusDeps.now(), panes }), { panes, serving: liveLock(join(dir, LOCK_FILE)), socket });
   inv.io.out(inv.flags.json === true ? `${JSON.stringify(s, null, 2)}\n` : formatMachineStatus(s, { root, stateDir: dir, socket }));
   return 0;
 }

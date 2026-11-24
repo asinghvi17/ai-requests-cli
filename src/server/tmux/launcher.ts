@@ -4,7 +4,7 @@
 import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { alive } from '../lib/index.ts';
+import { alive } from '../../lib/index.ts';
 
 /** Quote one word for POSIX sh. */
 export function shQuote(word: string): string {

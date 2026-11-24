@@ -4,15 +4,15 @@
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createGh, type RequestsRepo } from '../gh/index.ts';
-import { defaultHost, release } from '../claim/claim.ts';
+import { defaultHost, release } from './claim.ts';
 import {
   CANCEL_LABEL, code, createTrust, currentClaim, fenced, fetchContext, lint, markedComments, releaseDownload, tail,
   type Download, type Request, type Trust,
 } from '../request/index.ts';
-import { childEnv } from './env.ts';
+import { childEnv } from './workspace-env.ts';
 import { checkoutCheckpoint, cloneAt, exec, SETUP_TIMEOUT_MS, type ExecResult } from '../lib/index.ts';
 import { airEnv, TASK_FILE } from '../agents/index.ts';
-import { activeWorkspace, LOG_FILE, REQUEST_FILE, updateState, type State } from './state.ts';
+import { activeWorkspace, LOG_FILE, REQUEST_FILE, updateState, type State } from './workspace-state.ts';
 import { taskPrompt } from './task.ts';
 
 export interface SetupOptions {

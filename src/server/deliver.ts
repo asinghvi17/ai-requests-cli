@@ -7,9 +7,9 @@ import { join } from 'node:path';
 import {
   code, formatResult, sha256File, type AirResult, type Asset, type RepoEntry, type Request, type Resume, type ResultUsage,
 } from '../request/index.ts';
-import { delivers } from '../claim/repos.ts';
+import { delivers } from './repos.ts';
 import { PROGRESS_FILE } from '../agents/index.ts';
-import { readState, updateState, type JobRecord, type RepoDelivery, type State, type UploadedAsset } from '../workspace/state.ts';
+import { readState, updateState, type JobRecord, type RepoDelivery, type State, type UploadedAsset } from './workspace-state.ts';
 import type { ServeContext } from './context.ts';
 import { ARTIFACTS_TAG } from '../gh/index.ts';
 import { gitFailure, githubRepo, gitOut, zipDir } from '../lib/index.ts';

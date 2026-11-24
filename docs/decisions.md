@@ -799,3 +799,21 @@ specifier's target is its path.
   ALLOWED (13 to 3); the 3 left are the `claim` ⇄ `workspace` directory cycle, for P7.
 - Server logic still in `cli/jobs.ts` (`air serve`'s lock, signals and tmux session; `air debug panes`) and
   `cli/status.ts` (the serve-lock check) waits for P7.
+
+## 2026-11-24: the server domain in `src/server/` (refactor P7)
+
+- `serve/`, `claim/`, `workspace/` and `match/` moved into `src/server/` with `scripts/move.ts`, flat, and
+  `tmux/` whole to `server/tmux/` (it imports nothing else of the server, so no directory cycle). All of P7 in
+  one step: the plan had no P7a/b/c split written down. No behaviour changed.
+- Flat, `claim.ts`, `repos.ts`, `workspace-setup.ts` and `workspace-state.ts` share a directory, so the
+  `claim` ⇄ `workspace` directory cycle is gone with no code change. ALLOWED is empty (3 to 0), and so is
+  `DOMAIN`: every file is in its domain.
+- Renamed to stay apart in one directory: `workspace/state.ts` is `workspace-state.ts` (`serve/state.ts`, the
+  serve lock, keeps `state.ts`), and `workspace/setup.ts`, `env.ts` and `teardown.ts` took the same prefix.
+  `workspace/task.ts` is `task.ts`.
+- Cut from `cli` unchanged: `serveCommand`'s lifecycle (the serve lock and its refresh, signals, the log window,
+  closing the idle tmux session) to `runServer` and the `HOLD` window wrapper to `startServerWindow`, both in
+  `server/run.ts`; `air debug panes`'s diagnostics to `debugPanes` in `server/debug.ts`. `cli/status.ts`
+  checks the serve lock with `liveLock`, the same test it spelled out (`existsSync` and not `staleLock`).
+- `server/index.ts` no longer exports what only those cuts used (`createServer`, `acquireServeLock`,
+  `clientEnv`, `jobEnv`, `allWorkspaces`, `ENDED`, `staleLock`, `PidLock`).

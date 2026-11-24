@@ -11,7 +11,7 @@ import {
   lint, markedComments, REQUEST_LABEL, SPEC_VERSION, STATE_LABELS,
   type AirResult, type AuthoredComment, type Deliver, type Marker, type Request, type Trust,
 } from '../request/index.ts';
-import { createWorkspace, ENDED_PHASES, findWorkspaces, REQUEST_FILE, updateState, type State } from '../workspace/state.ts';
+import { createWorkspace, ENDED_PHASES, findWorkspaces, REQUEST_FILE, updateState, type State } from './workspace-state.ts';
 import { checkRepos, type RepoCheckOptions } from './repos.ts';
 
 /** The spec's minimum wait between posting a claim and re-reading comments. */

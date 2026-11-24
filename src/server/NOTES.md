@@ -22,7 +22,7 @@
   `air-<N>-<nonce>-out.zip`, then posts the `partial` release with `resume`. A timeout whose checkpoint keeps
   nothing fails instead. Quota pauses are never released by the 48 h rule.
 - Every final comment (done, failed, partial, released) ends with an `air-result` block; `usage` is in it once
-  the agent started (`usageReport`). Release comments get theirs from `release()` in src/claim.
+  the agent started (`usageReport`). Release comments get theirs from `release()` in claim.ts.
 - Spend: when a job ends (`usageReport`, and `loseJob`), `settleSpend` prices what the agent spent from its own
   records (`jobSpent` → `src/agents/usage/spent.ts`: Claude Code transcripts of `job.sessions`, Codex rollouts whose
   `cwd` is the workspace; priced by `src/agents/usage/prices.ts`), once (`job.spend`). The footer gives the cost
@@ -46,10 +46,10 @@
 - Quota stop: a running job whose subscription has an all-model window (or the window scoped to its model) at
   100 % is stopped with `pauseReason: quota` and `resumeAfter` = the reset (if that is within 24 h); after that
   time a fresh reading that isn't exhausted and a claim that still holds restart it.
-- Repos (src/claim/repos.ts): before posting a claim, `claim()` checks push permissions (author and this server)
+- Repos (repos.ts): before posting a claim, `claim()` checks push permissions (author and this server)
   for every repo that gets a PR and resolves every entry to a SHA; `state.repos` records them and setup clones each
   into `repo/<path>/` at its SHA. A `repos` or `cannot-push` refusal is retried every poll (logged once per reason).
-- Resume intake is in setup (src/workspace/setup.ts): `resume.branches` are fetched by SHA and checked out on
+- Resume intake is in setup (workspace-setup.ts): `resume.branches` are fetched by SHA and checked out on
   their branch in `repo/<path>`, and `resume.out` is downloaded and checked like a context zip into `out/`. Release
   assets are downloaded through gh (`releaseDownload`), so private requests repos work.
 - gh: `createGh` bounds every call (default 2 min, uploads 30 min) with an AbortSignal; `spawnGh` runs gh in its

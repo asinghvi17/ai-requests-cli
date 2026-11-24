@@ -5,14 +5,14 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { claim } from '../claim/claim.ts';
+import { claim } from './claim.ts';
 import { createTrust, markedComments } from '../request/trust.ts';
 import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
 import { currentClaim, formatMarker, parseMarkers } from '../request/markers.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../lib/git-fixture.ts';
 import { githubRepo } from '../lib/git.ts';
-import { readState, updateState } from './state.ts';
-import { setup, type SetupOptions } from './setup.ts';
+import { readState, updateState } from './workspace-state.ts';
+import { setup, type SetupOptions } from './workspace-setup.ts';
 import { buildZip } from '../lib/zip-fixture.ts';
 
 const dirs: string[] = [];

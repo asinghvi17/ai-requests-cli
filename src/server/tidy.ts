@@ -9,10 +9,10 @@
 import { lstatSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { alive } from '../lib/index.ts';
-import { removeLauncher, staleLaunchers } from '../tmux/launcher.ts';
-import type { ServerPane } from '../tmux/tmux.ts';
-import { allWorkspaces, everyWorkspace, isEnded, STATE_FILE, type State } from '../workspace/state.ts';
-import { removeTrash, removeWorkspace } from '../workspace/teardown.ts';
+import { removeLauncher, staleLaunchers } from './tmux/launcher.ts';
+import type { ServerPane } from './tmux/tmux.ts';
+import { allWorkspaces, everyWorkspace, isEnded, STATE_FILE, type State } from './workspace-state.ts';
+import { removeTrash, removeWorkspace } from './workspace-teardown.ts';
 import { DELIVERY_LOCK } from './jobs.ts';
 import { clearStaleLock, LOCK_FILE, LOCK_GRACE_MS, liveLock, staleLock } from './state.ts';
 

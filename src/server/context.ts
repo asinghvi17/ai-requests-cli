@@ -3,11 +3,11 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { configPath, loginsOf, type Config } from '../setup/index.ts';
-import { defaultHost } from '../claim/claim.ts';
+import { defaultHost } from './claim.ts';
 import { createTrust, type Download, type Trust } from '../request/index.ts';
 import { createGh, releases, requestsRepo, type Releases, type RequestsRepo } from '../gh/index.ts';
-import type { MatchConfig } from '../match/match.ts';
-import { createTmux, type Tmux } from '../tmux/tmux.ts';
+import type { MatchConfig } from './match.ts';
+import { createTmux, type Tmux } from './tmux/tmux.ts';
 import {
   configFile, loadConfig as loadSubscriptions, readAll, stateDir as usageStateDir,
   type ManualConfig, type Subscription, type SubscriptionConfig,
