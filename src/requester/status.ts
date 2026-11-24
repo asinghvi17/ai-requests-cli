@@ -3,8 +3,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CANCEL_LABEL, HELD_LABELS, STATE_LABELS } from '../claim/claim.ts';
 import { createTrust, markedComments, type Trust } from '../claim/trust.ts';
-import { GhError } from '../gh/gh.ts';
-import type { RequestsRepo } from '../gh/issues.ts';
+import { GhError, type RequestsRepo } from '../gh/index.ts';
 import { countedMarkers, countedResults, currentClaim, type AirResult, type ResultStatus } from '../spec/markers.ts';
 
 export interface LatestResult {

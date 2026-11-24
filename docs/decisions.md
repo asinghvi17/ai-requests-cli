@@ -744,3 +744,10 @@ specifier's target is its path.
 - `workspace/git.ts` stays put: it imports `RepoEntry` from the request domain, which lib may not.
 - `usage/run.ts` stays in `agents`: its environment allowlist and window names are about the usage CLIs, not
   shared code. Mapping it with the rest of `usage/` removed three of the 14 entries.
+
+## 2026-11-24: the GitHub layer in `src/gh/` (refactor P2)
+
+- The gh fakes moved to `src/gh/testing/` with `scripts/move.ts`: `gh/fake.ts`, `gh/releases-fake.ts` and
+  `serve/fake-gh.ts`. Under `testing/` they are test code without a `TEST_HELPERS` entry. No behaviour changed.
+- Other domains import the client through `gh/index.ts`, and 29 entries left ALLOWED (134 to 105).
+- `serve/github.ts` stays in `server`: it imports `REQUEST_LABEL` from `claim/claim.ts`, which gh may not.

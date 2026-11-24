@@ -3,8 +3,7 @@
 // step with the tail of setup.log, and releases the claim, all before an agent starts.
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { createGh } from '../gh/gh.ts';
-import type { RequestsRepo } from '../gh/issues.ts';
+import { createGh, type RequestsRepo } from '../gh/index.ts';
 import { CANCEL_LABEL, defaultHost, release } from '../claim/claim.ts';
 import { code, fenced, tail } from '../claim/text.ts';
 import { createTrust, markedComments, type Trust } from '../claim/trust.ts';

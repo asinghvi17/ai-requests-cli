@@ -15,6 +15,15 @@ Phase P1 moved the shared code into `src/lib/`: `toml.ts`, `version.ts`, `pid.ts
   Codex's quota windows. It is in `agents`, with the rest of `usage/`. Its generic part (`run`, `killGroup`,
   `command`) can move to `lib` once it is split out.
 
+Phase P2 gathered the GitHub access in `src/gh/`. The client (`gh.ts`, `issues.ts`, `releases.ts`) was there
+already; its in-memory fakes moved to `gh/testing/`: `fake.ts`, `releases-fake.ts` and `fake-gh.ts` (was
+`serve/fake-gh.ts`). Other domains import the client through `gh/index.ts`. One file stays where it is:
+
+- `serve/github.ts` (`serveGitHub`: open requests, the artifacts release, pull requests) is `gh api` code, but
+  `openRequests` lists issues by `REQUEST_LABEL`, which it imports from `claim/claim.ts` (server). It stays in
+  `server` and imports the client through `gh/index.ts`. It can move to `gh` once the label is passed in
+  rather than imported. Its `ARTIFACTS_TAG` duplicates the one in `gh/releases.ts`.
+
 ## Layout
 
 | Domain | Contents |

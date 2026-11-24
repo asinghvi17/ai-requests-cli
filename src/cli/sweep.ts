@@ -1,6 +1,6 @@
 // `air sweep [--dry-run]`: delete expired context and artifact assets on the requests repo (spec/v0.md §7).
 import type { Trust } from '../claim/trust.ts';
-import type { Releases } from '../gh/releases.ts';
+import type { Releases } from '../gh/index.ts';
 import { sweep } from '../sweep/sweep.ts';
 import type { Invocation } from './args.ts';
 import { repoName } from './submit.ts';

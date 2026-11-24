@@ -1,8 +1,8 @@
 // In-memory Releases for tests: release assets, filed issues and repo-wide comments of one repo.
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { GhError } from './gh.ts';
-import type { Asset, IssueSummary, Releases, RepoComment } from './releases.ts';
+import { GhError } from '../gh.ts';
+import type { Asset, IssueSummary, Releases, RepoComment } from '../releases.ts';
 
 export interface FakeAsset extends Asset {
   tag: string;

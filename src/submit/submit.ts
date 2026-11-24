@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { CONTEXT_TAG, releases as releasesApi, type Releases } from '../gh/releases.ts';
+import { CONTEXT_TAG, releases as releasesApi, type Releases } from '../gh/index.ts';
 import { fitTitle, lint, taskSummary, type LintResult } from '../spec/lint.ts';
 import { splitLines, type Diagnostic } from '../spec/frontmatter.ts';
 import { sha256File } from '../workspace/context.ts';

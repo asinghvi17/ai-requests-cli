@@ -3,8 +3,7 @@
 // other server from claiming it until `air retry`.
 import { CANCEL_LABEL, LABELS, REQUEST_LABEL } from '../claim/claim.ts';
 import { WRITE_ROLES } from '../claim/trust.ts';
-import { GhError } from '../gh/gh.ts';
-import type { RequestsRepo } from '../gh/issues.ts';
+import { GhError, type RequestsRepo } from '../gh/index.ts';
 
 export class CancelError extends Error {}
 

@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { claim, release } from '../claim/claim.ts';
 import { createTrust } from '../claim/trust.ts';
 import type { Config } from '../config.ts';
-import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
+import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
 import { GhError } from '../gh/gh.ts';
 import type { Tmux } from '../tmux/tmux.ts';
 import { readState, updateState, type JobRecord } from '../workspace/state.ts';

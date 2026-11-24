@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
+import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
 import { GhError } from '../gh/gh.ts';
 import { countedResults, currentClaim, formatMarker, parseMarkers, parseResult } from '../spec/markers.ts';
 import { findWorkspaces, readState } from '../workspace/state.ts';

@@ -53,7 +53,7 @@
   their branch in `repo/<path>`, and `resume.out` is downloaded and checked like a context zip into `out/`. Release
   assets are downloaded through gh (`releaseDownload`), so private requests repos work.
 - gh: `createGh` bounds every call (default 2 min, uploads 30 min) with an AbortSignal; `spawnGh` runs gh in its
-  own process group and kills the group on timeout. Tests drive the real gh argv layer through `fake-gh.ts`.
+  own process group and kills the group on timeout. Tests drive the real gh argv layer through `src/gh/testing/fake-gh.ts`.
 - PR delivery never runs git with credentials inside `repo/<path>`: the agent controlled its config and hooks.
   For each repo it delivers to, air fetches the agent's HEAD and branches into a fresh bare repo (hooks and
   fsmonitor off) and pushes from there to the entry's url itself, the URL the permission checks covered. The

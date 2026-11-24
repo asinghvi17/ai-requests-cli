@@ -1,7 +1,7 @@
 // The `repos` checks a server makes before it claims (spec/v0.md §5 Repos, §6 `pr`): every entry that gets a
 // pull request is on the requests repo's host, its author may write to it and this server's account can push
 // to it; then every entry is resolved to the commit it names now.
-import type { RequestsRepo } from '../gh/issues.ts';
+import type { RequestsRepo } from '../gh/index.ts';
 import type { RepoEntry, Request } from '../spec/frontmatter.ts';
 import { githubRepo, resolveRepo, type ResolveOptions } from '../workspace/git.ts';
 import type { ResolvedRepo } from '../workspace/state.ts';

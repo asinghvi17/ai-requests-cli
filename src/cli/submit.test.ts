@@ -2,7 +2,7 @@ import { test, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fakeReleases, type FakeReleases } from '../gh/releases-fake.ts';
+import { fakeReleases, type FakeReleases } from '../gh/testing/releases-fake.ts';
 import { lint } from '../spec/lint.ts';
 import { cleanup, tmp, tree } from '../submit/fixture.ts';
 import { lintDeps } from './lint.ts';

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fakeGitHub } from '../gh/fake.ts';
+import { fakeGitHub } from '../gh/testing/fake.ts';
 import { parseMarkers } from '../spec/markers.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../workspace/git-fixture.ts';
 import { readState } from '../workspace/state.ts';

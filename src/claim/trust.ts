@@ -1,7 +1,7 @@
 // The trust rule (spec/v0.md §1): servers act only on issues, comments and labels written by accounts with
 // write, maintain or admin on the requests repo. `OWNER` is trusted outright; `MEMBER` and `COLLABORATOR`
 // are confirmed with the permission API; anything else is untrusted.
-import type { IssueComment, RequestsRepo } from '../gh/issues.ts';
+import type { IssueComment, RequestsRepo } from '../gh/index.ts';
 import { associationTrust, type AuthoredComment } from '../spec/markers.ts';
 
 export const WRITE_ROLES = ['admin', 'maintain', 'write'] as const;

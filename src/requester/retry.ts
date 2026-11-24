@@ -3,8 +3,7 @@
 // every `air:*` label, so no server can claim the old body.
 import { WRITE_ROLES, createTrust, type Trust } from '../claim/trust.ts';
 import { REQUEST_LABEL } from '../claim/claim.ts';
-import { GhError } from '../gh/gh.ts';
-import type { RequestsRepo } from '../gh/issues.ts';
+import { GhError, type RequestsRepo } from '../gh/index.ts';
 import { labelDenied } from './cancel.ts';
 import { splitLines, type Effort, type Resume } from '../spec/frontmatter.ts';
 import { lint } from '../spec/lint.ts';

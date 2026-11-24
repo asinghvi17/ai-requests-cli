@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseConfig } from '../config.ts';
-import type { FakeGitHub } from '../gh/fake.ts';
+import type { FakeGitHub } from '../gh/testing/fake.ts';
 import { lint } from '../spec/lint.ts';
 import { formatResult, type AirResult } from '../spec/markers.ts';
 import { createWorkspace } from '../workspace/state.ts';

@@ -2,7 +2,7 @@
 // central directory, then extract from that same file. No streaming extraction, no second download.
 import { createHash } from 'node:crypto';
 import { closeSync, createReadStream, openSync, rmSync, statSync, writeSync } from 'node:fs';
-import { GhError, type Gh } from '../gh/gh.ts';
+import { GhError, type Gh } from '../gh/index.ts';
 import type { Asset } from '../spec/frontmatter.ts';
 import { extractZip, extractionCap } from '../lib/index.ts';
 

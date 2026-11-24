@@ -18,7 +18,7 @@
 | `src/usage/` | subscription usage readers (Claude, Codex) |
 | `src/match/` | effort matching against local quota |
 | `src/tmux/` | tmux control on the private `air` socket |
-| `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`), release assets and repo-wide listings (`releases.ts`), and in-memory fakes for tests |
+| `src/gh/` | `gh api` wrapper; typed issue/comment/label calls (`issues.ts`), release assets and repo-wide listings (`releases.ts`), in-memory fakes for tests under `testing/`; other domains import it through `index.ts` |
 | `src/claim/` | claim markers in action: trust rule, claim race, release |
 | `src/workspace/` | workspace setup and teardown |
 | `src/serve/` | the `air serve` loop, job lifecycle (start, stop, resume, finish) and delivery; `preflight.ts` holds the startup checks `air serve` runs and `air doctor` reports, `hints.ts` the install command for each OS |

@@ -3,7 +3,7 @@
 // `state.json` and `setup.log`, so a restarted `air serve` can find and re-adopt its work.
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { checkRepo } from '../gh/issues.ts';
+import { checkRepo } from '../gh/index.ts';
 import type { Subscription } from '../usage/types.ts';
 
 export const STATE_FILE = 'state.json';

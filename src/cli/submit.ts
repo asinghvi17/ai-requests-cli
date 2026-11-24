@@ -4,7 +4,7 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { releases, type Releases } from '../gh/releases.ts';
+import { releases, type Releases } from '../gh/index.ts';
 import { DELIVERIES, EFFORTS, HARNESSES, MODEL_TIERS } from '../spec/frontmatter.ts';
 import { DEFAULT_EXCLUDES } from '../submit/collect.ts';
 import { SubmitError, submit } from '../submit/submit.ts';

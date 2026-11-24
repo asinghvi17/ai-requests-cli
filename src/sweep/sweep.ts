@@ -3,8 +3,9 @@
 // assets no issue refers to are kept. Errors deciding what to keep abort the sweep before anything is
 // deleted; a failed delete is reported and the sweep moves on to the next asset.
 import { createTrust, type Trust } from '../claim/trust.ts';
-import { requestsRepo } from '../gh/issues.ts';
-import { ARTIFACTS_TAG, CONTEXT_TAG, releases as releasesApi, type Asset, type IssueSummary, type Releases, type RepoComment } from '../gh/releases.ts';
+import {
+  ARTIFACTS_TAG, CONTEXT_TAG, releases as releasesApi, requestsRepo, type Asset, type IssueSummary, type Releases, type RepoComment,
+} from '../gh/index.ts';
 import { parseFrontMatter } from '../spec/frontmatter.ts';
 import { parseResult } from '../spec/markers.ts';
 

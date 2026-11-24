@@ -10,7 +10,7 @@ import { claim } from '../claim/claim.ts';
 import { thisHost } from '../lib/pid.ts';
 import { createTrust } from '../claim/trust.ts';
 import type { Config } from '../config.ts';
-import { fakeGitHub } from '../gh/fake.ts';
+import { fakeGitHub } from '../gh/testing/fake.ts';
 import type { Tmux } from '../tmux/tmux.ts';
 import { DONE_FILE } from '../workspace/task.ts';
 import { updateState } from '../workspace/state.ts';

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fakeReleases, type FakeReleases } from '../gh/releases-fake.ts';
+import { fakeReleases, type FakeReleases } from '../gh/testing/releases-fake.ts';
 import type { IssueSummary } from '../gh/releases.ts';
 import { formatResult, type AirResult } from '../spec/markers.ts';
 import { normalizeUrl, resultReferences, sweep } from './sweep.ts';

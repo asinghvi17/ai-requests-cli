@@ -1,7 +1,7 @@
 // Shared plumbing for commands that act on one request issue: the issue number, the requests repo
 // (`--repo` or the config's `repo`) and the workspace root.
 import { loadConfig, type Config } from '../config.ts';
-import { requestsRepo, type RequestsRepo } from '../gh/issues.ts';
+import { requestsRepo, type RequestsRepo } from '../gh/index.ts';
 import type { Invocation } from './args.ts';
 
 export type Target = { gh: RequestsRepo; issue: number; root: string; config: Config };

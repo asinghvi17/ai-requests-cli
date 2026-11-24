@@ -1,9 +1,9 @@
-// For tests: a gh `Runner` that answers `gh api` argv from the in-memory FakeGitHub (src/gh/fake.ts), plus
+// For tests: a gh `Runner` that answers `gh api` argv from the in-memory FakeGitHub (src/gh/testing/fake.ts), plus
 // releases, assets and pull requests. The real createGh, requestsRepo and serveGitHub run on top of it, so
 // tests see the argv and JSON gh would. `hang` makes matching calls never answer (gh timeout tests).
 import { readFileSync, writeFileSync } from 'node:fs';
-import { GhError, type OutFile, type Runner, type RunResult } from '../gh/gh.ts';
-import type { FakeGitHub, FakeIssue } from '../gh/fake.ts';
+import { GhError, type OutFile, type Runner, type RunResult } from '../gh.ts';
+import type { FakeGitHub, FakeIssue } from './fake.ts';
 
 export interface FakeRelease { id: number; tag: string; assets: { id: number; name: string; data: Buffer; contentType: string }[] }
 export interface FakePull { repo: string; number: number; title: string; head: string; base: string; body: string; url: string }

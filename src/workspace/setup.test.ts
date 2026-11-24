@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claim } from '../claim/claim.ts';
 import { createTrust, markedComments } from '../claim/trust.ts';
-import { fakeGitHub, type FakeGitHub } from '../gh/fake.ts';
+import { fakeGitHub, type FakeGitHub } from '../gh/testing/fake.ts';
 import { currentClaim, formatMarker, parseMarkers } from '../spec/markers.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from './git-fixture.ts';
 import { githubRepo } from './git.ts';

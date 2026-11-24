@@ -1,6 +1,6 @@
 // In-memory RequestsRepo for tests: one repo's issues, comments, labels, assignees and permissions.
-import { GhError } from './gh.ts';
-import type { Issue, IssueComment, Permission, PullHead, RequestsRepo } from './issues.ts';
+import { GhError } from '../gh.ts';
+import type { Issue, IssueComment, Permission, PullHead, RequestsRepo } from '../issues.ts';
 
 export interface FakeIssue extends Issue {
   assignees: string[];

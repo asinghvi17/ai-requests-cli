@@ -1,7 +1,6 @@
 // The GitHub calls `air serve` needs beyond claiming: listing open requests, release assets (artifacts and
 // over-long reports) and pull requests. All of them go through `gh api` (src/gh/gh.ts), which holds the token.
-import { GhError, type Gh } from '../gh/gh.ts';
-import { checkRepo, type Issue } from '../gh/issues.ts';
+import { checkRepo, GhError, type Gh, type Issue } from '../gh/index.ts';
 import { REQUEST_LABEL } from '../claim/claim.ts';
 
 export const ARTIFACTS_TAG = 'air-artifacts';
