@@ -1,6 +1,5 @@
 // `air retry ISSUE [--effort L]`: offer a cancelled, failed or partial request again (spec/v0.md §12).
-import { EFFORTS, type Effort } from '../spec/frontmatter.ts';
-import { retry, RetryError } from '../requester/retry.ts';
+import { EFFORTS, retry, RetryError, type Effort } from '../request/index.ts';
 import type { Invocation } from './args.ts';
 import { target, UsageError } from './requests.ts';
 

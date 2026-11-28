@@ -2,15 +2,14 @@
 // air: the CLI entry. Routes argv to a command. Usage errors exit 2, as do unimplemented commands; a GitHub
 // error exits 1.
 import { ArgError, parseArgs, type FlagSpecs, type Invocation } from './args.ts';
-import type { Io } from '../lib/index.ts';
-import { GhError } from '../gh/gh.ts';
-import { VERSION } from '../version.ts';
-import { usageCommand } from '../usage/index.ts';
-import { loadConfig } from '../config.ts';
+import { CommandError, type Io, VERSION } from '../lib/index.ts';
+import { GhError } from '../gh/index.ts';
+import { usageCommand } from '../agents/index.ts';
+import { loadConfig } from '../setup/index.ts';
 import { claimCommand } from './claim.ts';
 import { doctorCommand } from './doctor.ts';
 import { releaseCommand } from './release.ts';
-import { CommandError, UsageError } from './requests.ts';
+import { UsageError } from './requests.ts';
 import { setupCommand } from './setup.ts';
 import { lintCommand } from './lint.ts';
 import { submitCommand } from './submit.ts';

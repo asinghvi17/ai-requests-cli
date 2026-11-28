@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectOs, installHint, type Os, type Tool } from '../serve/hints.ts';
-import type { AgentCheck } from '../serve/preflight.ts';
-import { doctor, doctorDeps, formatDoctor } from './doctor.ts';
+import { detectOs, installHint, type Os, type Tool } from '../setup/hints.ts';
+import type { AgentCheck } from '../setup/preflight.ts';
+import { doctor } from '../setup/doctor.ts';
+import { doctorDeps, formatDoctor } from './doctor.ts';
 import { main } from './main.ts';
 
 const dirs: string[] = [];
@@ -142,7 +143,7 @@ test('missing tmux fails with the install command for this system, and exits 1',
 });
 
 test('each required check fails on its own, with its fix', async () => {
-  const fails = async () => (await doctor()).filter((l) => l.mark === 'fail').map((l) => `${l.what} | ${l.fix}`);
+  const fails = async () => (await doctor(doctorDeps)).filter((l) => l.mark === 'fail').map((l) => `${l.what} | ${l.fix}`);
   doctorDeps.gh = () => 'logged-out';
   assert.deepEqual(await fails(), ['gh: the GitHub CLI is not logged in | gh auth login']);
   doctorDeps.gh = () => 'missing';
@@ -181,7 +182,7 @@ test('workspace_root must be writable, or creatable', async () => {
 });
 
 test('agents: with no login ready, every agent problem fails; with one ready, the rest warn', async () => {
-  const marks = async () => (await doctor()).filter((l) => /^(claude|codex)/.test(l.what)).map((l) => `${l.mark} ${l.what}`);
+  const marks = async () => (await doctor(doctorDeps)).filter((l) => /^(claude|codex)/.test(l.what)).map((l) => `${l.mark} ${l.what}`);
   // Usage unreadable (logged out): the only login is not ready, so it fails.
   doctorDeps.usage = async () => ({ windows: [], note: 'not logged in' });
   assert.deepEqual(await marks(), [
@@ -189,11 +190,11 @@ test('agents: with no login ready, every agent problem fails; with one ready, th
     "fail claude login claude: no subscription usage air can read (not logged in), so air serve can't match work to it",
     'fail codex: `codex` was not found on PATH (or is not executable).',
   ]);
-  assert.equal(formatDoctor(await doctor()).includes('    fix: log in: claude auth login\n'), true);
+  assert.equal(formatDoctor(await doctor(doctorDeps)).includes('    fix: log in: claude auth login\n'), true);
   // A trust problem: the fix offers `air serve`'s prompt (doctor never writes trust).
   doctorDeps.usage = saved.usage;
   doctorDeps.preflight = () => [{ ...claudeReady, logins: { claude: [{ what: 'Claude Code does not trust workspace_root.', fix: 'run `claude` there', trust: { stateFile: '/s', dir: '/d' } }] } }];
-  const lines = await doctor();
+  const lines = await doctor(doctorDeps);
   assert.deepEqual(lines.at(-1), { mark: 'fail', what: 'claude login claude: Claude Code does not trust workspace_root.', fix: 'run `air serve` in a terminal, or run `claude` there' });
   // A login that works but config.toml doesn't name: air serve would not use it.
   doctorDeps.preflight = () => [claudeReady, { harness: 'codex', version: 'codex-cli 0.164.0', problems: [], logins: { codex: [] } }];

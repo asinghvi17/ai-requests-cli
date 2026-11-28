@@ -15,13 +15,13 @@
 #     author asinghvi17, with label `ai-request`. Its body is the lint-valid XS `deliver: comment` request.
 #  2. LABEL `ai-request` is CREATED on the repo only if it does not exist yet (`gh label create`, this
 #     script). It is never deleted.
-#  3. CLAIM (src/claim/claim.ts `claim`):
+#  3. CLAIM (src/server/claim.ts `claim`):
 #       - COMMENT #1 posted: "Claimed by `<host>` with air." plus an `air-claim` marker.
 #       - ASSIGNMENT: asinghvi17 is assigned to the issue (POST .../assignees).
 #       - after a 10 s wait, LABEL `air:claimed` is ADDED to the issue.
-#  4. START (src/serve/jobs.ts `startAgent` -> `moveLabel`): LABEL `air:running` ADDED, then `air:claimed`
+#  4. START (src/server/jobs.ts `startAgent` -> `moveLabel`): LABEL `air:running` ADDED, then `air:claimed`
 #     REMOVED from the issue.
-#  5. DELIVERY (src/serve/jobs.ts `finishJob`, src/serve/deliver.ts `deliverComment`), in this order:
+#  5. DELIVERY (src/server/jobs.ts `finishJob`, src/server/deliver.ts `deliverComment`), in this order:
 #       - COMMENT #2 posted: the contents of out/REPORT.md (the word "hello") plus air's usage footer.
 #       - LABEL `air:done` ADDED, then `air:running` REMOVED from the issue.
 #       - ASSIGNMENT: asinghvi17 is UNASSIGNED.
@@ -38,9 +38,9 @@
 #
 #  NOT HAPPENING with `deliver: comment`:
 #   - NO comment is deleted. (deleteComment is only called when a claim is lost to another server or the claim
-#     itself errors, src/claim/claim.ts; neither happens with one server and one issue.)
+#     itself errors, src/server/claim.ts; neither happens with one server and one issue.)
 #   - NO git push, NO branch, NO pull request. (Only `deliverPr` pushes and opens PRs, and it is only called for
-#     `deliver: pr`, src/serve/deliver.ts `deliver`.)
+#     `deliver: pr`, src/server/deliver.ts `deliver`.)
 #   - NO release, NO release asset, NO upload. (`ctx.api.release`/`uploadAsset` are only reached from
 #     `uploadOnce`, which `deliverComment` calls only for a report over 65,536 chars and `deliverArtifact`
 #     only for `deliver: artifact`.)
@@ -48,14 +48,13 @@
 #     because `air serve` would otherwise claim the oldest one.
 #  If something goes wrong instead (setup/agent/delivery failure), air posts ONE release comment (with an
 #  `air-release` marker and the reason), adds `air:failed`, removes `air:claimed`/`air:running`/`air:paused`,
-#  and unassigns asinghvi17 (src/claim/claim.ts `giveUp`). Still no push, PR or asset.
+#  and unassigns asinghvi17 (src/server/claim.ts `giveUp`). Still no push, PR or asset.
 #
 # LOCAL ISOLATION. air has env overrides, so the real air config is not touched (HOME is not changed):
-#   XDG_CONFIG_HOME -> <tmp>/xdg   config.toml lives at $XDG_CONFIG_HOME/air/config.toml (src/config.ts)
-#   AIR_CONFIG_DIR  -> <tmp>/xdg/air   subscriptions.json (src/usage/index.ts `configFile`)
-#   AIR_STATE_DIR   -> <tmp>/state     serve.log, serve.lock, manual ledger (src/usage/index.ts `stateDir`)
+#   XDG_CONFIG_HOME -> <tmp>/xdg       config.toml and subscriptions.json, in <tmp>/xdg/air (src/lib/dirs.ts)
+#   XDG_STATE_HOME  -> <tmp>/state     serve.log, serve.lock, manual ledger, in <tmp>/state/air (src/lib/dirs.ts)
 #   TMUX_TMPDIR     -> <tmp>/tmux      air's private tmux socket (`tmux -L air`), so it never shares a tmux
-#                                      server or session with a real `air serve` (src/tmux/env.ts `clientEnv`)
+#                                      server or session with a real `air serve` (src/server/tmux/env.ts `clientEnv`)
 #   workspace_root  -> <tmp>/workspaces (config.toml)
 # Overriding XDG_CONFIG_HOME would also move gh's config, so GH_CONFIG_DIR is first set explicitly to gh's real
 # directory and exported; gh (and git's `gh auth git-credential` helper below) keep using the real login.
@@ -112,10 +111,11 @@ fi
 
 # ---------------------------------------------------------------------------------------------- local setup
 WORK=$(mktemp -d "$TMP_BASE/air-smoke.XXXXXX")
-mkdir -p "$WORK/xdg/air" "$WORK/state" "$WORK/tmux" "$WORK/workspaces" "$WORK/bin"
+mkdir -p "$WORK/xdg/air" "$WORK/state/air" "$WORK/tmux" "$WORK/workspaces" "$WORK/bin"
 export XDG_CONFIG_HOME=$WORK/xdg
-export AIR_CONFIG_DIR=$WORK/xdg/air
-export AIR_STATE_DIR=$WORK/state
+export XDG_STATE_HOME=$WORK/state
+CONFIG_DIR=$XDG_CONFIG_HOME/air
+STATE_DIR=$XDG_STATE_HOME/air
 export TMUX_TMPDIR=$WORK/tmux
 # Credentials for air's `git clone` of the sandbox (env only; the user's git config is untouched).
 export GIT_CONFIG_COUNT=2
@@ -145,7 +145,7 @@ echo "fake-agent: done"
 EOF
 chmod +x "$WORK/bin/fake-agent.sh"
 
-# Keys per src/config.ts. [subscriptions.smoke] must share its name with the manual entry in subscriptions.json.
+# Keys per src/setup/config.ts. [subscriptions.smoke] must share its name with the manual entry in subscriptions.json.
 cat > "$XDG_CONFIG_HOME/air/config.toml" <<EOF
 repo = "$REPO"
 workspace_root = "$WORK/workspaces"
@@ -161,15 +161,15 @@ reserve = 0
 command = ["$WORK/bin/fake-agent.sh"]
 EOF
 
-# A MANUAL subscription (src/usage/manual.ts): no 'claude -p /usage' call. 100 percent budget, nothing spent: an XS
+# A MANUAL subscription (src/agents/usage/manual.ts): no 'claude -p /usage' call. 100 percent budget, nothing spent: an XS
 # request costs 1 point.
-cat > "$AIR_CONFIG_DIR/subscriptions.json" <<'EOF'
+cat > "$CONFIG_DIR/subscriptions.json" <<'EOF'
 [{"name": "smoke", "harness": "manual", "reset": {"every": "weekly", "day": 0}, "budget": {"percent": 100}}]
 EOF
 
 say "config check (config.toml parses; air usage reads the manual subscription)"
 node --input-type=module -e '
-  const { loadConfig, configPath } = await import(process.argv[1] + "/src/config.ts");
+  const { loadConfig, configPath } = await import(process.argv[1] + "/src/setup/config.ts");
   const c = loadConfig(configPath());
   if (c.repo !== process.argv[2] || !c.agents.claude || !c.subscriptions.smoke) { console.error("config did not parse as intended"); process.exit(1); }
   console.log(configPath(), "->", JSON.stringify({ repo: c.repo, root: c.workspace_root, subs: c.subscriptions, agents: c.agents }));
@@ -259,8 +259,8 @@ gh issue view "$N" --repo "$REPO" --json state,labels,assignees --jq '"state: \(
 echo
 gh issue view "$N" --repo "$REPO" --comments
 
-say "serve log ($AIR_STATE_DIR/serve.log)"
-cat "$AIR_STATE_DIR/serve.log" 2>/dev/null || true
+say "serve log ($STATE_DIR/serve.log)"
+cat "$STATE_DIR/serve.log" 2>/dev/null || true
 
 LABELS=$(gh issue view "$N" --repo "$REPO" --json labels --jq '[.labels[].name] | join(" ")')
 if [ "$RC" -eq 0 ] && [[ " $LABELS " == *" air:done "* ]]; then

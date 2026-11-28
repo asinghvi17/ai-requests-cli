@@ -1,5 +1,5 @@
 // `air release ISSUE`: give this machine's claim back.
-import { release } from '../claim/claim.ts';
+import { release } from '../server/index.ts';
 import type { Invocation } from './args.ts';
 import { target } from './requests.ts';
 

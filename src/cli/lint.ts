@@ -1,8 +1,7 @@
 // `air lint [FILE|-]`: check a request body against spec/v0.md. Reads stdin when FILE is `-` or absent.
 // A filled-in copy of the issue template (with GitHub's `name:`/`about:` header) lints as its request.
 import { readFileSync } from 'node:fs';
-import { lint, type LintResult } from '../spec/lint.ts';
-import { blankTemplateHeader } from '../submit/submit.ts';
+import { blankTemplateHeader, lint, type LintResult } from '../request/index.ts';
 import type { Invocation } from './args.ts';
 
 /** Injectable for tests. */

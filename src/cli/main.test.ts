@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { COMMANDS, main } from './main.ts';
-import { VERSION } from '../version.ts';
+import { VERSION } from '../lib/version.ts';
 
 async function call(...argv: string[]) {
   let out = '';

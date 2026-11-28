@@ -1,5 +1,5 @@
 // `air claim ISSUE`: claim a request and create its workspace.
-import { claim } from '../claim/claim.ts';
+import { claim } from '../server/index.ts';
 import type { Invocation } from './args.ts';
 import { target } from './requests.ts';
 

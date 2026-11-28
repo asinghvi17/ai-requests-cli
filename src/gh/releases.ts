@@ -1,6 +1,6 @@
 // Release assets and repo-wide issue listings on the requests repo, for `air submit` and `air sweep`.
 // Uploads go through `gh release upload` (gh streams the file to the uploads host); everything else is
-// `gh api`. A fake for tests is in `releases-fake.ts`.
+// `gh api`. A fake for tests is in `testing/releases-fake.ts`.
 import { basename } from 'node:path';
 import { GhError, createGh, spawnGh, type Gh, type Runner } from './gh.ts';
 import { checkRepo } from './issues.ts';

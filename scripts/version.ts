@@ -1,5 +1,5 @@
 // The version a build stamps into air: package.json's version plus `+<git short sha>`, release builds
-// included. build.ts hands it to `bun build` as AIR_BUILD_VERSION (src/version.ts).
+// included. build.ts hands it to `bun build` as AIR_BUILD_VERSION (src/lib/version.ts).
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';

@@ -9,6 +9,33 @@ A running `air serve` reads the file again every tick, so an edit takes effect w
 keeps the config it had. `[models]` and `[agents]` edits apply from the next agent launch, a resume of a
 running job included; the startup check that each agent can run unattended runs again only on a restart.
 
+## Where air keeps its files
+
+- Config: `config.toml` and `subscriptions.json`, in `$XDG_CONFIG_HOME/air`, else `~/.config/air`.
+- State: the serve lock and log (`serve.lock`, `serve.log`), `serve.json` (paused, last sweep), the usage
+  cache (`usage-cache.json`) and the manual ledger (`manual-ledger.json`), in `$XDG_STATE_HOME/air`, else
+  `~/.local/state/air`.
+
+An empty or relative `XDG_CONFIG_HOME` or `XDG_STATE_HOME` is ignored, as the XDG spec says. Nothing else
+moves these directories. `air status`, with no issue number, prints the state dir.
+
+### Files in the wrong place (before 0.4.3)
+
+Before 0.4.3, `config.toml` was found as above, but `subscriptions.json` and the state dir were not:
+
+- `AIR_CONFIG_DIR` moved `subscriptions.json` and `AIR_STATE_DIR` moved the state dir. air no longer reads
+  them.
+- A relative `XDG_CONFIG_HOME` or `XDG_STATE_HOME` was taken relative to the directory air ran in, for
+  `subscriptions.json` and the state dir.
+
+If either applied to you, move the files by hand, with `air serve` stopped:
+
+- `subscriptions.json`, from `$AIR_CONFIG_DIR` or `<where you ran air>/$XDG_CONFIG_HOME/air`, to the config
+  dir above. Until you do, air uses the default `claude` and `codex` logins.
+- `manual-ledger.json`, from `$AIR_STATE_DIR` or `<where you ran air>/$XDG_STATE_HOME/air`, to the state
+  dir above. It holds what each manual budget has been charged; without it, every manual budget starts
+  unspent. `serve.json` is worth moving too (it keeps `air pause`). The rest is rebuilt: delete it.
+
 ## Top level
 
 - `repo`: the requests repo, `OWNER/NAME`. Any command's `--repo` overrides it.
@@ -64,7 +91,7 @@ For a login whose usage air can't read, give it a manual budget in dollars. Use 
 "Charged $X to manual budget `claude`."
 
 air prices the tokens in the agent's own records: Claude Code's session transcripts, or Codex's rollout
-files. The prices are one table in [`src/usage/prices.ts`](../src/usage/prices.ts).
+files. The prices are one table in [`src/agents/usage/prices.ts`](../src/agents/usage/prices.ts).
 
 A model missing from that table is not charged; `air serve` logs a warning. Spend made outside air (your own
 use of the login) goes in with `air usage spend NAME USD`.

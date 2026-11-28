@@ -735,3 +735,100 @@ specifier's target is its path.
   - `serve/server.ts` still imports `config.ts` directly, as it did before (an allowlisted entry). Through
     `setup/index.ts` it would make three directory cycles, since that index re-exports `serve/preflight.ts`
     and `serve/hints.ts`; it goes once those move to `src/setup/`.
+
+## 2026-11-24: shared code in `src/lib/` (refactor P1)
+
+- `toml`, `version`, `pid`, `lock`, `exec`, `zip`, `zipwrite` and `zipout` moved to `src/lib/` with
+  `scripts/move.ts`. No behaviour changed. Other domains import them through `lib/index.ts`, and 14 entries
+  left ALLOWED (148 to 134).
+- `workspace/git.ts` stays put: it imports `RepoEntry` from the request domain, which lib may not.
+- `usage/run.ts` stays in `agents`: its environment allowlist and window names are about the usage CLIs, not
+  shared code. Mapping it with the rest of `usage/` removed three of the 14 entries.
+
+## 2026-11-24: the GitHub layer in `src/gh/` (refactor P2)
+
+- The gh fakes moved to `src/gh/testing/` with `scripts/move.ts`: `gh/fake.ts`, `gh/releases-fake.ts` and
+  `serve/fake-gh.ts`. Under `testing/` they are test code without a `TEST_HELPERS` entry. No behaviour changed.
+- Other domains import the client through `gh/index.ts`, and 29 entries left ALLOWED (134 to 105).
+- `serve/github.ts` stays in `server`: it imports `REQUEST_LABEL` from `claim/claim.ts`, which gh may not.
+
+## 2026-11-24: the request domain in `src/request/` (refactor P3)
+
+- `spec/`, `requester/`, `submit/`, `sweep/`, `skill/`, `claim/text.ts`, `claim/trust.ts` and
+  `workspace/context.ts` moved into `src/request/` with `scripts/move.ts`, flat except `skill/`. All of P3 in
+  one step: the plan had no P3a/P3b split. No behaviour changed. Other domains import it through
+  `request/index.ts`, and 56 entries left ALLOWED (105 to 49).
+- The label constants moved from `claim/claim.ts` to `request/labels.ts`, so the requester's commands no
+  longer import the server, and `serve/github.ts` imports `REQUEST_LABEL` through `request/index.ts`.
+  `ARTIFACTS_TAG` is now only in `gh/releases.ts`.
+- `workspace/git.ts` moved to `lib/git.ts`: `resolveRepo` takes `{ url, ref?, pr? }` rather than
+  `RepoEntry`, so lib no longer imports request.
+- `request/vocab.ts` is not split out of `frontmatter.ts` yet; `workspace/task.ts` (agents) still imports
+  `frontmatter.ts`, an ALLOWED entry.
+
+## 2026-11-24: the agents domain in `src/agents/` (refactor P4)
+
+- `usage/`, `serve/agent.ts` (now `harness.ts`), `serve/prompts.ts`, `serve/trust.ts` (now `claude-trust.ts`),
+  `workspace/launch.ts` and `serve/fixtures/` moved into `src/agents/` with `scripts/move.ts`; `usage/` stays a
+  directory. No behaviour changed. Other domains import it through `agents/index.ts`, and 27 entries left
+  ALLOWED (49 to 22).
+- The `Agent` type moved from `config.ts` to `harness.ts`, and the workspace file names (`DONE_FILE`,
+  `TASK_FILE`, `PROGRESS_FILE`) from `workspace/task.ts`, so `harness.ts` imports neither setup nor server.
+- `workspace/task.ts` stays in `server`: it reads the job's `State` and parses the request's front matter.
+  Its two ALLOWED entries went with it.
+
+## 2026-11-24: the setup domain in `src/setup/` (refactor P5)
+
+- `config.ts`, `serve/preflight.ts`, `serve/hints.ts` and `cli/firstrun.ts` moved into `src/setup/` with
+  `scripts/move.ts`, flat. No behaviour changed. Other domains import it through `setup/index.ts`, and 9
+  entries left ALLOWED (22 to 13).
+- `CommandError` moved from `cli/requests.ts` to `lib/io.ts`, so `firstrun.ts` (which throws it) no longer
+  imports `cli`. It is the same class, so the router's handling is unchanged.
+- `cli/doctor.ts` stays in `cli`: it is a command, and it reads tmux through the server.
+- `configPath` (`setup/config.ts`) and `configFile` (`agents/usage/index.ts`) still find the config directory
+  differently (`AIR_CONFIG_DIR`, relative `XDG_CONFIG_HOME`). A known bug, left for its own change.
+
+## 2026-11-24: `src/cli/` as a thin router (refactor P6)
+
+- `cli/` parses arguments, dispatches and formats output. Two pieces of logic were cut out unchanged:
+  `promptRequest` (filling in the issue template from prompts) from `cli/submit.ts` to `request/template.ts`,
+  and the doctor checks (`doctor` and `agentLines`) from `cli/doctor.ts` to `setup/doctor.ts`. `doctor` now
+  takes its deps as an argument: the default deps read tmux through the server, which setup may not import,
+  so they stay in `cli/doctor.ts`.
+- Every `cli` import of the server goes through `server/index.ts`. No server code moved. 10 entries left
+  ALLOWED (13 to 3); the 3 left are the `claim` ⇄ `workspace` directory cycle, for P7.
+- Server logic still in `cli/jobs.ts` (`air serve`'s lock, signals and tmux session; `air debug panes`) and
+  `cli/status.ts` (the serve-lock check) waits for P7.
+
+## 2026-11-24: the server domain in `src/server/` (refactor P7)
+
+- `serve/`, `claim/`, `workspace/` and `match/` moved into `src/server/` with `scripts/move.ts`, flat, and
+  `tmux/` whole to `server/tmux/` (it imports nothing else of the server, so no directory cycle). All of P7 in
+  one step: the plan had no P7a/b/c split written down. No behaviour changed.
+- Flat, `claim.ts`, `repos.ts`, `workspace-setup.ts` and `workspace-state.ts` share a directory, so the
+  `claim` ⇄ `workspace` directory cycle is gone with no code change. ALLOWED is empty (3 to 0), and so is
+  `DOMAIN`: every file is in its domain.
+- Renamed to stay apart in one directory: `workspace/state.ts` is `workspace-state.ts` (`serve/state.ts`, the
+  serve lock, keeps `state.ts`), and `workspace/setup.ts`, `env.ts` and `teardown.ts` took the same prefix.
+  `workspace/task.ts` is `task.ts`.
+- Cut from `cli` unchanged: `serveCommand`'s lifecycle (the serve lock and its refresh, signals, the log window,
+  closing the idle tmux session) to `runServer` and the `HOLD` window wrapper to `startServerWindow`, both in
+  `server/run.ts`; `air debug panes`'s diagnostics to `debugPanes` in `server/debug.ts`. `cli/status.ts`
+  checks the serve lock with `liveLock`, the same test it spelled out (`existsSync` and not `staleLock`).
+- `server/index.ts` no longer exports what only those cuts used (`createServer`, `acquireServeLock`,
+  `clientEnv`, `jobEnv`, `allWorkspaces`, `ENDED`, `staleLock`, `PidLock`).
+
+## 2026-11-24: one config dir and one state dir (`lib/dirs.ts`, 0.4.3)
+
+- `airDir('config' | 'state')` in `src/lib/dirs.ts` is the one place that finds air's directories:
+  `$XDG_CONFIG_HOME/air` (else `~/.config/air`) and `$XDG_STATE_HOME/air` (else `~/.local/state/air`).
+  `configPath` (config.toml), `configFile` (subscriptions.json) and `stateDir` are built on it, and every
+  caller goes through those three.
+- An empty or relative XDG value is ignored, as the XDG Base Directory spec says and `configPath` already did.
+  `configFile` and `stateDir` had used a relative value as it was, so where air ran from changed where they
+  looked.
+- `AIR_CONFIG_DIR` and `AIR_STATE_DIR` are gone. They were undocumented, `AIR_CONFIG_DIR` never moved
+  config.toml, and the XDG variables already move both directories. Tests and `scripts/smoke-sandbox.sh` set
+  `XDG_CONFIG_HOME` and `XDG_STATE_HOME` instead.
+- No migration code: files air read or wrote at the old places are moved by hand (docs/config.md, "Files in the
+  wrong place").

@@ -1,13 +1,13 @@
-// npm run skill:bundle: writes src/skill/bundle.ts from skills/ai-request/, so the compiled binary carries
-// the skill (users get the binary, not the repo). src/skill/install.test.ts fails when the two differ.
+// npm run skill:bundle: writes src/request/skill/bundle.ts from skills/ai-request/, so the compiled binary carries
+// the skill (users get the binary, not the repo). src/request/skill/install.test.ts fails when the two differ.
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 
 const root = join(import.meta.dirname, '..');
 export const SKILL_SOURCE = join(root, 'skills', 'ai-request');
-export const BUNDLE = join(root, 'src', 'skill', 'bundle.ts');
+export const BUNDLE = join(root, 'src', 'request', 'skill', 'bundle.ts');
 
-/** The source of src/skill/bundle.ts for the skill in `dir`. */
+/** The source of src/request/skill/bundle.ts for the skill in `dir`. */
 export function renderBundle(dir = SKILL_SOURCE): string {
   const names = readdirSync(dir, { recursive: true, encoding: 'utf8' })
     .filter((n) => statSync(join(dir, n)).isFile())

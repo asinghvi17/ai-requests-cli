@@ -1,7 +1,6 @@
 // `air wait ISSUE [--timeout DURATION] [--json]`: block until the request has a current result, print it as
 // `air status` does, and exit 0 done, 3 partial, 1 failed or released (or unreadable), 4 timeout.
-import { parseDuration } from '../spec/frontmatter.ts';
-import { formatStatus, statusJson, WAIT_EXIT, waitForResult, type WaitOptions } from '../requester/status.ts';
+import { formatStatus, parseDuration, statusJson, WAIT_EXIT, waitForResult, type WaitOptions } from '../request/index.ts';
 import type { Invocation } from './args.ts';
 import { target, UsageError } from './requests.ts';
 
