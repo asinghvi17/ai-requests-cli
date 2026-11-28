@@ -20,6 +20,7 @@ import { releaseDownload } from '../request/context.ts';
 import { requestsRepo } from '../gh/issues.ts';
 import { currentClaim, formatMarker, parseResult } from '../request/markers.ts';
 import { createTmux, socketPath } from './tmux/tmux.ts';
+import { leftoverPaneProcesses } from './tmux/testing/leaks.ts';
 import { ledgerFile, loadLedger } from '../agents/usage/index.ts';
 import type { ManualConfig, Subscription } from '../agents/usage/types.ts';
 import { insteadOfAll, makeBareRepo, type BareRepo } from '../lib/git-fixture.ts';
@@ -214,9 +215,10 @@ describe('air serve end to end', { skip: hasTmux ? false : 'tmux not installed' 
   afterEach(async () => {
     for (const j of await tmuxClient.listJobs()) await tmuxClient.stopJob(j.issue, { graceMs: 0 });
   });
-  after(() => {
+  after(async () => {
     killTmux();
     for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    assert.deepEqual(await leftoverPaneProcesses(socket), [], 'pane processes outlived the tmux server');
   });
 
   test('comment: claim, setup, run, deliver with the usage record', async () => {

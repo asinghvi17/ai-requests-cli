@@ -10,6 +10,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { createTmux, defaultRunner, socketPath } from './tmux.ts';
 import { clientEnv } from './env.ts';
 import { REAP_GRACE_SECONDS } from './launcher.ts';
+import { leftoverPaneProcesses } from './testing/leaks.ts';
 
 const hasTmux = spawnSync('tmux', ['-V']).status === 0;
 const socket = `air-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -71,10 +72,11 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     for (const job of await t.listJobs()) await t.stopJob(job.issue, { graceMs: 0 });
     killGroups();
   });
-  after(() => {
+  after(async () => {
     killTestServer();
     if (saved === undefined) delete process.env.AIR_TEST_INHERITED; else process.env.AIR_TEST_INHERITED = saved;
     if (dir) rmSync(dir, { recursive: true, force: true });
+    assert.deepEqual(await leftoverPaneProcesses(socket), [], 'pane processes outlived the tmux server');
   });
 
   test('regression: a caller without a UTF-8 locale still sees its jobs (tmux sanitises tabs for non-UTF-8 clients)', async () => {
@@ -114,12 +116,13 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
   });
 
   test('send pastes a long multi-line message into the pane as one bracketed paste, then presses Enter', async () => {
-    // A stand-in TUI: bracketed paste on, raw input; it saves what it reads up to the first bare Enter.
+    // A stand-in TUI: bracketed paste on, raw input; it saves what it reads up to the first bare Enter. It says
+    // `ready` only once raw mode is on and it is reading: a paste that came sooner met a cooked tty, whose line
+    // discipline echoes, edits and cuts long lines (a CI flake on Linux and macOS).
     const out = join(dir, 'pasted.txt');
     const reader = join(dir, 'reader.ts');
     writeFileSync(reader, [
       "import { writeFileSync } from 'node:fs';",
-      "process.stdout.write('\\x1b[?2004hready\\n');",
       'process.stdin.setRawMode(true);',
       "let got = '';",
       "process.stdin.on('data', (d) => {",
@@ -127,6 +130,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
       "  const end = got.indexOf('\\x1b[201~');",
       "  if (end >= 0 && got.slice(end + 6).includes('\\r')) { writeFileSync(process.argv[2], got); process.exit(0); }",
       '});',
+      "process.stdout.write('\\x1b[?2004hready\\n');",
     ].join('\n'));
     const message = `${'fix the bug\n'.repeat(5000)}Your task is also in AIR_TASK.md.\n`; // ~60 KB: far over tmux's command size
     await t.startJob({ issue: 12, cwd: dir, argv: [process.execPath, reader, out] });
@@ -134,7 +138,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     assert.equal(await t.send(12, message), true);
     await until('the pasted message', () => existsSync(out));
     const got = readFileSync(out, 'utf8');
-    assert.ok(got.startsWith('\x1b[200~'), 'one bracketed paste');
+    assert.ok(got.startsWith('\x1b[200~'), `one bracketed paste, not ${JSON.stringify(got.slice(0, 40))}`);
     const body = got.slice(6, got.indexOf('\x1b[201~'));
     assert.equal(body.replace(/\r/g, '\n'), message, 'the whole message, newlines kept inside the paste');
     assert.equal(got.slice(got.indexOf('\x1b[201~') + 6), '\r', 'then Enter');
@@ -225,7 +229,7 @@ describe('tmux integration', { skip: hasTmux ? false : 'tmux not installed' }, (
     const dup = await tag('14', 'dupnonce', 'running');
     const stale = await tag('15', 'stalenonce', 'starting');
     const jobs = await t.listJobs();
-    assert.deepEqual(jobs.map(j => j.issue), [14, 14]); // the stale placeholder is not a job
+    assert.deepEqual(jobs.map(j => j.issue), [14, 14]); // the stale starting pane is not a job
     assert.equal(await t.isAlive(14), true); // findJob resolves the duplicate
     const windows = (await raw(['list-windows', '-t', '=air', '-F', '#{window_id}'])).stdout.trim().split('\n');
     assert.ok(windows.includes(id));

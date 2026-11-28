@@ -299,7 +299,7 @@ describe('tmux (fake runner)', () => {
     assert.deepEqual(await createTmux({ repo: REPO, kill: noKill, run: f.run }).stopJob(5, { graceMs: 10 }), { exitStatus: null });
   });
 
-  test('startJob tags and respawns in one tmux invocation', async () => {
+  test('startJob creates and tags its window in one tmux invocation, with no placeholder to respawn', async () => {
     const f = fake([
       [is('list-panes'), () => ok('')],
       [is('show-options'), () => ok('tmux-256color\n')],
@@ -311,22 +311,22 @@ describe('tmux (fake runner)', () => {
     const chain = f.calls[3]!;
     const cmds = chain.join(' ').split(' ; ').map(c => c.split(' ').slice(0, 1)[0]);
     assert.deepEqual(cmds, ['new-window', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option', 'set-option',
-      'respawn-pane', 'set-option', 'rename-window']);
+      'set-option', 'rename-window']);
     const text = chain.join(' ');
     const tmp = chain[chain.indexOf('-n') + 1]!;
     assert.match(tmp, /^air-new-[0-9a-f]{24}$/);
     // Every command after new-window targets the new window by its exact temporary name, never the current pane.
     for (const part of text.split(' ; ').slice(1)) assert.ok(part.includes(`-t =air:=${tmp}`), part);
-    assert.ok(text.indexOf('@air_state starting') < text.indexOf('respawn-pane'));
-    assert.ok(text.indexOf('respawn-pane') < text.indexOf('@air_state running'));
+    assert.match(text.split(' ; ')[1]!, /@air_nonce [0-9a-f]{24}$/, 'the nonce first, so a failed chain can still kill the window');
+    assert.ok(text.indexOf('@air_state starting') < text.indexOf('@air_state running'));
     assert.match(text, /@air_job 42/);
     assert.match(text, /@air_repo o\/requests ;/);
     assert.ok(text.indexOf('@air_repo') < text.indexOf('@air_state starting'), 'tagged with its repo before anyone can see it');
     assert.match(text, /remain-on-exit on/);
     assert.ok(chain.includes('#42'));
-    // tmux runs only the fixed launcher; argv, env and cwd are inside it, never on the tmux command line.
-    const respawn = chain.slice(chain.indexOf('respawn-pane'));
-    const argv = respawn.slice(respawn.indexOf('--') + 1, respawn.indexOf(';'));
+    // tmux runs only the fixed launcher, and only once: argv, env and cwd are inside it, never on the tmux command line.
+    const create = chain.slice(0, chain.indexOf(';'));
+    const argv = create.slice(create.indexOf('--') + 1);
     assert.equal(argv.length, 2);
     assert.equal(argv[0], '/bin/sh');
     assert.ok(!chain.includes('claude') && !chain.includes(ws) && !chain.some(w => w.startsWith('FOO=')));
@@ -348,7 +348,7 @@ describe('tmux (fake runner)', () => {
     await createTmux({ repo: REPO, kill: noKill, run: f.run }).startJob({ issue: 3, cwd: ws, argv: ['sh', '-c', 'true', ';', 'run-shell', 'touch /x', 'y;', '{', '}'], env: { A: 'b;' } });
     const chain = f.calls.find(c => c[0] === 'new-window')!;
     // Every separator is one of ours: exactly one between each command, and no other word ends in `;`.
-    assert.equal(chain.filter(w => w === ';').length, 11);
+    assert.equal(chain.filter(w => w === ';').length, 10);
     assert.ok(!chain.some(w => w !== ';' && w.endsWith(';')));
     assert.ok(!chain.includes('run-shell'));
     const script = chain[chain.indexOf('/bin/sh') + 1]!;

@@ -380,8 +380,8 @@ export function createTmux(options: TmuxOptions) {
    * This repo's running job panes on the server, found by their tags alone (this is also re-adoption after a
    * restart): `@air_repo` must be this client's repo, so a server for another requests repo on the same socket
    * and ours never see (or adopt, stop or kill) each other's jobs. Our panes left in `starting` (a start that
-   * never finished) are killed, never adopted; a start in progress is never seen there, since it tags and
-   * respawns in one tmux command queue.
+   * never finished) are killed, never adopted; a start in progress is never seen there, since it creates and
+   * tags its window in one tmux command queue.
    */
   async function listJobs(): Promise<Job[]> {
     const r = await run(['list-panes', '-a', '-F', LIST_FORMAT]);
@@ -418,9 +418,14 @@ export function createTmux(options: TmuxOptions) {
 
   /**
    * Start job `issue` in a new window `#<issue>` and return its window id. One tmux invocation creates the
-   * window on a placeholder, sets remain-on-exit and the tags (`@air_state=starting`), respawns the real
-   * command and marks it `running`: a command that exits at once keeps its window and exit status, and no
-   * one ever adopts the placeholder. Starts of the same issue are serialized within this process.
+   * window on the job's launcher, tags it (`@air_state=starting`), sets remain-on-exit, marks it `running`
+   * and names it. tmux runs a client's command list to the end before its event loop sees a pane's output
+   * or exit, so the job is tagged before anyone can list it, and a command that exits at once keeps its window
+   * and exit status. Starts of the same issue are serialized within this process.
+   *
+   * No placeholder and `respawn-pane -k`: on macOS that respawn intermittently fails with `fork failed: Device
+   * not configured` (the new pty opened right after the placeholder's was closed), and a placeholder that
+   * had not yet taken its pty as controlling terminal got no hangup, so it lived on, orphaned, holding a pty.
    */
   async function startJob(input: StartJobInput): Promise<string> {
     checkIssue(input.issue);
@@ -446,17 +451,17 @@ export function createTmux(options: TmuxOptions) {
     // Commands later in a chain default to the session's current pane, not the new one: target the
     // new window by an exact, unique temporary name.
     const tmp = `air-new-${nonce}`, w = `${target}:=${tmp}`;
+    // The nonce goes first: should a later command fail, the window can still be killed by it.
     const r = await run(['new-window', '-d', '-P', '-F', '#{window_id} #{pane_id}', '-t', `${target}:`, '-n', tmp,
-      '--', 'sleep', '2147483647', ';',
+      '--', ...launcher.argv, ';',
+      'set-option', '-p', '-t', w, '@air_nonce', nonce, ';',
       'set-option', '-p', '-t', w, '@air_repo', repo, ';',
       'set-option', '-p', '-t', w, '@air_job', String(input.issue), ';',
-      'set-option', '-p', '-t', w, '@air_nonce', nonce, ';',
       'set-option', '-p', '-t', w, '@air_state', 'starting', ';',
       'set-option', '-p', '-t', w, '@air_launcher', launcher.dir, ';',
       'set-option', '-w', '-t', w, 'remain-on-exit', 'on', ';',
       'set-option', '-w', '-t', w, 'automatic-rename', 'off', ';',
       'set-option', '-w', '-t', w, 'allow-rename', 'off', ';',
-      'respawn-pane', '-k', '-t', w, '--', ...launcher.argv, ';',
       'set-option', '-p', '-t', w, '@air_state', 'running', ';',
       'rename-window', '-t', w, windowName(input.issue)]);
     const [windowId, paneId] = r.stdout.trim().split('\n')[0]!.split(' ');
